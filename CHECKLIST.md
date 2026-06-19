@@ -3,6 +3,7 @@
 A living checklist of everything to build, derived from `DESIGN.md` (section 19 phases) and `BACKEND.md`. Keep this updated as work lands: flip the box and add a short note. Phases after 0 are scoped now but built later.
 
 Status legend:
+
 - `[ ]` not started
 - `[~]` in progress
 - `[x]` done
@@ -17,14 +18,17 @@ Cross-cutting decisions (apply everywhere): package root `app/`; `/v1` prefix (h
 Goal: a runnable skeleton plus the full data model. No auth, LinkedIn, generation, worker, or Slack logic. Auth-adjacent modules are stubbed just enough for imports to resolve.
 
 Backend scaffold:
+
 - [x] uv project `pyproject.toml` (requires-python >=3.13; deps via `uv add`; ruff/mypy/black config)
 - [x] `app/config.py` pydantic-settings reading `backend/.env`, all SETUP.md keys optional, `is_production`, parsed `bootstrap_admin_emails` (no `lang_pref`, per decision)
 - [x] `app/logger.py` structlog `get_logger`
 - [x] `app/db/base.py` DeclarativeBase + naming convention + UUID pk and timestamp mixins
 - [x] `app/db/session.py` async engine (pool size/overflow from settings, 10s connect timeout), `async_sessionmaker`, `get_db`
 - [x] `app/main.py` app factory, structlog init, router registration, CORS to `FRONTEND_URL`
+- [x] `app/main.py` `lifespan`: ping Postgres (`SELECT 1`) and Redis (`PING`, 10s timeouts) on startup; abort startup with a clear error if either is unreachable (graceful fail-fast), dispose engine on shutdown
 
 Data model (DESIGN.md section 7; all indexes declared on the models):
+
 - [x] `app/models/user.py` (unique `email`, unique `google_sub`; `lang_pref` dropped)
 - [x] `app/models/social_account.py` (unique `(user_id, platform)`, index `status`, index `expires_at`)
 - [x] `app/models/writing_skill.py` (partial unique index on `is_default` where true, index `is_archived`)
@@ -34,11 +38,13 @@ Data model (DESIGN.md section 7; all indexes declared on the models):
 - [x] `app/models/slack_identity.py` (index `slack_user_id`)
 
 Core (stubs unless noted):
+
 - [x] `app/core/crypto.py` real Fernet encrypt/decrypt from `TOKEN_ENCRYPTION_KEY`
 - [x] `app/core/security.py` stub `create_access_token` / `decode_access_token` (signatures only)
 - [x] `app/core/deps.py` stub `get_current_user` / `require_role` so the campaigns route resolves
 
 Reference slice wired end to end (campaigns, keyset on `(created_at, id)`):
+
 - [x] `app/schemas/common.py` `PageParams` dep (limit default 20, bounded 1-100, `cursor`) and generic `Page[T]`
 - [x] `app/schemas/campaign.py` `CampaignOut`
 - [x] `app/repositories/base.py` `BaseRepository[ModelT]` with keyset `paginate`
@@ -49,23 +55,29 @@ Reference slice wired end to end (campaigns, keyset on `(created_at, id)`):
 - [x] `app/views/__init__.py` `api_router`
 
 Migrations and seed:
+
 - [x] Async Alembic: `alembic.ini`, `migrations/env.py` importing `Base.metadata` with asyncpg + naming convention
 - [x] Initial migration creating the full schema with every index (reviewed; applied to remote `super-hype` DB)
 - [x] `app/seed.py` idempotent: default `Super-Hype Post Writer` skill (instructions = `SKILL.md` body) + bootstrap admin users
 
 Infra:
+
 - [x] `backend/Dockerfile` uv multi-stage (+ `.dockerignore`)
 - [x] `backend/.env.example` full SETUP.md key set
 - [-] `docker-compose.yml` (skipped: DB and Redis are remote, run via CLI)
 
 Frontend:
-- [x] Vite + React 18 + TS scaffold, pnpm (pinned `pnpm@9.15.4`)
+
+- [x] Vite + React 18 + TS scaffold, npm (`package-lock.json`)
 - [x] Tailwind + shadcn (`components.json`), `frontend/.env` `VITE_API_BASE_URL`
 - [x] Section 14 design tokens in `tailwind.config.ts` + `globals.css` (incl. `--ok`/`--pending`/`--fail`), shadcn CSS vars, radius 10-12px
 - [x] Fraunces wordmark, Inter UI
-- [x] Static `AppShell` (`--sand` sidebar, header wordmark) + placeholder login screen (no real auth)
+- [x] Static `AppShell` (`--sand` sidebar, header wordmark) at `/app`
+- [x] Themed marketing landing at `/` (hero, signature post preview, how-it-works, features, footer) with `GoogleSignInButton` (visual + redirect to `/v1/google/login`; OAuth wired in Phase 1)
+- [x] `vite` pinned to stable `^5.4.11` (was incorrectly `^8`, invalid peer with `@vitejs/plugin-react@4`)
 
 Phase 0 tests (pytest + pytest-asyncio), 12 passing:
+
 - [x] config loads from env and parses `bootstrap_admin_emails`
 - [x] `core/crypto` encrypt/decrypt round-trips and ciphertext is not plaintext
 - [x] keyset pagination: `Page` envelope, `limit` capped at 100, `next_cursor` fetches next page with no overlap or gap
@@ -87,7 +99,7 @@ Phase 0 tests (pytest + pytest-asyncio), 12 passing:
 - [ ] `app/controllers/user_controller.py`
 - [ ] `app/views/users.py` `GET /v1/users` (admin), `PATCH /v1/users/{id}` (admin) with last-admin demotion guard + audit
 - [ ] `app/repositories/audit_repo.py` `record(...)` (used by role change)
-- [ ] Frontend: real Login, Users admin page, auth context, JWT storage, protected routes
+- [ ] Frontend: wire `GoogleSignInButton` to the real OAuth handoff + callback handling (landing page already built in Phase 0), Users admin page, auth context, JWT storage, protected routes
 - [ ] Tests: viewer 403 on `POST /v1/campaigns`; non-admin 403 on `PATCH /v1/users/{id}`; last-admin guard; callback rejects non-company domain; bootstrap email -> admin, normal -> viewer; existing user reused; `create_access_token`/`decode_access_token` round-trip, expired/tampered -> 401; `require_role` admits and rejects
 
 ---

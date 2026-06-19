@@ -30,7 +30,9 @@ class Settings(BaseSettings):
     # Public URLs.
     APP_URL: str = "http://localhost:8000"
     FRONTEND_URL: str = "http://localhost:5173"
-    ENVIRONMENT: str = "development"
+    # Deployment environment. Defaults to production so anything that forgets to
+    # set it is treated as locked down (docs disabled); local dev sets ENV=local.
+    ENV: str = "production"
 
     # Security (used from Phase 1 onward; defaults keep Phase 0 bootable).
     JWT_SECRET: str = "change-me-in-env"
@@ -66,7 +68,7 @@ class Settings(BaseSettings):
 
     @property
     def is_production(self) -> bool:
-        return self.ENVIRONMENT.lower() in {"production", "prod"}
+        return self.ENV.lower() in {"production", "prod"}
 
     @property
     def bootstrap_admin_emails(self) -> list[str]:
