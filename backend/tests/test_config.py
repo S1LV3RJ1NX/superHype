@@ -1,4 +1,29 @@
+import pytest
+
 from app.config import Settings
+
+_REQUIRED_ENV = {
+    "DATABASE_URL": "postgresql+asyncpg://u:p@localhost/db",
+    "REDIS_URL": "redis://localhost:6379/0",
+    "APP_URL": "http://localhost:8000",
+    "FRONTEND_URL": "http://localhost:5173",
+    "CORS_ORIGINS": "http://localhost:5173",
+    "JWT_SECRET": "test-secret",
+    "TOKEN_ENCRYPTION_KEY": "test-encryption-key",
+    "COMPANY_EMAIL_DOMAIN": "test.local",
+    "BOOTSTRAP_ADMIN_EMAILS": "admin@test.local",
+    "GOOGLE_CLIENT_ID": "test-google-id",
+    "GOOGLE_CLIENT_SECRET": "test-google-secret",
+    "LINKEDIN_CLIENT_ID": "test-linkedin-id",
+    "LINKEDIN_CLIENT_SECRET": "test-linkedin-secret",
+}
+
+
+@pytest.fixture(autouse=True)
+def _set_required_env(monkeypatch):
+    """Ensure all required Settings fields have values for isolated tests."""
+    for key, value in _REQUIRED_ENV.items():
+        monkeypatch.setenv(key, value)
 
 
 def test_bootstrap_admin_emails_parsed(monkeypatch):
@@ -10,8 +35,6 @@ def test_bootstrap_admin_emails_parsed(monkeypatch):
 def test_is_production_flag(monkeypatch):
     assert Settings(_env_file=None, ENV="production").is_production is True
     assert Settings(_env_file=None, ENV="local").is_production is False
-    # Defaults to production when ENV is unset, so docs stay locked down. Clear
-    # any ENV from the process/CI environment so we test the real default.
     monkeypatch.delenv("ENV", raising=False)
     assert Settings(_env_file=None).is_production is True
 

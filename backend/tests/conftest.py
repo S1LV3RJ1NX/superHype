@@ -21,6 +21,7 @@ from sqlalchemy.pool import StaticPool
 from app.core.security import create_access_token
 from app.models.audit_log import AuditLog
 from app.models.campaign import Campaign
+from app.models.social_account import SocialAccount
 from app.models.user import User
 from app.models.writing_skill import WritingSkill
 
@@ -29,6 +30,7 @@ _SQLITE_TABLES = [
     WritingSkill.__table__,
     Campaign.__table__,
     AuditLog.__table__,
+    SocialAccount.__table__,
 ]
 
 
@@ -107,7 +109,7 @@ def as_role(client: AsyncClient, engine: AsyncEngine):
         maker = async_sessionmaker(engine, expire_on_commit=False)
 
         async with maker() as session:
-            session.add(user)
+            user = await session.merge(user)
             await session.commit()
             await session.refresh(user)
 
@@ -121,6 +123,32 @@ def as_role(client: AsyncClient, engine: AsyncEngine):
             app.dependency_overrides.pop(get_current_user, None)
 
     return _override
+
+
+@pytest_asyncio.fixture
+async def mock_redis():
+    """Provide a fakeredis client and patch get_redis everywhere it is imported."""
+    import fakeredis.aioredis
+
+    fake = fakeredis.aioredis.FakeRedis(decode_responses=True)
+
+    import app.controllers.connection_controller as ctrl_mod
+    import app.core.redis as redis_mod
+
+    orig_core = redis_mod.get_redis
+    orig_ctrl = ctrl_mod.get_redis
+
+    async def _fake_get_redis():
+        return fake
+
+    redis_mod.get_redis = _fake_get_redis
+    ctrl_mod.get_redis = _fake_get_redis
+    try:
+        yield fake
+    finally:
+        redis_mod.get_redis = orig_core
+        ctrl_mod.get_redis = orig_ctrl
+        await fake.aclose()
 
 
 @pytest_asyncio.fixture

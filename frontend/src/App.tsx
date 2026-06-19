@@ -3,8 +3,10 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "@/auth/AuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { AuthCallback } from "@/pages/AuthCallback";
+import { Connections } from "@/pages/Connections";
 import { Dashboard } from "@/pages/Dashboard";
 import { Landing } from "@/pages/Landing";
+import { LinkedInCallback } from "@/pages/LinkedInCallback";
 import { Placeholder } from "@/pages/Placeholder";
 import { Users } from "@/pages/Users";
 
@@ -39,10 +41,18 @@ export default function App() {
           }
         />
         <Route
+          path="/connections/linkedin/callback"
+          element={
+            <ProtectedRoute>
+              <LinkedInCallback />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/app/connections"
           element={
             <ProtectedRoute>
-              <Placeholder title="Connections" phase={2} />
+              <Connections />
             </ProtectedRoute>
           }
         />

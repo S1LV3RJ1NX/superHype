@@ -61,6 +61,9 @@ async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
 
     log.info("startup.checks_passed", env=settings.ENV)
     yield
+    from app.core.redis import close_redis
+
+    await close_redis()
     await engine.dispose()
 
 

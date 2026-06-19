@@ -4,6 +4,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     DateTime,
     ForeignKey,
     Index,
@@ -37,7 +38,9 @@ class SocialAccount(UUIDPrimaryKeyMixin, Base):
     display_name: Mapped[str | None] = mapped_column(Text)
     access_token_enc: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     refresh_token_enc: Mapped[bytes | None] = mapped_column(LargeBinary)
-    scopes: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    scopes: Mapped[list[str] | None] = mapped_column(
+        ARRAY(Text).with_variant(JSON(), "sqlite")
+    )
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="active", server_default="active"

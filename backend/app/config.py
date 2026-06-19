@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_SECRET: str
 
     # LinkedIn.
-    LINKEDIN_CLIENT_ID: str | None = None
-    LINKEDIN_CLIENT_SECRET: str | None = None
+    LINKEDIN_CLIENT_ID: str
+    LINKEDIN_CLIENT_SECRET: str
     LINKEDIN_API_VERSION: str = "202606"
 
     # LLM gateway (OpenAI-compatible).
@@ -85,7 +85,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings()  # type: ignore[call-arg]
 
 
 settings = get_settings()

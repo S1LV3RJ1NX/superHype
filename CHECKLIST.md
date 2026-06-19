@@ -111,17 +111,28 @@ Phase 0 tests (pytest + pytest-asyncio):
 
 ## Phase 2: LinkedIn connection and provider
 
-- [ ] `app/views/connections.py` list, `linkedin/authorize`, `linkedin/callback`, `linkedin/reconnect`, `DELETE linkedin` (all require current user)
-- [ ] `app/schemas/connection.py` `LinkedInCallbackBody`, `ConnectionOut`, `AuthorizeUrlOut`
-- [ ] `app/controllers/connection_controller.py` authorize/complete/disconnect with Redis-bound CSRF state
-- [ ] `app/services/linkedin_oauth_service.py` `authorize_url`, `exchange_code`, `fetch_identity`, `refresh`, `revoke`
-- [ ] `app/repositories/social_account_repo.py` `get_by_user`, `upsert`, `mark_stale`, `delete`
-- [ ] Redis client/util for state and queue
-- [ ] `app/providers/base.py` `Provider` Protocol
+### Connection flow (done)
+- [x] `app/views/connections.py` list, `linkedin/authorize`, `linkedin/callback`, `linkedin/reconnect`, `DELETE linkedin` (all require current user)
+- [x] `app/schemas/connection.py` `LinkedInCallbackBody`, `ConnectionOut`, `AuthorizeUrlOut`
+- [x] `app/controllers/connection_controller.py` authorize/complete/disconnect with Redis-bound CSRF state
+- [x] `app/services/linkedin_oauth_service.py` `authorize_url`, `exchange_code`, `fetch_identity`, `revoke`
+- [x] `app/repositories/social_account_repo.py` `get_by_user`, `upsert`, `mark_stale`, `delete`
+- [x] `app/core/redis.py` shared async Redis client; wired into lifespan shutdown
+- [x] `app/providers/base.py` `Provider` Protocol (runtime_checkable stub)
+- [x] `SocialAccount.scopes` ARRAY->JSON SQLite variant for test compatibility
+- [x] Frontend: Connections page with Connect/Reconnect/Disconnect and stale banner
+- [x] Frontend: LinkedIn OAuth callback page (`/connections/linkedin/callback`)
+- [x] Tests (49 passing): authorize stores state in Redis; callback rejects missing/foreign state; callback returns 400 on LinkedIn HTTP error; stored token is ciphertext; disconnect deletes + audit; reconnect returns authorize URL; list connections empty and after connect; unauthenticated 401; Provider Protocol structural test
+- [x] Pre-existing mypy false positive on pydantic-settings constructor fixed with `type: ignore[call-arg]`
+- [x] Config test hardened with required env var fixture
+- [x] Redis keys namespaced with `super-hype:` prefix to avoid collisions on a shared DB
+- [x] Scopes: `w_member_social openid profile`. The spec named `r_basicprofile`, but LinkedIn deprecated it (apps after 2023-08-01 get `unauthorized_scope_error`). Identity now comes from OpenID Connect, so the member URN is read from `/v2/userinfo` (`sub` -> `urn:li:person:{sub}`). `email` is intentionally omitted.
+- [x] Live verified against the real LinkedIn API: full authorize -> consent -> callback -> token exchange -> identity -> connected, with both products (Share on LinkedIn, Sign In with LinkedIn using OpenID Connect) enabled
+
+### Provider implementation (deferred to Phase 4)
 - [ ] `app/providers/linkedin.py` publish (versioned `/rest/posts`, headers), link-in-first-comment sequence, `comment`, `like`, reshare-with-comment, three-step image upload, `refresh`
 - [ ] 401 -> mark stale -> `request_reconnect` path; 429 retryable-with-delay; bounded backoff on other 5xx
-- [ ] Frontend: Connections page with Connect/Reconnect and stale banner
-- [ ] Tests: `authorize` stores state in Redis; callback rejects missing/foreign state; stored token is ciphertext; disconnect deletes row + audit; provider publish-then-first-comment order and headers; idempotent publish (no double post); image uploaded under post's own author and `image_asset_urn` reused on retry; `link_placement` routes link to body vs first comment
+- [ ] Provider publish-then-first-comment order and headers; idempotent publish; image uploaded under post's own author and `image_asset_urn` reused on retry; `link_placement` routes link to body vs first comment
 
 ---
 

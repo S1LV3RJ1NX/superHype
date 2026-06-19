@@ -61,6 +61,7 @@ testpaths = ["tests"]
 dev = [
     "aiosqlite>=0.22.1",
     "black>=26.5.1",
+    "fakeredis>=2.36.2",
     "httpx>=0.28.1",
     "mypy>=2.1.0",
     "pre-commit>=4.6.0",
