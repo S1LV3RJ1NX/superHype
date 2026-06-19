@@ -8,8 +8,10 @@ dependencies = [
     "asyncpg>=0.31.0",
     "cryptography>=49.0.0",
     "fastapi>=0.137.2",
+    "fastapi-sso>=0.21.0",
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.1",
+    "pyjwt>=2.13.0",
     "redis>=8.0.0",
     "sqlalchemy[asyncio]>=2.0.51",
     "structlog>=26.1.0",
@@ -36,7 +38,7 @@ ignore = ["E501", "UP046", "UP047"]
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI uses these as argument defaults by design.
-extend-immutable-calls = ["fastapi.Depends", "fastapi.Query"]
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Query", "app.core.deps.require_role"]
 
 [tool.black]
 line-length = 88

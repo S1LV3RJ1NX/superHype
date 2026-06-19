@@ -45,12 +45,12 @@ async def test_pagination_orders_newest_first(db):
     assert page.next_cursor is None
 
 
-async def test_endpoint_envelope_and_limit_cap(client):
-    # limit above the cap (100) is rejected by query validation.
-    over = await client.get("/v1/campaigns", params={"limit": 200})
-    assert over.status_code == 422
+async def test_endpoint_envelope_and_limit_cap(client, as_role):
+    async with as_role("viewer"):
+        over = await client.get("/v1/campaigns", params={"limit": 200})
+        assert over.status_code == 422
 
-    ok = await client.get("/v1/campaigns", params={"limit": 10})
-    assert ok.status_code == 200
-    body = ok.json()
-    assert body == {"items": [], "next_cursor": None}
+        ok = await client.get("/v1/campaigns", params={"limit": 10})
+        assert ok.status_code == 200
+        body = ok.json()
+        assert body == {"items": [], "next_cursor": None}

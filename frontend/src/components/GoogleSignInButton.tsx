@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 import { cn } from "@/lib/utils";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
@@ -32,21 +34,35 @@ export function GoogleSignInButton({
   variant?: "primary" | "outline";
   className?: string;
 }) {
-  // The real OAuth handoff lands in Phase 1; this points at the backend login route.
-  const handleSignIn = () => {
-    window.location.href = `${API_BASE}/v1/google/login`;
+  const [loading, setLoading] = useState(false);
+
+  const handleSignIn = async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/v1/google/login`);
+      const data = await res.json();
+      if (data.authorization_url) {
+        window.location.href = data.authorization_url;
+        return;
+      }
+    } catch {
+      // fall through
+    }
+    setLoading(false);
   };
 
   return (
     <button
       type="button"
       onClick={handleSignIn}
+      disabled={loading}
       className={cn(
         "inline-flex items-center justify-center gap-2.5 rounded-md px-5 py-2.5 text-sm font-medium transition-colors",
         "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-paper",
         variant === "primary"
           ? "bg-clay text-primary-foreground hover:bg-clay-press"
           : "border border-border bg-surface text-ink hover:bg-sand",
+        loading && "opacity-60",
         className,
       )}
     >
@@ -58,7 +74,7 @@ export function GoogleSignInButton({
       >
         <GoogleGlyph className="h-3.5 w-3.5" />
       </span>
-      Continue with Google
+      {loading ? "Redirecting..." : "Continue with Google"}
     </button>
   );
 }

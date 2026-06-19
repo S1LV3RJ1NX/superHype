@@ -76,31 +76,36 @@ Frontend:
 - [x] Themed marketing landing at `/` (hero, signature post preview, how-it-works, features, footer) with `GoogleSignInButton` (visual + redirect to `/v1/google/login`; OAuth wired in Phase 1)
 - [x] `vite` pinned to stable `^5.4.11` (was incorrectly `^8`, invalid peer with `@vitejs/plugin-react@4`)
 
-Phase 0 tests (pytest + pytest-asyncio), 12 passing:
+Phase 0 tests (pytest + pytest-asyncio):
 
 - [x] config loads from env and parses `bootstrap_admin_emails`
 - [x] `core/crypto` encrypt/decrypt round-trips and ciphertext is not plaintext
-- [x] keyset pagination: `Page` envelope, `limit` capped at 100, `next_cursor` fetches next page with no overlap or gap
+- [x] keyset pagination: `Page` envelope, `limit` capped at 100, `next_cursor` fetches next page with no overlap or gap (now auth-gated)
 - [x] `GET /healthz` returns ok
 - [x] `app.seed` is idempotent (re-run inserts no duplicates)
 - [x] models metadata imports and the partial unique default-skill index exists
+- [x] docs disabled in production, enabled outside production
 
 ---
 
-## Phase 1: Auth and users
+## Phase 1: Auth and users (DONE)
 
-- [ ] `app/views/auth.py` `/v1/google/login`, `/v1/google/callback` (fastapi-sso, code in body)
-- [ ] `app/schemas/auth.py` `GoogleCallbackBody`, `TokenResponse`
-- [ ] `app/controllers/auth_controller.py` `complete_google_login` (company-domain check, bootstrap admin vs viewer, upsert, no duplicate user, drop trial/subscription logic)
-- [ ] `app/core/security.py` real JWT create/decode carrying `user_id`, `email`, `role`; short lifetime
-- [ ] `app/core/deps.py` real `get_current_user`, `require_role(*roles)`
-- [ ] `app/repositories/user_repo.py` `get_by_email_and_provider`, `set_role`, `list_all`, `count_admins`
-- [ ] `app/schemas/user.py` `UserOut`, `RoleUpdate`
-- [ ] `app/controllers/user_controller.py`
-- [ ] `app/views/users.py` `GET /v1/users` (admin), `PATCH /v1/users/{id}` (admin) with last-admin demotion guard + audit
-- [ ] `app/repositories/audit_repo.py` `record(...)` (used by role change)
-- [ ] Frontend: wire `GoogleSignInButton` to the real OAuth handoff + callback handling (landing page already built in Phase 0), Users admin page, auth context, JWT storage, protected routes
-- [ ] Tests: viewer 403 on `POST /v1/campaigns`; non-admin 403 on `PATCH /v1/users/{id}`; last-admin guard; callback rejects non-company domain; bootstrap email -> admin, normal -> viewer; existing user reused; `create_access_token`/`decode_access_token` round-trip, expired/tampered -> 401; `require_role` admits and rejects
+- [x] `app/views/auth.py` `/v1/google/login` (returns `authorization_url` JSON), `/v1/google/callback` (fastapi-sso, code in body)
+- [x] `app/schemas/auth.py` `GoogleCallbackBody`, `TokenResponse`
+- [x] `app/controllers/auth_controller.py` `complete_google_login` (company-domain check, bootstrap admin vs viewer, upsert, no duplicate user, updates name/avatar/google_sub on returning user)
+- [x] `app/core/security.py` real JWT create/decode (PyJWT, HS256) carrying `user_id`, `email`, `role`; 12h default lifetime via `ACCESS_TOKEN_EXPIRE_MINUTES`
+- [x] `app/core/deps.py` real `get_current_user` (HTTPBearer), `require_role(*roles)` (403 on mismatch)
+- [x] `app/repositories/user_repo.py` `get_by_email`, `get_by_google_sub`, `set_role`, `count_admins`, inherited `paginate`
+- [x] `app/schemas/user.py` `UserOut`, `RoleUpdate`
+- [x] `app/controllers/user_controller.py` `list_users`, `get_me`, `change_role` (last-admin guard -> 409, audit row)
+- [x] `app/views/users.py` `GET /v1/users/me` (any authed), `GET /v1/users` (admin), `PATCH /v1/users/{id}` (admin) with last-admin demotion guard + audit
+- [x] `app/repositories/audit_repo.py` `record(...)` (used by role change)
+- [x] Frontend: `GoogleSignInButton` fetches `/v1/google/login` and redirects to Google; `AuthCallback` at `/v1/google/callback` exchanges code and stores JWT; `AuthContext` (localStorage + `GET /v1/users/me`); `ProtectedRoute` gates `/app`; `AppShell` shows user avatar/name + sign out; nav links with active state; admin-only Users nav item
+- [x] Frontend: Users admin page (`/app/users`) with role select and last-admin 409 error handling
+- [x] Config: `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES` added; `ENV` defaults to production (from Phase 0 polish)
+- [x] `audit_log.detail` uses `JSONB().with_variant(JSON(), "sqlite")` so AuditLog works in test SQLite
+- [x] Tests (38 passing): JWT create/decode round-trip, expired/tampered -> 401; `require_role` admits and rejects; auth controller domain rejection, bootstrap admin, viewer default, existing user reused, inactive rejected; non-admin 403 on `GET /v1/users` and `PATCH /v1/users/{id}`; admin role change succeeds + writes audit; last-admin guard -> 409; `GET /v1/users/me`; user_repo `get_by_email`, `count_admins`, `set_role`
+- [x] No migration needed (JSONB variant is Postgres-identical; autogenerate confirmed empty)
 
 ---
 

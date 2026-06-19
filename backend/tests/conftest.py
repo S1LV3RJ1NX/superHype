@@ -1,11 +1,11 @@
 """Test fixtures.
 
-Phase 0 keeps these minimal and hermetic: an in-memory SQLite engine (so no remote
-Postgres is touched) holding only the SQLite-compatible tables needed by the tests,
-plus an httpx AsyncClient wired to the app with get_db overridden. The richer
-as_role / auth_headers fixtures arrive with auth in Phase 1.
+Hermetic in-memory SQLite engine (no remote Postgres required), httpx AsyncClient
+wired to the app, and auth helpers: as_role overrides get_current_user with a
+synthetic user of a given role, auth_headers mints a real JWT.
 """
 
+import uuid
 from collections.abc import AsyncGenerator
 
 import pytest_asyncio
@@ -18,12 +18,18 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import StaticPool
 
+from app.core.security import create_access_token
+from app.models.audit_log import AuditLog
 from app.models.campaign import Campaign
 from app.models.user import User
 from app.models.writing_skill import WritingSkill
 
-# Tables that create cleanly on SQLite (no ARRAY/JSONB columns).
-_SQLITE_TABLES = [User.__table__, WritingSkill.__table__, Campaign.__table__]
+_SQLITE_TABLES = [
+    User.__table__,
+    WritingSkill.__table__,
+    Campaign.__table__,
+    AuditLog.__table__,
+]
 
 
 @pytest_asyncio.fixture
@@ -63,3 +69,71 @@ async def client(engine: AsyncEngine) -> AsyncGenerator[AsyncClient]:
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
     app.dependency_overrides.clear()
+
+
+def _make_user(
+    role: str = "viewer",
+    email: str | None = None,
+    user_id: uuid.UUID | None = None,
+) -> User:
+    return User(
+        id=user_id or uuid.uuid4(),
+        email=email or f"{role}@test.local",
+        name=f"Test {role.title()}",
+        role=role,
+        is_active=True,
+    )
+
+
+@pytest_asyncio.fixture
+def as_role(client: AsyncClient, engine: AsyncEngine):
+    """Override get_current_user to inject a user of the given role.
+
+    Returns a context manager that yields the synthetic user and injects it into
+    the database so foreign-key-dependent queries work.
+    """
+    from contextlib import asynccontextmanager
+
+    from app.core.deps import get_current_user
+    from app.main import app
+
+    @asynccontextmanager
+    async def _override(
+        role: str = "viewer",
+        email: str | None = None,
+        user_id: uuid.UUID | None = None,
+    ):
+        user = _make_user(role=role, email=email, user_id=user_id)
+        maker = async_sessionmaker(engine, expire_on_commit=False)
+
+        async with maker() as session:
+            session.add(user)
+            await session.commit()
+            await session.refresh(user)
+
+        async def _get_user() -> User:
+            return user
+
+        app.dependency_overrides[get_current_user] = _get_user
+        try:
+            yield user
+        finally:
+            app.dependency_overrides.pop(get_current_user, None)
+
+    return _override
+
+
+@pytest_asyncio.fixture
+async def auth_headers() -> dict[str, str]:
+    """Mint a real JWT for a synthetic user and return the Authorization header."""
+
+    async def _headers(
+        user_id: uuid.UUID | None = None,
+        email: str = "test@test.local",
+        role: str = "viewer",
+    ) -> dict[str, str]:
+        uid = user_id or uuid.uuid4()
+        token = await create_access_token(user_id=uid, email=email, role=role)
+        return {"Authorization": f"Bearer {token}"}
+
+    return _headers  # type: ignore[return-value]

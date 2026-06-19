@@ -34,11 +34,13 @@ async def _check_redis() -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncGenerator[None]:
-    """Verify Postgres and Redis are reachable before serving.
+    """Verify critical config, Postgres, and Redis before serving."""
+    if settings.is_production and settings.JWT_SECRET == "change-me-in-env":
+        raise RuntimeError(
+            "JWT_SECRET is set to the default value. "
+            "Refusing to start in production with an insecure secret."
+        )
 
-    If either is down, log a clear error and abort startup so the process exits
-    instead of accepting traffic it cannot serve.
-    """
     try:
         await _check_database()
     except Exception as exc:

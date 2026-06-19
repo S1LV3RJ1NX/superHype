@@ -1,13 +1,13 @@
-"""JWT creation and decoding.
-
-Phase 0 stub: the signatures and the TokenPayload shape are fixed here so the rest
-of the app can import them, but the real implementation lands in Phase 1 (auth).
-"""
+"""JWT creation and decoding (PyJWT, HS256)."""
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
+import jwt
+from fastapi import HTTPException
 from pydantic import BaseModel
+
+from app.config import settings
 
 
 class TokenPayload(BaseModel):
@@ -23,10 +23,33 @@ async def create_access_token(
     role: str,
     expires_delta: timedelta | None = None,
 ) -> str:
-    """Mint a signed JWT carrying user_id, email, and role. Implemented in Phase 1."""
-    raise NotImplementedError("JWT issuance lands in Phase 1 (auth).")
+    expire = datetime.now(UTC) + (
+        expires_delta
+        if expires_delta is not None
+        else timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    )
+    payload = {
+        "sub": str(user_id),
+        "email": email,
+        "role": role,
+        "exp": expire,
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
 def decode_access_token(token: str) -> TokenPayload:
-    """Decode and validate a bearer token, raising 401 on failure. Implemented in Phase 1."""
-    raise NotImplementedError("JWT decoding lands in Phase 1 (auth).")
+    try:
+        data = jwt.decode(
+            token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM]
+        )
+        return TokenPayload(
+            user_id=uuid.UUID(data["sub"]),
+            email=data["email"],
+            role=data["role"],
+        )
+    except jwt.ExpiredSignatureError as exc:
+        raise HTTPException(status_code=401, detail="Token has expired.") from exc
+    except (jwt.PyJWTError, KeyError, ValueError) as exc:
+        raise HTTPException(
+            status_code=401, detail="Invalid authentication token."
+        ) from exc

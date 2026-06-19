@@ -34,8 +34,10 @@ class Settings(BaseSettings):
     # set it is treated as locked down (docs disabled); local dev sets ENV=local.
     ENV: str = "production"
 
-    # Security (used from Phase 1 onward; defaults keep Phase 0 bootable).
+    # Security.
     JWT_SECRET: str = "change-me-in-env"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 720
     TOKEN_ENCRYPTION_KEY: str | None = None
     OAUTHLIB_INSECURE_TRANSPORT: bool = False
 
