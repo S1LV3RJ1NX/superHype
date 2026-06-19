@@ -5,6 +5,7 @@ import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { AuthCallback } from "@/pages/AuthCallback";
 import { Dashboard } from "@/pages/Dashboard";
 import { Landing } from "@/pages/Landing";
+import { Placeholder } from "@/pages/Placeholder";
 import { Users } from "@/pages/Users";
 
 export default function App() {
@@ -18,6 +19,30 @@ export default function App() {
           element={
             <ProtectedRoute>
               <Dashboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app/compose"
+          element={
+            <ProtectedRoute>
+              <Placeholder title="Compose" phase={4} />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app/skills"
+          element={
+            <ProtectedRoute>
+              <Placeholder title="Skills" phase={3} />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app/connections"
+          element={
+            <ProtectedRoute>
+              <Placeholder title="Connections" phase={2} />
             </ProtectedRoute>
           }
         />

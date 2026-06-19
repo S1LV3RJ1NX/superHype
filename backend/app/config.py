@@ -7,7 +7,6 @@ without them; later phases tighten the ones they need.
 
 from functools import lru_cache
 
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,34 +19,33 @@ class Settings(BaseSettings):
     )
 
     # Core infrastructure (set in backend/.env).
-    DATABASE_URL: str = (
-        "postgresql+asyncpg://postgres:postgres@localhost:5432/super-hype"
-    )
-    REDIS_URL: str = "redis://localhost:6379/0"
+    DATABASE_URL: str
+    REDIS_URL: str
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 10
 
     # Public URLs.
-    APP_URL: str = "http://localhost:8000"
-    FRONTEND_URL: str = "http://localhost:5173"
+    APP_URL: str
+    FRONTEND_URL: str
+    CORS_ORIGINS: str
     # Deployment environment. Defaults to production so anything that forgets to
     # set it is treated as locked down (docs disabled); local dev sets ENV=local.
     ENV: str = "production"
 
     # Security.
-    JWT_SECRET: str = "change-me-in-env"
+    JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 720
-    TOKEN_ENCRYPTION_KEY: str | None = None
+    TOKEN_ENCRYPTION_KEY: str
     OAUTHLIB_INSECURE_TRANSPORT: bool = False
 
     # Auth and access control.
-    COMPANY_EMAIL_DOMAIN: str = "example.com"
-    BOOTSTRAP_ADMIN_EMAILS: str = ""
+    COMPANY_EMAIL_DOMAIN: str
+    BOOTSTRAP_ADMIN_EMAILS: str
 
     # Google OAuth.
-    GOOGLE_CLIENT_ID: str | None = None
-    GOOGLE_CLIENT_SECRET: str | None = None
+    GOOGLE_CLIENT_ID: str
+    GOOGLE_CLIENT_SECRET: str
 
     # LinkedIn.
     LINKEDIN_CLIENT_ID: str | None = None
@@ -65,8 +63,6 @@ class Settings(BaseSettings):
 
     # Observability.
     SENTRY_DSN: str | None = None
-
-    CORS_ORIGINS: str = Field(default="http://localhost:5173")
 
     @property
     def is_production(self) -> bool:
