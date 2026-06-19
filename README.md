@@ -102,15 +102,15 @@ app registration, is in [`backend/README.md`](backend/README.md),
 
 ## Project status
 
-Built in phases (see [`CHECKLIST.md`](CHECKLIST.md)):
+See [`CHECKLIST.md`](CHECKLIST.md) for the full breakdown.
 
-- [x] **Phase 0** Scaffold, full data model, migrations, seed, reference API, themed UI shell, landing page
-- [ ] **Phase 1** Google auth and users
-- [ ] **Phase 2** LinkedIn connection and provider
-- [ ] **Phase 3** Skills and generation
-- [ ] **Phase 4** Campaign lifecycle and worker
-- [ ] **Phase 5** Slack approval
-- [ ] **Phase 6** Dashboard and polish
+- [x] Scaffold, full data model, migrations, seed, reference API, themed UI shell, landing page
+- [x] Google auth and users
+- [x] LinkedIn connection and provider
+- [x] Skills and generation
+- [ ] Campaign lifecycle and worker
+- [ ] Slack approval
+- [ ] Dashboard and polish
 
 ## License
 

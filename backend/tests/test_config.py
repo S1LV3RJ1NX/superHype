@@ -16,6 +16,9 @@ _REQUIRED_ENV = {
     "GOOGLE_CLIENT_SECRET": "test-google-secret",
     "LINKEDIN_CLIENT_ID": "test-linkedin-id",
     "LINKEDIN_CLIENT_SECRET": "test-linkedin-secret",
+    "LLM_GATEWAY_URL": "https://gateway.test.local",
+    "LLM_API_KEY": "test-llm-key",
+    "LLM_MODEL_NAME": "test-model",
 }
 
 

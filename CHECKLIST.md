@@ -1,6 +1,6 @@
 # super-hype build checklist
 
-A living checklist of everything to build, derived from `DESIGN.md` (section 19 phases) and `BACKEND.md`. Keep this updated as work lands: flip the box and add a short note. Phases after 0 are scoped now but built later.
+A living checklist of everything to build, derived from `DESIGN.md` and `BACKEND.md`. Keep this updated as work lands: flip the box and add a short note.
 
 Status legend:
 
@@ -13,7 +13,7 @@ Cross-cutting decisions (apply everywhere): package root `app/`; `/v1` prefix (h
 
 ---
 
-## Phase 0: Scaffold and data model (CURRENT)
+## Scaffold and data model (done)
 
 Goal: a runnable skeleton plus the full data model. No auth, LinkedIn, generation, worker, or Slack logic. Auth-adjacent modules are stubbed just enough for imports to resolve.
 
@@ -73,10 +73,10 @@ Frontend:
 - [x] Section 14 design tokens in `tailwind.config.ts` + `globals.css` (incl. `--ok`/`--pending`/`--fail`), shadcn CSS vars, radius 10-12px
 - [x] Fraunces wordmark, Inter UI
 - [x] Static `AppShell` (`--sand` sidebar, header wordmark) at `/app`
-- [x] Themed marketing landing at `/` (hero, signature post preview, how-it-works, features, footer) with `GoogleSignInButton` (visual + redirect to `/v1/google/login`; OAuth wired in Phase 1)
+- [x] Themed marketing landing at `/` (hero, signature post preview, how-it-works, features, footer) with `GoogleSignInButton` (redirect to `/v1/google/login`)
 - [x] `vite` pinned to stable `^5.4.11` (was incorrectly `^8`, invalid peer with `@vitejs/plugin-react@4`)
 
-Phase 0 tests (pytest + pytest-asyncio):
+Scaffold tests (pytest + pytest-asyncio):
 
 - [x] config loads from env and parses `bootstrap_admin_emails`
 - [x] `core/crypto` encrypt/decrypt round-trips and ciphertext is not plaintext
@@ -88,7 +88,7 @@ Phase 0 tests (pytest + pytest-asyncio):
 
 ---
 
-## Phase 1: Auth and users (DONE)
+## Auth and users (done)
 
 - [x] `app/views/auth.py` `/v1/google/login` (returns `authorization_url` JSON), `/v1/google/callback` (fastapi-sso, code in body)
 - [x] `app/schemas/auth.py` `GoogleCallbackBody`, `TokenResponse`
@@ -102,14 +102,14 @@ Phase 0 tests (pytest + pytest-asyncio):
 - [x] `app/repositories/audit_repo.py` `record(...)` (used by role change)
 - [x] Frontend: `GoogleSignInButton` fetches `/v1/google/login` and redirects to Google; `AuthCallback` at `/v1/google/callback` exchanges code and stores JWT; `AuthContext` (localStorage + `GET /v1/users/me`); `ProtectedRoute` gates `/app`; `AppShell` shows user avatar/name + sign out; nav links with active state; admin-only Users nav item
 - [x] Frontend: Users admin page (`/app/users`) with role select and last-admin 409 error handling
-- [x] Config: `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES` added; `ENV` defaults to production (from Phase 0 polish)
+- [x] Config: `JWT_ALGORITHM`, `ACCESS_TOKEN_EXPIRE_MINUTES` added; `ENV` defaults to production
 - [x] `audit_log.detail` uses `JSONB().with_variant(JSON(), "sqlite")` so AuditLog works in test SQLite
 - [x] Tests (38 passing): JWT create/decode round-trip, expired/tampered -> 401; `require_role` admits and rejects; auth controller domain rejection, bootstrap admin, viewer default, existing user reused, inactive rejected; non-admin 403 on `GET /v1/users` and `PATCH /v1/users/{id}`; admin role change succeeds + writes audit; last-admin guard -> 409; `GET /v1/users/me`; user_repo `get_by_email`, `count_admins`, `set_role`
 - [x] No migration needed (JSONB variant is Postgres-identical; autogenerate confirmed empty)
 
 ---
 
-## Phase 2: LinkedIn connection and provider
+## LinkedIn connection and provider (done)
 
 ### Connection flow (done)
 - [x] `app/views/connections.py` list, `linkedin/authorize`, `linkedin/callback`, `linkedin/reconnect`, `DELETE linkedin` (all require current user)
@@ -129,27 +129,55 @@ Phase 0 tests (pytest + pytest-asyncio):
 - [x] Scopes: `w_member_social openid profile`. The spec named `r_basicprofile`, but LinkedIn deprecated it (apps after 2023-08-01 get `unauthorized_scope_error`). Identity now comes from OpenID Connect, so the member URN is read from `/v2/userinfo` (`sub` -> `urn:li:person:{sub}`). `email` is intentionally omitted.
 - [x] Live verified against the real LinkedIn API: full authorize -> consent -> callback -> token exchange -> identity -> connected, with both products (Share on LinkedIn, Sign In with LinkedIn using OpenID Connect) enabled
 
-### Provider implementation (deferred to Phase 4)
+### Provider implementation (deferred to campaign lifecycle)
 - [ ] `app/providers/linkedin.py` publish (versioned `/rest/posts`, headers), link-in-first-comment sequence, `comment`, `like`, reshare-with-comment, three-step image upload, `refresh`
 - [ ] 401 -> mark stale -> `request_reconnect` path; 429 retryable-with-delay; bounded backoff on other 5xx
 - [ ] Provider publish-then-first-comment order and headers; idempotent publish; image uploaded under post's own author and `image_asset_urn` reused on retry; `link_placement` routes link to body vs first comment
 
 ---
 
-## Phase 3: Skills and generation
+## Skills and generation (done)
 
-- [ ] `app/views/skills.py` CRUD (`DELETE` = archive), `app/schemas/skill.py`, `app/controllers/skill_controller.py`
-- [ ] `app/repositories/writing_skill_repo.py` `get_default`, `list_active`, `set_default`
-- [ ] `app/integrations/llm.py` `AsyncOpenAI(base_url=LLM_GATEWAY_URL, api_key=LLM_API_KEY)`
-- [ ] `app/services/generation_service.py` build system+user messages, model from skill or `LLM_MODEL_NAME`, `response_format=json_object`, parse defensively, validate against pydantic output contract, write posts rows
-- [ ] Output-contract pydantic schema (hero_post, variants, comments)
-- [ ] Regenerate: discard non-edited drafts, never touch approved/published
-- [ ] Frontend: Skills page + monospace instructions editor; Compose skill swapper; TipTap editor; live LinkedIn-accurate preview
-- [ ] Tests: parser on valid fixture and on malformed output (job fails cleanly), gateway mocked via the OpenAI client
+### Skills CRUD (done)
+- [x] `app/repositories/writing_skill_repo.py` `get_default`, `list_active`, `set_default` (single-default invariant with transactional clear+set)
+- [x] `app/schemas/skill.py` `SkillOut`, `SkillCreate`, `SkillUpdate`
+- [x] `app/controllers/skill_controller.py` list (with include_archived), get, create, update, archive (409 if default), set_default; all mutations audit-logged
+- [x] `app/views/skills.py` `/v1/skills` CRUD; reads require `get_current_user`, mutations require `require_role("editor")`; `DELETE` = archive, `POST /{id}/set-default`
+- [x] Router registered in `app/views/__init__.py`
+- [x] `WritingSkill` model partial unique index now emits `sqlite_where` alongside `postgresql_where` so SQLite tests get a proper partial index
+
+### LLM integration and generation service (done)
+- [x] `openai` package added (`uv add openai`)
+- [x] `app/integrations/llm.py` `get_llm_client()` returning `AsyncOpenAI` pointed at `LLM_GATEWAY_URL`
+- [x] `app/schemas/generation.py` output contract: `HeroPost`, `Variant`, `CommentItem`, `GenerationResult`; input: `RosterEntry`, `GenerationBrief`
+- [x] `app/services/generation_service.py` `generate(skill, brief)`: builds system+user messages, model from `skill.model or LLM_MODEL_NAME`, calls `chat.completions.create` with `response_format=json_object`, strips markdown fences, `json.loads`, validates with `GenerationResult.model_validate`, raises `GenerationError` on any failure
+- [x] `scripts/smoke_generation.py` live gateway test: loads the seeded default skill, builds a sample brief, calls `gateway.truefoundry.ai` with `openai-main/gpt-4o-mini`, prints the parsed `GenerationResult` (verified working)
+
+### Users LinkedIn-status column (done)
+- [x] `social_account_repo.map_status_for_users(db, user_ids)` batch helper (avoids N+1)
+- [x] `UserOut.linkedin_status` field (`active` | `stale` | `None`)
+- [x] `user_controller.list_users` and `get_me` populate the field from batch query
+
+### Frontend (done)
+- [x] `Skills.tsx` page: left skill list (default badged with star), editor pane with name/description/monospace instructions textarea/model override, Save/Create, Set as default toggle, Archive button, 409 handling
+- [x] `App.tsx` `/app/skills` route wired to `Skills` (was `Placeholder`)
+- [x] `Users.tsx` LinkedIn column: green dot "Connected" for active, amber dot "Stale" for stale, muted "Not connected" for null
+
+### Tests (70 passing)
+- [x] `test_writing_skill_repo.py` (5): get_default, get_default_none, list_active excludes archived, list_active default first, set_default clears previous
+- [x] `test_skills.py` (8): viewer list ok, viewer 403 on create, editor create, editor update, set_default flips, archive default 409, archive non-default 204, mutation writes audit
+- [x] `test_generation.py` (6): valid JSON parses, fenced JSON parses, non-JSON raises GenerationError, missing keys raises GenerationError, model falls back to LLM_MODEL_NAME, skill model overrides default
+- [x] `test_users.py` extended (2): list_users returns linkedin_status=active for connected user, None for unconnected
+- [x] `test_config.py` env fixture extended with `LLM_GATEWAY_URL`, `LLM_API_KEY`, `LLM_MODEL_NAME`
+
+### Deferred to campaign lifecycle
+- [ ] Writing `posts` rows from a `GenerationResult` (needs campaigns + roster)
+- [ ] Regenerate logic: discard non-edited drafts, never touch approved/published
+- [ ] Frontend: Compose two-pane UI, skill swapper in compose, TipTap editor, live LinkedIn preview
 
 ---
 
-## Phase 4: Campaign lifecycle and worker
+## Campaign lifecycle and worker
 
 - [ ] `app/services/campaign_service.py` state machine `draft -> generating -> review -> approved -> publishing -> completed` (+ `failed`)
 - [ ] `app/repositories/campaign_repo.py` `get_with_posts`, `paginate_for_user`, `set_status`
@@ -165,7 +193,7 @@ Phase 0 tests (pytest + pytest-asyncio):
 
 ---
 
-## Phase 5: Slack approval
+## Slack approval
 
 - [ ] `app/integrations/slack.py` Block Kit builders, DM send, `users.lookupByEmail`
 - [ ] `app/views/slack.py` `/v1/slack/events`, `/v1/slack/interactions`; `app/controllers/slack_controller.py`
@@ -177,7 +205,7 @@ Phase 0 tests (pytest + pytest-asyncio):
 
 ---
 
-## Phase 6: Dashboard and polish
+## Dashboard and polish
 
 - [ ] Dashboard: campaigns list with status + current user's pending approvals on top
 - [ ] Campaign detail: per-post status, audit timeline, "what published" summary
@@ -191,7 +219,7 @@ Phase 0 tests (pytest + pytest-asyncio):
 ## Cross-cutting tooling
 
 - [x] Pre-commit (`.pre-commit-config.yaml`): black (format) + ruff (lint, with `--fix`) + basic hygiene hooks. ruff runs lint and import-sorting only; black owns formatting; line-length aligned at 88.
-- [x] ruff + mypy + black config in `pyproject.toml` (Phase 0; ruff allows `Depends`/`Query` defaults, keeps `Generic[T]`)
-- [x] pytest + pytest-asyncio harness (Phase 0); `tests/conftest.py` fixtures `db`, `client` (SQLite, hermetic). `as_role`, `auth_headers` grow in Phase 1+
-- [ ] CI: `ruff check .`, `black --check .`, `mypy app`, `pytest`; frontend typecheck, lint, build (wired alongside Phase 1)
+- [x] ruff + mypy + black config in `pyproject.toml` (ruff allows `Depends`/`Query` defaults, keeps `Generic[T]`)
+- [x] pytest + pytest-asyncio harness; `tests/conftest.py` fixtures `db`, `client` (SQLite, hermetic), `as_role`, `auth_headers`
+- [ ] CI: `ruff check .`, `black --check .`, `mypy app`, `pytest`; frontend typecheck, lint, build
 - [-] DEPLOY.md / TrueFoundry deployment (deferred to a deployment pass)

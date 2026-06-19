@@ -1,4 +1,4 @@
-"""Tests for the LinkedIn connection flow (Phase 2).
+"""Tests for the LinkedIn connection flow.
 
 LinkedIn HTTP calls are mocked via monkeypatch on the service module.
 Redis state is provided by the fakeredis fixture from conftest.

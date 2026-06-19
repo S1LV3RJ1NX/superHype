@@ -1,8 +1,8 @@
 """Provider Protocol for social-platform publishing.
 
-The concrete LinkedIn implementation lands in Phase 4 alongside the
-campaign worker. This Protocol defines the interface so the rest of the
-codebase can type-check against it.
+The concrete LinkedIn implementation lands alongside the campaign lifecycle
+and worker. This Protocol defines the interface so the rest of the codebase
+can type-check against it.
 """
 
 from typing import Protocol, runtime_checkable

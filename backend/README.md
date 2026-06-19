@@ -29,9 +29,9 @@ each secret):
 | `ENV` | `local` for development (enables `/docs`), `production` to lock it down. Defaults to production if unset. |
 | `DATABASE_URL` | async Postgres URL, e.g. `postgresql+asyncpg://user:pass@host:5432/super-hype` |
 | `REDIS_URL` | Redis URL including the db index, e.g. `redis://:pass@host:6379/3` |
-| `JWT_SECRET` | random 50+ char string (Phase 1) |
-| `TOKEN_ENCRYPTION_KEY` | Fernet key for encrypting LinkedIn tokens (Phase 2) |
-| `COMPANY_EMAIL_DOMAIN` | the domain allowed to sign in (Phase 1) |
+| `JWT_SECRET` | random 50+ char string |
+| `TOKEN_ENCRYPTION_KEY` | Fernet key for encrypting LinkedIn tokens |
+| `COMPANY_EMAIL_DOMAIN` | the domain allowed to sign in |
 | `BOOTSTRAP_ADMIN_EMAILS` | comma-separated admin emails seeded as admins |
 
 Generate a Fernet key:
@@ -57,7 +57,7 @@ uv run alembic revision --autogenerate -m "describe the change"
 
 ```bash
 uv run uvicorn app.main:app --reload    # API at http://localhost:8000
-uv run arq app.workers.arq_app.WorkerSettings   # worker (Phase 4+)
+uv run arq app.workers.arq_app.WorkerSettings   # worker (not yet wired)
 ```
 
 On startup the app pings Postgres and Redis. If either is unreachable it logs a
@@ -91,9 +91,9 @@ app/
   repositories/    all DB access; one singleton per aggregate
   controllers/     per-resource request handling + authorization
   views/           FastAPI routers (thin)
-  providers/       LinkedIn provider (Phase 2)
-  integrations/    LLM gateway, Slack (Phase 3/5)
-  workers/         ARQ app + jobs (Phase 4)
+  providers/       LinkedIn provider
+  integrations/    LLM gateway, Slack
+  workers/         ARQ app + jobs
 migrations/        Alembic (async)
 tests/             pytest + pytest-asyncio
 ```

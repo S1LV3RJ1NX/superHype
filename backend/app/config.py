@@ -1,8 +1,8 @@
 """Application settings, loaded from the environment via pydantic-settings.
 
-Every value comes from the environment (or backend/.env in local dev). For Phase 0
-the auth, LinkedIn, generation, and Slack settings are optional so the app boots
-without them; later phases tighten the ones they need.
+Every value comes from the environment (or backend/.env in local dev). Core infra,
+auth, LinkedIn, and LLM gateway settings are required; Slack and observability are
+optional.
 """
 
 from functools import lru_cache
@@ -53,9 +53,9 @@ class Settings(BaseSettings):
     LINKEDIN_API_VERSION: str = "202606"
 
     # LLM gateway (OpenAI-compatible).
-    LLM_GATEWAY_URL: str | None = None
-    LLM_API_KEY: str | None = None
-    LLM_MODEL_NAME: str | None = None
+    LLM_GATEWAY_URL: str
+    LLM_API_KEY: str
+    LLM_MODEL_NAME: str
 
     # Slack.
     SLACK_BOT_TOKEN: str | None = None

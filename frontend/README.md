@@ -37,10 +37,12 @@ npm run lint      # typecheck only
 | Path | Page |
 | --- | --- |
 | `/` | Marketing landing page with the Continue with Google call to action |
-| `/app` | Authenticated app shell (placeholder until Phase 1 wires auth) |
+| `/app` | Authenticated app shell |
+| `/app/users` | Admin user management |
+| `/app/connections` | LinkedIn connection management |
+| `/app/skills` | Writing skill management |
 
 The Continue with Google button redirects to `${VITE_API_BASE_URL}/v1/google/login`.
-That backend route arrives in Phase 1, so the button is visual until then.
 
 ## Layout
 

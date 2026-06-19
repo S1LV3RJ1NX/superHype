@@ -66,6 +66,8 @@ async def seed_default_skill(db: AsyncSession) -> None:
             description=description or None,
             instructions=instructions,
             is_default=True,
+            is_seed=True,
+            status="published",
         )
     )
     log.info("seed.skill.created", name=DEFAULT_SKILL_NAME)

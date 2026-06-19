@@ -1,7 +1,6 @@
-"""Campaign controller: request handling and (from Phase 1) authorization.
+"""Campaign controller: request handling and authorization.
 
-Controllers call repositories and services and return schema objects. For Phase 0
-this only lists campaigns; ownership and role rules arrive with auth in later phases.
+Controllers call repositories and services and return schema objects.
 """
 
 from sqlalchemy.ext.asyncio import AsyncSession

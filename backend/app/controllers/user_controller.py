@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.user import User
 from app.repositories import audit_repo
+from app.repositories.social_account_repo import social_account_repo
 from app.repositories.user_repo import user_repo
 from app.schemas.common import Page, PageParams
 from app.schemas.user import UserOut
@@ -14,14 +15,21 @@ from app.schemas.user import UserOut
 
 async def list_users(db: AsyncSession, params: PageParams) -> Page[UserOut]:
     page = await user_repo.paginate(db, params=params)
-    return Page[UserOut](
-        items=[UserOut.model_validate(u) for u in page.items],
-        next_cursor=page.next_cursor,
-    )
+    user_ids = [u.id for u in page.items]
+    status_map = await social_account_repo.map_status_for_users(db, user_ids)
+    items = []
+    for u in page.items:
+        out = UserOut.model_validate(u)
+        out.linkedin_status = status_map.get(u.id)
+        items.append(out)
+    return Page[UserOut](items=items, next_cursor=page.next_cursor)
 
 
 async def get_me(db: AsyncSession, user: User) -> UserOut:
-    return UserOut.model_validate(user)
+    out = UserOut.model_validate(user)
+    status_map = await social_account_repo.map_status_for_users(db, [user.id])
+    out.linkedin_status = status_map.get(user.id)
+    return out
 
 
 async def change_role(
@@ -37,7 +45,10 @@ async def change_role(
 
     old_role = target.role
     if old_role == new_role:
-        return UserOut.model_validate(target)
+        out = UserOut.model_validate(target)
+        status_map = await social_account_repo.map_status_for_users(db, [target.id])
+        out.linkedin_status = status_map.get(target.id)
+        return out
 
     if old_role == "admin" and new_role != "admin":
         admin_count = await user_repo.count_admins(db)
@@ -60,4 +71,7 @@ async def change_role(
     )
     await db.commit()
     await db.refresh(target)
-    return UserOut.model_validate(target)
+    out = UserOut.model_validate(target)
+    status_map = await social_account_repo.map_status_for_users(db, [target.id])
+    out.linkedin_status = status_map.get(target.id)
+    return out

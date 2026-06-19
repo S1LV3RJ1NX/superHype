@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Shield, ShieldAlert, User } from "lucide-react";
+import { Link2, Shield, ShieldAlert, User } from "lucide-react";
 
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/auth/AuthContext";
@@ -14,6 +14,7 @@ interface UserRecord {
   role: string;
   is_active: boolean;
   created_at: string;
+  linkedin_status: string | null;
 }
 
 interface UsersPage {
@@ -93,6 +94,7 @@ export function Users() {
             <thead>
               <tr className="border-b border-border bg-sand/50 text-left text-xs font-medium uppercase tracking-wider text-muted-ink">
                 <th className="px-4 py-3">User</th>
+                <th className="px-4 py-3">LinkedIn</th>
                 <th className="px-4 py-3">Role</th>
               </tr>
             </thead>
@@ -126,6 +128,24 @@ export function Users() {
                           )}
                         </div>
                       </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      {u.linkedin_status === "active" ? (
+                        <span className="inline-flex items-center gap-1.5 text-sm text-ok">
+                          <span className="h-2 w-2 rounded-full bg-ok" />
+                          Connected
+                        </span>
+                      ) : u.linkedin_status === "stale" ? (
+                        <span className="inline-flex items-center gap-1.5 text-sm text-pending">
+                          <span className="h-2 w-2 rounded-full bg-pending" />
+                          Stale
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 text-sm text-muted-ink">
+                          <Link2 className="h-3.5 w-3.5" />
+                          Not connected
+                        </span>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">

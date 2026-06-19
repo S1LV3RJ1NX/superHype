@@ -8,6 +8,8 @@ from pydantic import BaseModel
 
 
 class UserOut(BaseModel):
+    model_config = {"from_attributes": True}
+
     id: uuid.UUID
     email: str
     name: str | None
@@ -15,8 +17,7 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     created_at: datetime
-
-    model_config = {"from_attributes": True}
+    linkedin_status: str | None = None
 
 
 class RoleUpdate(BaseModel):

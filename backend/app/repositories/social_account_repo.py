@@ -67,6 +67,22 @@ class SocialAccountRepository(BaseRepository[SocialAccount]):
         await db.flush()
         return account
 
+    async def map_status_for_users(
+        self,
+        db: AsyncSession,
+        user_ids: list[uuid.UUID],
+        platform: str = "linkedin",
+    ) -> dict[uuid.UUID, str]:
+        """Return {user_id: status} for all users that have a connection."""
+        if not user_ids:
+            return {}
+        stmt = select(SocialAccount.user_id, SocialAccount.status).where(
+            SocialAccount.user_id.in_(user_ids),
+            SocialAccount.platform == platform,
+        )
+        result = await db.execute(stmt)
+        return {row.user_id: row.status for row in result}
+
     async def mark_stale(self, db: AsyncSession, account_id: uuid.UUID) -> None:
         account = await self.get(db, account_id)
         if account is not None:

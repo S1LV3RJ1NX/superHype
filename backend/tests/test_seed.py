@@ -29,7 +29,8 @@ async def test_seed_default_skill_is_idempotent(db, monkeypatch, tmp_path):
     skill = rows[0]
     assert skill.name == "Super-Hype Post Writer"
     assert skill.is_default is True
+    assert skill.is_seed is True
+    assert skill.status == "published"
     assert skill.description == "A concise description."
     assert "The body of the prompt." in skill.instructions
-    # Frontmatter is stripped from the instructions body.
     assert "super-hype-posts" not in skill.instructions

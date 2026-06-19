@@ -8,6 +8,7 @@ import { Dashboard } from "@/pages/Dashboard";
 import { Landing } from "@/pages/Landing";
 import { LinkedInCallback } from "@/pages/LinkedInCallback";
 import { Placeholder } from "@/pages/Placeholder";
+import { Skills } from "@/pages/Skills";
 import { Users } from "@/pages/Users";
 
 export default function App() {
@@ -36,7 +37,7 @@ export default function App() {
           path="/app/skills"
           element={
             <ProtectedRoute>
-              <Placeholder title="Skills" phase={3} />
+              <Skills />
             </ProtectedRoute>
           }
         />

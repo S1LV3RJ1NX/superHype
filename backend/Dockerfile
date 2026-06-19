@@ -1,5 +1,5 @@
 # Multi-stage uv build. The worker shares this image and overrides the command to
-# run the ARQ worker (added in Phase 4).
+# run the ARQ worker.
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS builder
 
 ENV UV_COMPILE_BYTECODE=1 \
