@@ -1,0 +1,29 @@
+# Pre-commit: ruff lints (and import-sorts) with autofix, black formats.
+# ruff format is intentionally not used so black owns formatting; line-length is
+# aligned at 88 in backend/pyproject.toml.
+#
+# Install once: uv run --project backend pre-commit install
+# Run on all files: uv run --project backend pre-commit run --all-files
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.18
+    hooks:
+      - id: ruff
+        name: ruff (lint + import sort)
+        args: [--fix]
+        files: ^backend/
+
+  - repo: https://github.com/psf/black-pre-commit-mirror
+    rev: 26.5.1
+    hooks:
+      - id: black
+        files: ^backend/

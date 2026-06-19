@@ -1,0 +1,69 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Section 14 design system. Tokens are stored as HSL triplets so they plug into
+  both Tailwind (hsl(var(--token))) and shadcn/ui's variable contract. The warm,
+  calm Claude-in-beige palette: paper, sand, ink, border, with clay as the single
+  accent and crisp ok/pending/fail status colors.
+*/
+:root {
+  /* shadcn/ui contract */
+  --background: 48 34% 97%; /* paper #FAF9F5 */
+  --foreground: 43 11% 12%; /* ink #23211C */
+  --card: 0 0% 100%; /* surface #FFFFFF */
+  --card-foreground: 43 11% 12%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 43 11% 12%;
+  --primary: 16 63% 60%; /* clay #D97757 */
+  --primary-foreground: 0 0% 100%;
+  --secondary: 43 30% 91%; /* sand #EFEBE0 */
+  --secondary-foreground: 43 11% 12%;
+  --muted: 43 30% 91%;
+  --muted-foreground: 43 7% 41%; /* muted #6F6B61 */
+  --accent: 43 30% 91%;
+  --accent-foreground: 43 11% 12%;
+  --destructive: 6 63% 46%; /* fail #C0392B */
+  --destructive-foreground: 0 0% 100%;
+  --border: 42 24% 86%; /* border #E4DFD3 */
+  --input: 42 24% 86%;
+  --ring: 16 63% 60%; /* clay focus ring */
+  --radius: 0.7rem;
+
+  /* design-system aliases */
+  --paper: 48 34% 97%;
+  --surface: 0 0% 100%;
+  --sand: 43 30% 91%;
+  --ink: 43 11% 12%;
+  --muted-ink: 43 7% 41%;
+  --clay: 16 63% 60%;
+  --clay-press: 16 53% 50%; /* clay-press #C15F3C */
+  --ok: 123 46% 34%; /* #2E7D32 */
+  --pending: 36 100% 35%; /* #B26A00 */
+  --fail: 6 63% 46%; /* #C0392B */
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-paper text-ink font-sans antialiased;
+    font-feature-settings: "tnum" 0;
+  }
+  /* Tabular figures for data and counts. */
+  .tabular {
+    font-feature-settings: "tnum" 1;
+  }
+}
+
+/* Respect reduced motion. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
