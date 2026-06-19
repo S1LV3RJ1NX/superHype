@@ -19,16 +19,18 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.pool import StaticPool
 
 from app.core.security import create_access_token
+from app.models.asset import Asset
 from app.models.audit_log import AuditLog
 from app.models.campaign import Campaign
+from app.models.post import Post
 from app.models.social_account import SocialAccount
 from app.models.user import User
-from app.models.writing_skill import WritingSkill
 
 _SQLITE_TABLES = [
     User.__table__,
-    WritingSkill.__table__,
+    Asset.__table__,
     Campaign.__table__,
+    Post.__table__,
     AuditLog.__table__,
     SocialAccount.__table__,
 ]
@@ -123,6 +125,21 @@ def as_role(client: AsyncClient, engine: AsyncEngine):
             app.dependency_overrides.pop(get_current_user, None)
 
     return _override
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def enqueued(monkeypatch):
+    """Stub the ARQ enqueue so requests never reach Redis; records job calls."""
+    import app.workers.queue as queue_mod
+
+    calls: list[tuple] = []
+
+    async def _enqueue(name: str, *args, **kwargs):
+        calls.append((name, args, kwargs))
+        return None
+
+    monkeypatch.setattr(queue_mod, "enqueue_job", _enqueue)
+    return calls
 
 
 @pytest_asyncio.fixture

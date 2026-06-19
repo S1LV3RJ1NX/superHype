@@ -1,7 +1,11 @@
-"""Generation service: call the LLM gateway and parse the output defensively.
+"""Generation service: call the LLM gateway and parse output defensively.
 
-Returns a validated GenerationResult. Persisting to posts rows lands with the
-campaign lifecycle.
+Two focused jobs:
+- generate_variations: N distinct post bodies from a seed (distribute).
+- generate_interactions: varied comment / reshare text per participant (both flows).
+
+Both are governed by lightweight per-campaign hints (tone, length, language) and
+parse the model's JSON defensively, raising GenerationError on any failure.
 """
 
 import json
@@ -10,8 +14,7 @@ from typing import Any
 
 from app.config import settings
 from app.integrations.llm import get_llm_client
-from app.models.writing_skill import WritingSkill
-from app.schemas.generation import GenerationBrief, GenerationResult
+from app.schemas.generation import InteractionTexts, VariationSet
 
 
 class GenerationError(Exception):
@@ -20,45 +23,6 @@ class GenerationError(Exception):
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?", re.MULTILINE)
 _FENCE_CLOSE_RE = re.compile(r"\n?```\s*$", re.MULTILINE)
-
-
-_OUTPUT_CONTRACT = """\
-You MUST respond with a single JSON object matching this exact schema:
-{
-  "campaign": "string",
-  "assumptions": "string",
-  "hero_post": {
-    "account": "string",
-    "platform": "string",
-    "text": "string",
-    "link_placement": "first_comment | body",
-    "first_comment": "string",
-    "hashtags": ["string"]
-  },
-  "variants": [
-    {
-      "person": "string",
-      "role": "string",
-      "platform": "string",
-      "action": "post",
-      "angle": "string",
-      "text_en": "string",
-      "text_native": "string",
-      "native_language": "string"
-    }
-  ],
-  "comments": [
-    {
-      "person": "string",
-      "on": "hero_post | variant_person_name",
-      "text_en": "string",
-      "text_native": "string",
-      "native_language": "string"
-    }
-  ]
-}
-Do not include any text outside the JSON object. Do not wrap it in markdown fences.
-"""
 
 
 def _safe_exc(exc: Exception) -> str:
@@ -75,50 +39,20 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 
-_META_PROMPT = """\
-You are an expert prompt engineer for an employee-advocacy platform called Super-Hype.
-
-The user will describe the kind of LinkedIn posts they want a writing skill to produce.
-Your job is to generate a complete, production-ready system prompt (the "instructions"
-field of a WritingSkill) that will guide an LLM to generate social media content.
-
-Write ONLY the system prompt text covering tone, voice, structure, and length constraints.
-Do NOT include the JSON output schema -- the system appends it automatically.
-Do not wrap it in markdown fences or quotes.
-"""
+def _hint_block(*, tone: str | None, length: str | None, language: str | None) -> str:
+    parts = []
+    if tone:
+        parts.append(f"Tone: {tone}.")
+    if length:
+        parts.append(f"Length: {length}.")
+    if language:
+        parts.append(f"Write in: {language}.")
+    return " ".join(parts)
 
 
-async def draft_instructions(description: str) -> str:
-    """Use the LLM to draft skill instructions from a plain-language description."""
+async def _complete_json(messages: list[dict[str, Any]]) -> Any:
+    """Call the gateway expecting a JSON object, strip fences, and parse."""
     client = get_llm_client()
-
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": _META_PROMPT},
-        {"role": "user", "content": description},
-    ]
-
-    try:
-        response = await client.chat.completions.create(
-            model=settings.LLM_MODEL_NAME,
-            messages=messages,  # type: ignore[arg-type]
-        )
-    except Exception as exc:
-        raise GenerationError(
-            f"LLM gateway call failed: {type(exc).__name__}: {_safe_exc(exc)}"
-        ) from exc
-
-    return response.choices[0].message.content or ""
-
-
-async def generate(skill: WritingSkill, brief: GenerationBrief) -> GenerationResult:
-    """Build messages, call the gateway, parse and validate the response."""
-    client = get_llm_client()
-
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": skill.instructions + "\n\n" + _OUTPUT_CONTRACT},
-        {"role": "user", "content": brief.model_dump_json()},
-    ]
-
     try:
         response = await client.chat.completions.create(  # type: ignore[call-overload]
             model=settings.LLM_MODEL_NAME,
@@ -132,17 +66,108 @@ async def generate(skill: WritingSkill, brief: GenerationBrief) -> GenerationRes
 
     raw = response.choices[0].message.content or ""
     cleaned = _strip_fences(raw)
-
     try:
-        data = json.loads(cleaned)
+        return json.loads(cleaned)
     except json.JSONDecodeError as exc:
         raise GenerationError(
             f"LLM returned non-JSON output: {exc}. Raw (first 200 chars): {raw[:200]}"
         ) from exc
 
+
+async def generate_variations(
+    seed_content: str,
+    n: int,
+    *,
+    tone: str | None = None,
+    length: str | None = None,
+    language: str | None = None,
+    extra: str | None = None,
+) -> list[str]:
+    """Produce N distinct, natural variations of the seed post."""
+    hints = _hint_block(tone=tone, length=length, language=language)
+    system = (
+        "You write LinkedIn posts for an employee-advocacy campaign. Given a seed "
+        f"post, produce exactly {n} distinct variations that say the same thing in "
+        "genuinely different voices and structures, so they do not look coordinated. "
+        f"{hints} {extra or ''}\n\n"
+        'Respond with a single JSON object: {"variations": ["...", ...]} containing '
+        f"exactly {n} strings and nothing else."
+    ).strip()
+
+    data = await _complete_json(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": seed_content},
+        ]
+    )
     try:
-        return GenerationResult.model_validate(data)
+        result = VariationSet.model_validate(data)
     except Exception as exc:
         raise GenerationError(
-            f"LLM output does not match the generation contract: {exc}"
+            f"LLM output does not match the variations contract: {exc}"
         ) from exc
+
+    items = [v.strip() for v in result.variations if v.strip()]
+    if not items:
+        raise GenerationError("LLM returned no usable variations.")
+    # Defensively normalize to exactly n: truncate extras, pad by cycling.
+    if len(items) >= n:
+        return items[:n]
+    return [items[i % len(items)] for i in range(n)]
+
+
+async def generate_interactions(
+    target_text: str,
+    items: list[dict[str, str]],
+    *,
+    tone: str | None = None,
+    length: str | None = None,
+    language: str | None = None,
+    extra: str | None = None,
+) -> list[str]:
+    """Produce one interaction text per item (empty string for `like`).
+
+    `items` is a list of {"action": ..., "angle": ...}. The output is indexed to
+    the input order.
+    """
+    if not items:
+        return []
+
+    text_indices = [i for i, it in enumerate(items) if it.get("action") != "like"]
+    if not text_indices:
+        return ["" for _ in items]
+
+    hints = _hint_block(tone=tone, length=length, language=language)
+    enumerated = "\n".join(
+        f"{pos}. action={items[i].get('action', 'comment')} "
+        f"angle={items[i].get('angle', '') or 'natural reaction'}"
+        for pos, i in enumerate(text_indices)
+    )
+    system = (
+        "You write short, natural LinkedIn interactions (comments and reshare "
+        "commentary) reacting to a post. Each must be distinct and human, never "
+        f"templated or repetitive. {hints} {extra or ''}\n\n"
+        f"Produce exactly {len(text_indices)} texts for the numbered items below, "
+        'and respond with a single JSON object: {"texts": ["...", ...]} indexed to '
+        "those item numbers.\n\n"
+        f"Items:\n{enumerated}"
+    ).strip()
+
+    data = await _complete_json(
+        [
+            {"role": "system", "content": system},
+            {"role": "user", "content": target_text},
+        ]
+    )
+    try:
+        result = InteractionTexts.model_validate(data)
+    except Exception as exc:
+        raise GenerationError(
+            f"LLM output does not match the interactions contract: {exc}"
+        ) from exc
+
+    texts = result.texts
+    out = ["" for _ in items]
+    for pos, i in enumerate(text_indices):
+        out[i] = texts[pos].strip() if pos < len(texts) else ""
+    return out

@@ -7,8 +7,8 @@ import { Connections } from "@/pages/Connections";
 import { Dashboard } from "@/pages/Dashboard";
 import { Landing } from "@/pages/Landing";
 import { LinkedInCallback } from "@/pages/LinkedInCallback";
-import { Placeholder } from "@/pages/Placeholder";
-import { Skills } from "@/pages/Skills";
+import { CampaignDetail } from "@/pages/CampaignDetail";
+import { Campaigns } from "@/pages/Campaigns";
 import { Users } from "@/pages/Users";
 
 export default function App() {
@@ -26,18 +26,18 @@ export default function App() {
           }
         />
         <Route
-          path="/app/compose"
+          path="/app/campaigns"
           element={
             <ProtectedRoute>
-              <Placeholder title="Compose" phase={4} />
+              <Campaigns />
             </ProtectedRoute>
           }
         />
         <Route
-          path="/app/skills"
+          path="/app/campaigns/:id"
           element={
             <ProtectedRoute>
-              <Skills />
+              <CampaignDetail />
             </ProtectedRoute>
           }
         />

@@ -1,11 +1,18 @@
 """Shared async Redis client.
 
-Used for LinkedIn OAuth CSRF state and (later) for the ARQ job queue.
+Used for LinkedIn OAuth CSRF state and for the ARQ job queue.
 """
 
 import redis.asyncio as aioredis
+from arq.connections import RedisSettings
 
 from app.config import settings
+
+
+def get_arq_redis_settings() -> RedisSettings:
+    """Parse REDIS_URL into ARQ RedisSettings for the worker and the enqueue pool."""
+    return RedisSettings.from_dsn(settings.REDIS_URL)
+
 
 _pool: aioredis.Redis | None = None
 

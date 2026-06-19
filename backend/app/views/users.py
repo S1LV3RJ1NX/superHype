@@ -23,6 +23,16 @@ async def get_me(
     return await user_controller.get_me(db, user)
 
 
+@router.get("/roster", response_model=Page[UserOut])
+async def list_roster(
+    params: PageParams = Depends(),
+    db: AsyncSession = Depends(get_db),
+    _user: User = Depends(get_current_user),
+) -> Page[UserOut]:
+    """Team roster for assigning campaign participants (any authed user)."""
+    return await user_controller.list_users(db, params)
+
+
 @router.get("", response_model=Page[UserOut])
 async def list_users(
     params: PageParams = Depends(),

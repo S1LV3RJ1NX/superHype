@@ -11,7 +11,7 @@ from app.models.audit_log import AuditLog
 async def record(
     db: AsyncSession,
     *,
-    actor_id: uuid.UUID,
+    actor_id: uuid.UUID | None = None,
     action: str,
     detail: dict[str, Any] | None = None,
     campaign_id: uuid.UUID | None = None,

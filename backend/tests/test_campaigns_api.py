@@ -1,0 +1,208 @@
+"""API tests for campaign CRUD, role gating by type, plan/generate/launch."""
+
+import pytest
+
+pytestmark = pytest.mark.asyncio
+
+
+async def test_viewer_can_create_amplify(client, as_role):
+    async with as_role("viewer"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json={
+                "title": "Amplify launch",
+                "type": "amplify",
+                "seed_url": (
+                    "https://www.linkedin.com/feed/update/"
+                    "urn:li:activity:7123456789012345678/"
+                ),
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["type"] == "amplify"
+    assert body["seed_urn"] == "urn:li:activity:7123456789012345678"
+    assert body["status"] == "draft"
+
+
+async def test_viewer_cannot_create_distribute(client, as_role):
+    async with as_role("viewer"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json={"title": "Dist", "type": "distribute", "seed_content": "seed"},
+        )
+    assert resp.status_code == 403
+
+
+async def test_editor_can_create_distribute(client, as_role):
+    async with as_role("editor"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json={"title": "Dist", "type": "distribute", "seed_content": "seed"},
+        )
+    assert resp.status_code == 201
+    assert resp.json()["type"] == "distribute"
+
+
+async def test_get_campaign_includes_counts(client, as_role):
+    async with as_role("viewer") as user:
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+        # Plan two interactions on the seed.
+        await client.post(
+            f"/v1/campaigns/{cid}/plan",
+            json={
+                "assignments": [
+                    {"user_id": str(user.id), "action": "like"},
+                    {"user_id": str(user.id), "action": "comment", "body": "nice"},
+                ]
+            },
+        )
+        detail = await client.get(f"/v1/campaigns/{cid}")
+    assert detail.status_code == 200
+    body = detail.json()
+    assert body["post_count"] == 2
+    assert body["counts"].get("pending") == 2
+
+
+async def test_generate_enqueues_and_sets_generating(client, as_role, enqueued):
+    async with as_role("viewer") as user:
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+        resp = await client.post(
+            f"/v1/campaigns/{cid}/generate",
+            json={
+                "assignments": [
+                    {"user_id": str(user.id), "action": "comment", "angle": "support"}
+                ]
+            },
+        )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "generating"
+    assert any(name == "generate_drafts" for name, _, _ in enqueued)
+
+
+async def test_launch_requires_review_and_enqueues(client, as_role, enqueued):
+    async with as_role("viewer") as user:
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+        # Cannot launch from draft.
+        early = await client.post(f"/v1/campaigns/{cid}/launch")
+        assert early.status_code == 409
+
+        await client.post(
+            f"/v1/campaigns/{cid}/plan",
+            json={"assignments": [{"user_id": str(user.id), "action": "like"}]},
+        )
+        launched = await client.post(f"/v1/campaigns/{cid}/launch")
+    assert launched.status_code == 200
+    assert launched.json()["launched_by"] == str(user.id)
+    assert any(name == "launch_campaign" for name, _, _ in enqueued)
+
+
+async def test_patch_campaign_non_creator_forbidden(client, as_role):
+    async with as_role("editor"):
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+    async with as_role("editor", email="other@test.local"):
+        resp = await client.patch(f"/v1/campaigns/{cid}", json={"title": "Hijack"})
+    assert resp.status_code == 403
+
+
+async def test_patch_campaign_creator_updates_and_reparses_seed(client, as_role):
+    async with as_role("viewer"):
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+        resp = await client.patch(
+            f"/v1/campaigns/{cid}",
+            json={
+                "title": "Renamed",
+                "seed_url": (
+                    "https://www.linkedin.com/feed/update/"
+                    "urn:li:activity:7000000000000000001/"
+                ),
+            },
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["title"] == "Renamed"
+    assert body["seed_urn"] == "urn:li:activity:7000000000000000001"
+
+
+async def test_patch_campaign_blocked_after_launch(client, as_role, db):
+    from app.models.campaign import Campaign
+
+    async with as_role("viewer"):
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+
+        import uuid as _uuid
+
+        campaign = await db.get(Campaign, _uuid.UUID(cid))
+        campaign.status = "publishing"
+        await db.commit()
+
+        resp = await client.patch(f"/v1/campaigns/{cid}", json={"title": "Late"})
+    assert resp.status_code == 409
+
+
+async def test_plan_requires_creator_or_admin(client, as_role):
+    async with as_role("editor") as owner:
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+    async with as_role("viewer", email="intruder@test.local"):
+        resp = await client.post(
+            f"/v1/campaigns/{cid}/plan",
+            json={"assignments": [{"user_id": str(owner.id), "action": "like"}]},
+        )
+    assert resp.status_code == 403
+
+
+async def test_viewer_cannot_plan_distribute(client, as_role):
+    """A distribute campaign created by an editor stays editor-gated on plan."""
+    async with as_role("editor"):
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "D", "type": "distribute", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+    async with as_role("viewer", email="v@test.local") as viewer:
+        resp = await client.post(
+            f"/v1/campaigns/{cid}/plan",
+            json={"assignments": [{"user_id": str(viewer.id), "action": "post"}]},
+        )
+    # Either type-gate or creator-gate denies; both are 403.
+    assert resp.status_code == 403
+
+
+async def test_list_only_shows_own_campaigns(client, as_role):
+    async with as_role("editor"):
+        await client.post(
+            "/v1/campaigns",
+            json={"title": "mine", "type": "amplify", "seed_content": "x"},
+        )
+    async with as_role("viewer", email="other@test.local"):
+        page = await client.get("/v1/campaigns")
+    assert page.status_code == 200
+    assert page.json()["items"] == []

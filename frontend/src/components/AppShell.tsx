@@ -2,8 +2,7 @@ import {
   LayoutDashboard,
   Link2,
   LogOut,
-  PenLine,
-  Settings,
+  Megaphone,
   Users,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -15,8 +14,7 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { label: "Dashboard", icon: LayoutDashboard, href: "/app" },
-  { label: "Compose", icon: PenLine, href: "/app/compose" },
-  { label: "Skills", icon: Settings, href: "/app/skills" },
+  { label: "Campaigns", icon: Megaphone, href: "/app/campaigns" },
   { label: "Connections", icon: Link2, href: "/app/connections" },
   { label: "Users", icon: Users, href: "/app/users", adminOnly: true },
 ];

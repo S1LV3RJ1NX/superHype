@@ -15,6 +15,13 @@ async def test_non_admin_403_on_list(client: AsyncClient, as_role):
     assert resp.status_code == 403
 
 
+async def test_any_authed_can_read_roster(client: AsyncClient, as_role):
+    async with as_role("viewer"):
+        resp = await client.get("/v1/users/roster")
+    assert resp.status_code == 200
+    assert "items" in resp.json()
+
+
 async def test_non_admin_403_on_patch(client: AsyncClient, as_role):
     async with as_role("viewer"):
         resp = await client.patch(f"/v1/users/{uuid.uuid4()}", json={"role": "admin"})

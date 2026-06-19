@@ -9,9 +9,10 @@
 </p>
 
 <p align="center">
-  Human-in-the-loop employee advocacy for LinkedIn. One announcement becomes a
-  hero post plus a distinct, on-voice variant for every teammate, each approved
-  by a real person and published on a stagger through LinkedIn's official API.
+  Human-in-the-loop employee advocacy for LinkedIn. Amplify an existing post
+  with genuine interactions, or distribute distinct, on-voice variations across
+  your team, each approved by a real person and published on a stagger through
+  LinkedIn's official API.
 </p>
 
 <p align="center">
@@ -39,24 +40,30 @@ release and the algorithm treats it like one. super-hype does the opposite: it
 turns a single internal announcement into genuine, varied advocacy from the
 people who actually built the thing, without the spam.
 
-- **Genuine variety.** Every teammate gets a different angle drawn from their
-  role, not one post reworded six ways.
+- **Two real workflows.** Amplify points a roster of people at one existing post
+  (like, comment, reshare). Distribute turns a seed into M variations your
+  teammates publish, then runs interactions across all of them.
+- **Genuine variety.** When the model helps, it drafts distinct variations and
+  varied interaction text from lightweight tone and length hints, not one post
+  reworded six ways. People can also hand-write everything.
 - **Real approval.** Each person approves, edits, or skips their own post in one
-  tap from Slack or the web app. Nothing publishes without them.
+  tap from the web app (Slack coming next). Nothing publishes without them.
 - **Official API only.** No scraping and no credential capture. Every action
-  runs on each member's own LinkedIn consent (`w_member_social`, `r_basicprofile`).
+  runs on each member's own LinkedIn consent (`w_member_social`, plus OpenID
+  Connect for identity).
 - **Concentrated reach.** Approved posts publish on a randomized stagger,
   clustered in the first ninety minutes, never all at once.
 
 ## How it works
 
-1. **Draft.** Drop in a raw announcement and pick a writing style. The model
-   writes a hero post plus a distinct variant and first comment for everyone.
-2. **Approve.** Each person gets a one-tap approve, edit, or skip in Slack or the
-   web app.
-3. **Publish on a stagger.** Approved posts go out through LinkedIn's official
-   `/rest/posts` API on a randomized schedule, with the link placed in the first
-   comment for reach.
+1. **Choose a workflow.** Amplify an existing post by pasting its URL, or
+   distribute a seed (URL and/or pasted text) into variations.
+2. **Plan and generate.** Assign people and actions (post, comment, like,
+   reshare). Optionally let the model draft variations and interaction text, or
+   write them yourself.
+3. **Approve and publish on a stagger.** Each person approves, edits, or skips
+   their own post; approved work goes out through LinkedIn's official
+   `/rest/posts` API on a randomized schedule.
 
 ## Architecture
 
@@ -86,7 +93,7 @@ cd backend
 cp .env.example .env          # fill in DATABASE_URL, REDIS_URL, etc.
 uv sync
 uv run alembic upgrade head   # create the schema
-uv run python -m app.seed     # default skill + bootstrap admins
+uv run python -m app.seed     # bootstrap admin users
 uv run uvicorn app.main:app --reload   # http://localhost:8000
 
 # Frontend (in a second shell)
@@ -107,8 +114,8 @@ See [`CHECKLIST.md`](CHECKLIST.md) for the full breakdown.
 - [x] Scaffold, full data model, migrations, seed, reference API, themed UI shell, landing page
 - [x] Google auth and users
 - [x] LinkedIn connection and provider
-- [x] Skills and generation
-- [ ] Campaign lifecycle and worker
+- [x] Generation (post variations and interaction text)
+- [x] Campaign lifecycle and worker (amplify + distribute, ARQ jobs)
 - [ ] Slack approval
 - [ ] Dashboard and polish
 

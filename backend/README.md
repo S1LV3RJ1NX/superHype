@@ -44,7 +44,7 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 
 ```bash
 uv run alembic upgrade head             # apply migrations
-uv run python -m app.seed               # default writing skill + bootstrap admins
+uv run python -m app.seed               # bootstrap admin users
 ```
 
 To create a new migration after changing models:
@@ -57,7 +57,7 @@ uv run alembic revision --autogenerate -m "describe the change"
 
 ```bash
 uv run uvicorn app.main:app --reload    # API at http://localhost:8000
-uv run arq app.workers.arq_app.WorkerSettings   # worker (not yet wired)
+uv run arq app.workers.arq_app.WorkerSettings   # background worker (generation, publishing)
 ```
 
 On startup the app pings Postgres and Redis. If either is unreachable it logs a
@@ -93,7 +93,8 @@ app/
   views/           FastAPI routers (thin)
   providers/       LinkedIn provider
   integrations/    LLM gateway, Slack
-  workers/         ARQ app + jobs
+  storage/         AssetStore interface + Postgres-backed image storage
+  workers/         ARQ app + jobs (queue, generation, publishing)
 migrations/        Alembic (async)
 tests/             pytest + pytest-asyncio
 ```

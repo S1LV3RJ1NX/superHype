@@ -38,9 +38,10 @@ npm run lint      # typecheck only
 | --- | --- |
 | `/` | Marketing landing page with the Continue with Google call to action |
 | `/app` | Authenticated app shell |
-| `/app/users` | Admin user management |
+| `/app/campaigns` | Campaigns list and create (amplify or distribute) |
+| `/app/campaigns/:id` | Campaign detail: plan, generate, approve, launch |
 | `/app/connections` | LinkedIn connection management |
-| `/app/skills` | Writing skill management |
+| `/app/users` | Admin user management |
 
 The Continue with Google button redirects to `${VITE_API_BASE_URL}/v1/google/login`.
 
@@ -57,6 +58,8 @@ src/
   pages/
     Landing.tsx         public marketing + sign-in
     Dashboard.tsx       placeholder app home
+    Campaigns.tsx       campaigns list + create
+    CampaignDetail.tsx  plan, generate, approve, launch
   lib/utils.ts          cn() helper
   styles/globals.css    design tokens as HSL CSS variables
 tailwind.config.ts      token aliases (paper, sand, ink, clay, ok/pending/fail)

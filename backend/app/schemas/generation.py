@@ -1,58 +1,19 @@
-"""Pydantic schemas for the LLM generation output contract and input brief.
+"""Pydantic schemas for the LLM generation output contracts.
 
-The output contract matches DESIGN.md section 10 and SKILL.md.
+Generation is intentionally small: post variations for distribute, and varied
+interaction text (comments / reshare commentary) for both flows.
 """
 
 from pydantic import BaseModel
 
 
-class HeroPost(BaseModel):
-    account: str = ""
-    platform: str = "linkedin"
-    text: str
-    link_placement: str = "first_comment"
-    first_comment: str = ""
-    hashtags: list[str] = []
+class VariationSet(BaseModel):
+    """N distinct post bodies generated from a seed."""
+
+    variations: list[str]
 
 
-class Variant(BaseModel):
-    person: str
-    role: str = ""
-    platform: str = "linkedin"
-    action: str = "post"
-    angle: str = ""
-    text_en: str
-    text_native: str = ""
-    native_language: str = ""
+class InteractionTexts(BaseModel):
+    """One text per requested interaction item, indexed to the input order."""
 
-
-class CommentItem(BaseModel):
-    person: str
-    on: str = "hero_post"
-    text_en: str
-    text_native: str = ""
-    native_language: str = ""
-
-
-class GenerationResult(BaseModel):
-    campaign: str = ""
-    assumptions: str = ""
-    hero_post: HeroPost
-    variants: list[Variant] = []
-    comments: list[CommentItem] = []
-
-
-class RosterEntry(BaseModel):
-    name: str
-    role: str = ""
-    language: str = "en"
-    platform: str = "linkedin"
-
-
-class GenerationBrief(BaseModel):
-    title: str
-    raw_brief: str
-    link: str | None = None
-    image_alt: str | None = None
-    hero_account: str | None = None
-    roster: list[RosterEntry] = []
+    texts: list[str]

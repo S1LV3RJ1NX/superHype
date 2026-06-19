@@ -31,9 +31,10 @@ Data model (DESIGN.md section 7; all indexes declared on the models):
 
 - [x] `app/models/user.py` (unique `email`, unique `google_sub`; `lang_pref` dropped)
 - [x] `app/models/social_account.py` (unique `(user_id, platform)`, index `status`, index `expires_at`)
-- [x] `app/models/writing_skill.py` (partial unique index on `is_default` where true, index `is_archived`)
-- [x] `app/models/campaign.py` (index `created_by`, `status`, `created_at`)
-- [x] `app/models/post.py` (index `campaign_id`, `user_id`; composites `(campaign_id, status)`, `(user_id, status)`; index `external_id`; unique `idempotency_key`)
+- [-] `app/models/writing_skill.py` (removed in the interaction-first reframe; see "Campaign lifecycle and worker")
+- [x] `app/models/campaign.py` (reshaped: `type` amplify|distribute, `seed_url`/`seed_urn`/`seed_content`, hints `tone`/`length`/`language`/`extra_instructions`, `launched_by`/`launched_at`; dropped `writing_skill_id`/`hero_account_id`/`approved_*`; index `created_by`, `status`, `created_at`)
+- [x] `app/models/post.py` (added `target_post_id` self-FK and per-variation `image_asset_id`/`image_url`/`image_alt`; index `campaign_id`, `user_id`, `target_post_id`; composites `(campaign_id, status)`, `(user_id, status)`; index `external_id`; unique `idempotency_key`)
+- [x] `app/models/asset.py` (uploaded image bytes in a dedicated `assets` table; bytes never selected except to serve/publish)
 - [x] `app/models/audit_log.py` (composite `(campaign_id, created_at)`, index `created_at`)
 - [x] `app/models/slack_identity.py` (index `slack_user_id`)
 
@@ -58,7 +59,7 @@ Migrations and seed:
 
 - [x] Async Alembic: `alembic.ini`, `migrations/env.py` importing `Base.metadata` with asyncpg + naming convention
 - [x] Initial migration creating the full schema with every index (reviewed; applied to remote `super-hype` DB)
-- [x] `app/seed.py` idempotent: default `Super-Hype Post Writer` skill (instructions = `SKILL.md` body) + bootstrap admin users
+- [x] `app/seed.py` idempotent: bootstrap admin users (the default-skill seed was removed with the writing-skill feature)
 
 Infra:
 
@@ -129,29 +130,28 @@ Scaffold tests (pytest + pytest-asyncio):
 - [x] Scopes: `w_member_social openid profile`. The spec named `r_basicprofile`, but LinkedIn deprecated it (apps after 2023-08-01 get `unauthorized_scope_error`). Identity now comes from OpenID Connect, so the member URN is read from `/v2/userinfo` (`sub` -> `urn:li:person:{sub}`). `email` is intentionally omitted.
 - [x] Live verified against the real LinkedIn API: full authorize -> consent -> callback -> token exchange -> identity -> connected, with both products (Share on LinkedIn, Sign In with LinkedIn using OpenID Connect) enabled
 
-### Provider implementation (deferred to campaign lifecycle)
-- [ ] `app/providers/linkedin.py` publish (versioned `/rest/posts`, headers), link-in-first-comment sequence, `comment`, `like`, reshare-with-comment, three-step image upload, `refresh`
-- [ ] 401 -> mark stale -> `request_reconnect` path; 429 retryable-with-delay; bounded backoff on other 5xx
-- [ ] Provider publish-then-first-comment order and headers; idempotent publish; image uploaded under post's own author and `image_asset_urn` reused on retry; `link_placement` routes link to body vs first comment
+### Provider implementation (done)
+- [x] `app/providers/linkedin.py` publish (versioned `/rest/posts`, `LinkedIn-Version` + `X-Restli-Protocol-Version` headers), `comment`, `like`, reshare-with-comment (via `reshareContext`), three-step image upload (`initializeUpload` -> PUT -> `urn:li:image`), `refresh`; injectable transport for tests
+- [x] Typed errors: `LinkedInAuthError` (401, non-retryable), `LinkedInRateLimitError` (429, `retry_after`), `LinkedInAPIError` (other)
+- [x] Wired in the worker: 401 -> mark account stale + enqueue `request_reconnect`; 429 -> deferred retry by `retry_after`; bounded exponential backoff to a cap on other errors; idempotent publish (no-op if `external_id` set); image uploaded under the post's own author and `image_asset_urn` reused on retry; `link_placement == "body"` routes the link into the commentary
+- [-] Link-in-first-comment sequence (first-comment URL placement deferred; current build supports body link and image/text publish)
+- [x] Tests (8 passing, mocked httpx): correct headers, link-in-body, three-step image upload, comment URN, 401 -> AuthError, 429 -> RateLimitError with `retry_after`, reshare uses `reshareContext`
 
 ---
 
-## Skills and generation (done)
+## Skills and generation (skills retired in the interaction-first reframe)
 
-### Skills CRUD (done)
-- [x] `app/repositories/writing_skill_repo.py` `get_default`, `list_active`, `set_default` (single-default invariant with transactional clear+set)
-- [x] `app/schemas/skill.py` `SkillOut`, `SkillCreate`, `SkillUpdate`
-- [x] `app/controllers/skill_controller.py` list (with include_archived), get, create, update, archive (409 if default), set_default; all mutations audit-logged
-- [x] `app/views/skills.py` `/v1/skills` CRUD; reads require `get_current_user`, mutations require `require_role("editor")`; `DELETE` = archive, `POST /{id}/set-default`
-- [x] Router registered in `app/views/__init__.py`
-- [x] `WritingSkill` model partial unique index now emits `sqlite_where` alongside `postgresql_where` so SQLite tests get a proper partial index
+> Reframe: the writing-skill feature was removed. People draft posts in ChatGPT/Claude; the product is an interaction orchestrator. The LLM is now repurposed to (a) generate M variations from a seed and (b) generate varied interaction text (comments / reshare commentary), governed by lightweight per-campaign tone/length/language hints. See "Campaign lifecycle and worker".
 
-### LLM integration and generation service (done)
+### Skills CRUD (removed)
+- [-] `app/repositories/writing_skill_repo.py`, `app/schemas/skill.py`, `app/controllers/skill_controller.py`, `app/views/skills.py`, `app/models/writing_skill.py` deleted; skills router dropped from `app/views/__init__.py`; `Skills.tsx` page/route/nav removed
+
+### LLM integration and generation service (done, rewritten)
 - [x] `openai` package added (`uv add openai`)
 - [x] `app/integrations/llm.py` `get_llm_client()` returning `AsyncOpenAI` pointed at `LLM_GATEWAY_URL`
-- [x] `app/schemas/generation.py` output contract: `HeroPost`, `Variant`, `CommentItem`, `GenerationResult`; input: `RosterEntry`, `GenerationBrief`
-- [x] `app/services/generation_service.py` `generate(skill, brief)`: builds system+user messages, model from `skill.model or LLM_MODEL_NAME`, calls `chat.completions.create` with `response_format=json_object`, strips markdown fences, `json.loads`, validates with `GenerationResult.model_validate`, raises `GenerationError` on any failure
-- [x] `scripts/smoke_generation.py` live gateway test: loads the seeded default skill, builds a sample brief, calls `gateway.truefoundry.ai` with `openai-main/gpt-4o-mini`, prints the parsed `GenerationResult` (verified working)
+- [x] `app/schemas/generation.py` rewritten to two small contracts: `VariationSet` (`{"variations": [...]}`), `InteractionTexts` (`{"texts": [...]}`); old hero/variant/comment/brief schemas deleted
+- [x] `app/services/generation_service.py` rewritten: `generate_variations(seed, n, *, tone, length, language, extra)` and `generate_interactions(target_text, items, *, hints)`; `response_format=json_object`, strip fences, `json.loads`, validate, `_safe_exc` redaction, count normalization, `like` items skip the LLM; raises `GenerationError` on any failure
+- [-] `scripts/smoke_generation.py` removed with the skill-based flow
 
 ### Users LinkedIn-status column (done)
 - [x] `social_account_repo.map_status_for_users(db, user_ids)` batch helper (avoids N+1)
@@ -163,33 +163,56 @@ Scaffold tests (pytest + pytest-asyncio):
 - [x] `App.tsx` `/app/skills` route wired to `Skills` (was `Placeholder`)
 - [x] `Users.tsx` LinkedIn column: green dot "Connected" for active, amber dot "Stale" for stale, muted "Not connected" for null
 
-### Tests (70 passing)
-- [x] `test_writing_skill_repo.py` (5): get_default, get_default_none, list_active excludes archived, list_active default first, set_default clears previous
-- [x] `test_skills.py` (8): viewer list ok, viewer 403 on create, editor create, editor update, set_default flips, archive default 409, archive non-default 204, mutation writes audit
-- [x] `test_generation.py` (6): valid JSON parses, fenced JSON parses, non-JSON raises GenerationError, missing keys raises GenerationError, model falls back to LLM_MODEL_NAME, skill model overrides default
+### Tests
+- [-] `test_writing_skill_repo.py`, `test_skills.py`, `test_skill_test.py`, `test_generate_instructions.py` removed with the skills feature
+- [x] `test_generation.py` rewritten (7): variations count enforced, padded when too few, fenced JSON parses, non-JSON raises GenerationError, interaction texts indexed to items with `like` empty, all-likes skips the LLM, bad contract raises GenerationError
 - [x] `test_users.py` extended (2): list_users returns linkedin_status=active for connected user, None for unconnected
 - [x] `test_config.py` env fixture extended with `LLM_GATEWAY_URL`, `LLM_API_KEY`, `LLM_MODEL_NAME`
 
-### Deferred to campaign lifecycle
-- [ ] Writing `posts` rows from a `GenerationResult` (needs campaigns + roster)
-- [ ] Regenerate logic: discard non-edited drafts, never touch approved/published
-- [ ] Frontend: Compose two-pane UI, skill swapper in compose, TipTap editor, live LinkedIn preview
-
 ---
 
-## Campaign lifecycle and worker
+## Campaign lifecycle and worker (done, interaction-first reframe)
 
-- [ ] `app/services/campaign_service.py` state machine `draft -> generating -> review -> approved -> publishing -> completed` (+ `failed`)
-- [ ] `app/repositories/campaign_repo.py` `get_with_posts`, `paginate_for_user`, `set_status`
-- [ ] `app/repositories/post_repo.py` `paginate_for_campaign`, `list_pending_for_user`, `mark_published`, `mark_failed`
-- [ ] `app/views/campaigns.py` full (create, get, generate, regenerate, patch, approve) + `app/views/posts.py` (patch, approve, skip) with controller ownership rules
-- [ ] `app/workers/arq_app.py` `WorkerSettings`, on_startup pools
-- [ ] `app/workers/jobs.py` `generate_drafts`, `launch_campaign`, `notify_person`, `publish_post` (idempotent, per-author image upload), `send_reminders`, `request_reconnect`, daily expiry-sweep cron
-- [ ] Stagger delay drawn from `[stagger_min_seconds, stagger_max_seconds]`
-- [ ] Idempotency-key guard end to end
-- [ ] Audit row on every mutation
-- [ ] Frontend: Compose two-pane, Campaign detail
-- [ ] Tests: state-machine transitions; idempotent publish does not double-post; stagger scheduling
+> Two campaign types share one `posts` table and one publish job. **Amplify** (1 x N): interactions on an existing external post. **Distribute** (M x N): generate or hand-write M variations, publish them, then run interactions across all of them (interactions link to the local variation via `target_post_id`). RBAC: amplify create/launch/generate = any role; distribute create/generate = editor+. Launch is per-participant gated (each person approves their own post), so there is no `approved` state and no admin campaign sign-off.
+
+### Model and storage (done)
+- [x] `app/models/asset.py` + `app/storage/base.py` (`AssetStore` Protocol) + `app/storage/db_store.py` (Postgres `bytea` backend, swappable to object storage later)
+- [x] `app/core/linkedin_urn.py` `parse_activity_urn(url)` for pasted LinkedIn URLs
+- [x] Migration `7f3a9c2b1d04`: drop `writing_skills`, drop campaign hero/skill/approval columns, add campaign type/seed/hints + `launched_*`, add `posts.target_post_id`/`image_asset_id`/`image_url`/`image_alt`, create `assets`
+
+### Service (done)
+- [x] `app/services/campaign_service.py` state machine `draft -> generating | review`, `generating -> review | failed`, `review -> generating | publishing`, `publishing -> completed | failed` (no `approved` state); `transition` (validate + audit), `build_plan` (manual or LLM fill; variation `post` rows + interaction rows; unique idempotency keys `{cid}:{action}:{user}:{seq}`; rebuild preserves approved/published work), `check_completion`
+- [x] `app/repositories/campaign_repo.py` `set_status`, `count_by_status`, `paginate_for_user` (creator/participant/admin visibility)
+- [x] `app/repositories/post_repo.py` `paginate_for_campaign`, `list_for_campaign`, `list_pending_for_user`, `mark_published`, `mark_failed`, `bulk_create`, `delete_unlocked_for_campaign`, `all_terminal`
+
+### API (done)
+- [x] `app/views/campaigns.py` list, `POST` create (controller gates distribute to editor+), `GET /{id}` (creator/admin/participant), `PATCH /{id}` (creator/admin, draft/review only), `POST /{id}/plan` (manual assignments), `POST /{id}/generate` (LLM; amplify any role, distribute editor+; enqueues `generate_drafts`), `POST /{id}/launch` (creator/admin; enqueues `launch_campaign`)
+- [x] `app/views/posts.py` `GET /v1/campaigns/{id}/posts`, `PATCH /v1/posts/{id}`, `POST /v1/posts/{id}/approve` (enqueues `publish_post`), `POST /v1/posts/{id}/skip`; owner-or-admin enforced in `post_controller`
+- [x] `app/views/assets.py` `POST /v1/assets` (multipart, editor+, image + 8 MB validation), `GET /v1/assets/{id}` (serve with cache headers); `python-multipart` added
+- [x] `app/views/users.py` `GET /v1/users/roster` (any authed) for participant selection
+
+### Worker (done)
+- [x] `arq` added; `app/workers/queue.py` enqueue helper + pool; `app/core/redis.py` `get_arq_redis_settings()`
+- [x] `app/workers/arq_app.py` `WorkerSettings` (functions, redis, startup/shutdown engine dispose)
+- [x] `app/workers/jobs.py` `generate_drafts` (build_plan with LLM; on `GenerationError` -> `failed`), `launch_campaign` (transition `publishing`, stagger fan-out of `notify_person`, enqueue `send_reminders`), `notify_person` (mark scheduled), `publish_post` (idempotent, dependency-aware self-defer until target post is live, per-author image upload, action dispatch, 401 -> stale + `request_reconnect`, 429 -> delayed retry, bounded backoff, `check_completion`), `send_reminders`/`request_reconnect` stubs
+- [x] Stagger delay drawn from `[stagger_min_seconds, stagger_max_seconds]`
+- [x] Idempotency-key on every post; publish is a no-op once `external_id` is set
+- [x] Audit row on create, plan, status change, launch, edit, approve, skip, publish
+- [-] Daily expiry-sweep cron (deferred; not needed until token-expiry handling lands)
+
+### Frontend (done)
+- [x] `Campaigns.tsx` list with status badges + pagination + amplify/distribute create form (distribute gated to editors); nav + routes wired in `App.tsx`/`AppShell.tsx`
+- [x] `CampaignDetail.tsx` two-pane: seed + plan builder (Save plan / Generate) + Launch on the left; posts grouped with inline edit and per-post Approve/Skip + publish progress bar on the right
+- [x] Reusable `.input` component class added to `globals.css`
+
+### Tests (102 backend passing; frontend `tsc` + `vite build` clean)
+- [x] `test_linkedin_urn.py` (4): feed + posts URL forms, bare URN passthrough, junk -> None
+- [x] `test_campaign_service.py` (7): legal/illegal transitions; amplify targets seed URN; distribute links `target_post_id`; unique idempotency keys; rebuild keeps published; `check_completion` (and no-op when pending)
+- [x] `test_campaigns_api.py` (7): viewer creates amplify, viewer 403 on distribute, editor creates distribute, detail counts, generate enqueues + `generating`, launch requires review + enqueues, list shows only own
+- [x] `test_posts_api.py` (5): owner edit+approve enqueues publish, non-owner 403, skip, double-approve 409, missing 404
+- [x] `test_assets_api.py` (4): upload+serve round-trip, viewer 403, non-image 415, oversize 413
+- [x] `test_worker_jobs.py` (7): generate happy/fail, launch stagger range + enqueue, publish idempotent no-op, like completes campaign, distribute interaction defers until target live, 401 -> stale + reconnect
+- [-] Migration is hand-written (deterministic) rather than `--autogenerate`; not yet applied to the remote DB (deploy runs `alembic upgrade head`)
 
 ---
 

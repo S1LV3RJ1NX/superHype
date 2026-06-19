@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CampaignOut(BaseModel):
@@ -11,18 +11,64 @@ class CampaignOut(BaseModel):
 
     id: uuid.UUID
     title: str
-    raw_brief: str
+    type: str
+    raw_brief: str | None
+    seed_url: str | None
+    seed_urn: str | None
+    seed_content: str | None
+    tone: str | None
+    length: str | None
+    language: str
+    extra_instructions: str | None
     image_url: str | None
     image_alt: str | None
     link: str | None
     link_placement: str
-    hero_account_id: uuid.UUID | None
-    writing_skill_id: uuid.UUID | None
     status: str
     stagger_min_seconds: int
     stagger_max_seconds: int
     created_by: uuid.UUID | None
-    approved_by: uuid.UUID | None
-    approved_at: datetime | None
+    launched_by: uuid.UUID | None
+    launched_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class CampaignDetail(CampaignOut):
+    post_count: int = 0
+    counts: dict[str, int] = {}
+
+
+class CampaignCreate(BaseModel):
+    title: str
+    type: str = Field(pattern="^(amplify|distribute)$")
+    raw_brief: str | None = None
+    seed_url: str | None = None
+    seed_content: str | None = None
+    tone: str | None = None
+    length: str | None = None
+    language: str = "en"
+    extra_instructions: str | None = None
+    image_url: str | None = None
+    image_alt: str | None = None
+    link: str | None = None
+    link_placement: str = "first_comment"
+    stagger_min_seconds: int = 600
+    stagger_max_seconds: int = 1800
+
+
+class CampaignUpdate(BaseModel):
+    title: str | None = None
+    raw_brief: str | None = None
+    seed_url: str | None = None
+    seed_content: str | None = None
+    tone: str | None = None
+    length: str | None = None
+    language: str | None = None
+    extra_instructions: str | None = None
+    image_url: str | None = None
+    image_alt: str | None = None
+    link: str | None = None
+    link_placement: str | None = None
+    stagger_min_seconds: int | None = None
+    stagger_max_seconds: int | None = None
