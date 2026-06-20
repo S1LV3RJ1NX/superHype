@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     LINKEDIN_CLIENT_ID: str
     LINKEDIN_CLIENT_SECRET: str
     LINKEDIN_API_VERSION: str = "202606"
+    # Re-consent is required once a token is stale, expired, or within this many
+    # hours of expiry, so an action is never approved against a dying token.
+    LINKEDIN_RECONNECT_BUFFER_HOURS: int = 24
 
     # LLM gateway (OpenAI-compatible).
     LLM_GATEWAY_URL: str

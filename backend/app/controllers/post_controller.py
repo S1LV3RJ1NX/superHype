@@ -5,15 +5,18 @@ Enforces the fine-grained rule that a participant acts only on their own post
 """
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.post import Post
 from app.models.user import User
 from app.repositories import audit_repo
 from app.repositories.campaign_repo import campaign_repo
 from app.repositories.post_repo import post_repo
+from app.repositories.social_account_repo import social_account_repo
 from app.schemas.common import Page, PageParams
 from app.schemas.post import PostOut, PostUpdate
 from app.services import campaign_service
@@ -83,6 +86,32 @@ async def approve_post(db: AsyncSession, post_id: uuid.UUID, actor: User) -> Pos
     _require_owner_or_admin(post, actor)
     if post.status not in ("pending", "scheduled"):
         raise HTTPException(409, "Only pending posts can be approved.")
+
+    # Pre-check the publishing account so we never approve against a dying token.
+    # Only the post owner can re-consent, so the proactive reconnect-then-act gate
+    # applies to them; an admin acting on another user's post falls back to the
+    # reactive 401 path (mark stale + request_reconnect) at publish time.
+    account = await social_account_repo.get_by_user(db, post.user_id)
+    if actor.id == post.user_id and (
+        account is None
+        or account.needs_reconnect(
+            now=datetime.now(UTC),
+            buffer_hours=settings.LINKEDIN_RECONNECT_BUFFER_HOURS,
+        )
+    ):
+        raise HTTPException(
+            409,
+            detail={
+                "code": "linkedin_reconnect_required",
+                "post_id": str(post.id),
+            },
+        )
+
+    # Backfill the publishing account if the post was planned before the owner
+    # connected, so the worker can resolve a live token.
+    if post.social_account_id is None and account is not None:
+        post.social_account_id = account.id
+
     post.status = "approved"
     await audit_repo.record(
         db,

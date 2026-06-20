@@ -1,7 +1,7 @@
 """SocialAccount: a user's connected LinkedIn identity with encrypted tokens."""
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import (
     JSON,
@@ -54,3 +54,19 @@ class SocialAccount(UUIDPrimaryKeyMixin, Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+    def needs_reconnect(self, *, now: datetime, buffer_hours: int) -> bool:
+        """True if this account cannot safely publish without re-consent.
+
+        Standard Share-on-LinkedIn apps get no refresh token, so an expired or
+        soon-to-expire access token (or one already marked stale) can only be
+        fixed by the member re-consenting.
+        """
+        if self.status != "active":
+            return True
+        if self.expires_at is None:
+            return True
+        expires_at = self.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        return expires_at <= now + timedelta(hours=buffer_hours)

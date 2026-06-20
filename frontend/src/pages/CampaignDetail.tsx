@@ -100,6 +100,37 @@ export function CampaignDetail() {
     }
   };
 
+  // Approve, but if the user's LinkedIn token needs re-consent, send them through
+  // the authorize flow carrying this post so the callback resumes the approve.
+  const approvePost = async (postId: string) => {
+    setError(null);
+    setBusy(true);
+    try {
+      await apiFetch(`/v1/posts/${postId}/approve`, { method: "POST" });
+      await load();
+    } catch (err) {
+      const code =
+        err instanceof ApiError
+          ? (err.detail as { code?: string } | undefined)?.code
+          : undefined;
+      if (err instanceof ApiError && code === "linkedin_reconnect_required") {
+        try {
+          const { authorize_url } = await apiFetch<{ authorize_url: string }>(
+            `/v1/connections/linkedin/authorize?resume_post_id=${postId}`,
+          );
+          window.location.href = authorize_url;
+          return;
+        } catch {
+          setError("Could not start LinkedIn reconnect. Please try again.");
+        }
+      } else {
+        setError(err instanceof ApiError ? err.message : "Action failed");
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!campaign) {
     return (
       <AppShell>
@@ -236,11 +267,7 @@ export function CampaignDetail() {
                       }),
                     )
                   }
-                  onApprove={() =>
-                    run(() =>
-                      apiFetch(`/v1/posts/${post.id}/approve`, { method: "POST" }),
-                    )
-                  }
+                  onApprove={() => approvePost(post.id)}
                   onSkip={() =>
                     run(() =>
                       apiFetch(`/v1/posts/${post.id}/skip`, { method: "POST" }),

@@ -113,8 +113,8 @@ Scaffold tests (pytest + pytest-asyncio):
 ## LinkedIn connection and provider (done)
 
 ### Connection flow (done)
-- [x] `app/views/connections.py` list, `linkedin/authorize`, `linkedin/callback`, `linkedin/reconnect`, `DELETE linkedin` (all require current user)
-- [x] `app/schemas/connection.py` `LinkedInCallbackBody`, `ConnectionOut`, `AuthorizeUrlOut`
+- [x] `app/views/connections.py` list, `linkedin/authorize`, `linkedin/callback`, `linkedin/reconnect`, `DELETE linkedin` (all require current user); authorize/reconnect take an optional `resume_post_id` query param
+- [x] `app/schemas/connection.py` `LinkedInCallbackBody`, `ConnectionOut` (with optional `resumed_post_id`/`resumed_campaign_id`), `AuthorizeUrlOut`
 - [x] `app/controllers/connection_controller.py` authorize/complete/disconnect with Redis-bound CSRF state
 - [x] `app/services/linkedin_oauth_service.py` `authorize_url`, `exchange_code`, `fetch_identity`, `revoke`
 - [x] `app/repositories/social_account_repo.py` `get_by_user`, `upsert`, `mark_stale`, `delete`
@@ -129,6 +129,14 @@ Scaffold tests (pytest + pytest-asyncio):
 - [x] Redis keys namespaced with `super-hype:` prefix to avoid collisions on a shared DB
 - [x] Scopes: `w_member_social openid profile`. The spec named `r_basicprofile`, but LinkedIn deprecated it (apps after 2023-08-01 get `unauthorized_scope_error`). Identity now comes from OpenID Connect, so the member URN is read from `/v2/userinfo` (`sub` -> `urn:li:person:{sub}`). `email` is intentionally omitted.
 - [x] Live verified against the real LinkedIn API: full authorize -> consent -> callback -> token exchange -> identity -> connected, with both products (Share on LinkedIn, Sign In with LinkedIn using OpenID Connect) enabled
+
+### Reconnect-then-act (expiry-aware approve; portal done, Slack later)
+- [x] `LINKEDIN_RECONNECT_BUFFER_HOURS` (default 24) and `SocialAccount.needs_reconnect(now, buffer_hours)` (stale, null/expired, or within the buffer)
+- [x] `approve_post` pre-checks the post owner's account and returns `409 {"code": "linkedin_reconnect_required", "post_id": ...}` when re-consent is needed (the reactive 401 path stays as the safety net)
+- [x] Authorize binds an optional `resume_post_id` into the Redis OAuth state (JSON, owner-bound, legacy bare-id tolerated); `complete_linkedin` resumes the approve on callback (owner-checked, idempotent, no-op if terminal) and enqueues `publish_post`, returning `resumed_post_id`/`resumed_campaign_id`
+- [x] Frontend: `CampaignDetail` approve catches the 409 and redirects to authorize-with-`resume_post_id`; `LinkedInCallback` returns to the campaign when an action resumed; `ApiError` now carries the structured `detail`
+- [x] Tests: `needs_reconnect` unit cases; approve 409 when missing/stale; callback resume happy path + owner mismatch + terminal no-op
+- [-] Slack reconnect button deep-linking to authorize-with-resume (deferred to the Slack phase; reuses this primitive)
 
 ### Provider implementation (done)
 - [x] `app/providers/linkedin.py` publish (versioned `/rest/posts`, `LinkedIn-Version` + `X-Restli-Protocol-Version` headers), `comment`, `like`, reshare-with-comment (via `reshareContext`), three-step image upload (`initializeUpload` -> PUT -> `urn:li:image`), `refresh`; injectable transport for tests

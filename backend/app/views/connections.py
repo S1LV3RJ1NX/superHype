@@ -1,5 +1,7 @@
 """LinkedIn connection endpoints: list, authorize, callback, reconnect, disconnect."""
 
+import uuid
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,9 +30,10 @@ async def list_connections(
 
 @router.get("/linkedin/authorize", response_model=AuthorizeUrlOut)
 async def authorize_linkedin(
+    resume_post_id: uuid.UUID | None = None,
     user: User = Depends(get_current_user),
 ) -> AuthorizeUrlOut:
-    return await connection_controller.authorize_linkedin(user)
+    return await connection_controller.authorize_linkedin(user, resume_post_id)
 
 
 @router.post("/linkedin/callback", response_model=ConnectionOut)
@@ -46,9 +49,10 @@ async def linkedin_callback(
 
 @router.post("/linkedin/reconnect", response_model=AuthorizeUrlOut)
 async def reconnect_linkedin(
+    resume_post_id: uuid.UUID | None = None,
     user: User = Depends(get_current_user),
 ) -> AuthorizeUrlOut:
-    return await connection_controller.authorize_linkedin(user)
+    return await connection_controller.authorize_linkedin(user, resume_post_id)
 
 
 @router.delete("/linkedin", status_code=204)

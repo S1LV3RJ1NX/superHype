@@ -23,11 +23,22 @@ export function LinkedInCallback() {
 
     (async () => {
       try {
-        await apiFetch("/v1/connections/linkedin/callback", {
-          method: "POST",
-          body: JSON.stringify({ code, state }),
-        });
-        navigate("/app/connections", { replace: true });
+        const result = await apiFetch<{ resumed_campaign_id?: string | null }>(
+          "/v1/connections/linkedin/callback",
+          {
+            method: "POST",
+            body: JSON.stringify({ code, state }),
+          },
+        );
+        if (result.resumed_campaign_id) {
+          // Reconnected as part of approving a post: return to that campaign,
+          // where the queued action is now publishing.
+          navigate(`/app/campaigns/${result.resumed_campaign_id}?reconnected=1`, {
+            replace: true,
+          });
+        } else {
+          navigate("/app/connections", { replace: true });
+        }
       } catch (err) {
         exchanging.current = false;
         setError(

@@ -25,3 +25,7 @@ class ConnectionOut(BaseModel):
     status: str
     connected_at: datetime
     updated_at: datetime
+    # Set only on a callback that resumed a pending action (reconnect-then-act),
+    # so the portal can route the user back to the campaign it queued.
+    resumed_post_id: uuid.UUID | None = None
+    resumed_campaign_id: uuid.UUID | None = None
