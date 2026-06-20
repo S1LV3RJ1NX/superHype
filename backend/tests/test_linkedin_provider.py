@@ -62,6 +62,20 @@ async def test_publish_link_in_body_appends_url():
     assert "https://ex.com" in captured["body"]["commentary"]
 
 
+async def test_delete_post_issues_delete():
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["method"] = request.method
+        seen["path"] = request.url.path
+        return httpx.Response(204)
+
+    await _provider(handler).delete_post(_account(), "urn:li:share:9")
+    assert seen["method"] == "DELETE"
+    # httpx decodes the percent-encoded URN back when exposing .path.
+    assert seen["path"].endswith("/rest/posts/urn:li:share:9")
+
+
 async def test_image_upload_three_step_returns_urn():
     calls: list[str] = []
 

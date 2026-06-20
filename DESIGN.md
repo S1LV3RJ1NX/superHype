@@ -66,7 +66,7 @@ Deferred (build seams, do not implement): X provider, company-page posting, prog
 - **User**: a company employee. Authenticates with Google. Has a role.
 - **Role**: `viewer` (the default for every new user: connect their own LinkedIn and approve, edit, or skip only their own posts), `editor` (everything a viewer can do, plus create and edit campaigns, generate drafts, and manage writing skills), `admin` (everything an editor can do, plus manage users and assign roles, and launch campaigns). New users are always `viewer`; only an admin can raise a user to `editor` or `admin`. See BACKEND.md for the full permission matrix and role management. In practice the roles map to teams: founder's office and GTM leads are admins, the GTM team are editors, and everyone else (developers and the wider team) stays a viewer.
 - **Social account**: a user's connected LinkedIn identity, holding encrypted OAuth tokens.
-- **Writing skill**: a named, editable set of instructions (a system prompt) that defines a generation style, for example "Hype-driven launch" or "SEO thought leadership." The body matches the SKILL.md format used elsewhere in this project.
+- **Writing skill** (retired): originally a named, editable set of generation instructions. Removed in the interaction-first reframe; generation now uses lightweight per-campaign hints (tone, length, language). See CHECKLIST.md.
 - **Campaign**: one announcement and the set of posts generated from it.
 - **Post**: one unit of work for one person on one platform, with an action type (`post`, `repost_comment`, `comment`, `like`) and a lifecycle status.
 
@@ -244,7 +244,7 @@ unique (user_id, platform)
 id           uuid pk
 name         text not null
 description  text
-instructions text not null               -- the system prompt / SKILL.md body
+instructions text not null               -- the system prompt body
 model        text                       -- optional per-skill override; defaults to LLM_MODEL_NAME
 is_default   boolean not null default false
 is_archived  boolean not null default false
@@ -447,7 +447,7 @@ class Provider(Protocol):
 ## 10. Generation and the skill swapper
 
 ### The skill is the system prompt
-A writing skill's `instructions` field is a complete generation brief in the SKILL.md format used elsewhere in this project. The default skill is the "Super-Hype Post Writer" already authored for this system. Editors can create others (for example an SEO or thought-leadership style) entirely through the UI; no code change is needed to add a style. That is the whole point of the swapper.
+A writing skill's `instructions` field is a complete generation brief. The default skill is the "Super-Hype Post Writer" already authored for this system. Editors can create others (for example an SEO or thought-leadership style) entirely through the UI; no code change is needed to add a style. That is the whole point of the swapper.
 
 ### Generation call (`services/generation.py`)
 Generation goes through the OpenAI SDK pointed at the company LLM gateway. Construct an `AsyncOpenAI(base_url=LLM_GATEWAY_URL, api_key=LLM_API_KEY)` client (wrapped in `integrations/llm.py`) and call `chat.completions.create`:
@@ -530,7 +530,7 @@ Pages:
 - **Dashboard**: campaigns list with status, plus the current user's pending approvals surfaced at the top.
 - **Compose** (`/campaigns/new` and `/campaigns/:id`): the heart of the product. A two-pane layout. Left: the brief (title, announcement, an image with alt text, the link plus a body-or-first-comment placement toggle), the hero account selector, and the skill swapper. Right: a live, LinkedIn-accurate preview that updates as drafts arrive and as the user edits, rendering the attached image or carousel and the link as either a preview card (body placement) or a "link in first comment" chip. A "Generate" action fills the right pane with the hero card and one card per person; each card is editable in place and shows the person, their angle, and, for non-English speakers, both language versions. A "Regenerate with this skill" control sits next to the swapper.
 - **Campaign detail**: status of every post (pending, approved, published, failed), the audit timeline, and a "what published" summary.
-- **Skills**: list and editor. The instructions field uses a monospace, full-height editor (the SKILL.md body). A "Set as default" toggle.
+- **Skills**: list and editor. The instructions field uses a monospace, full-height editor (the system prompt body). A "Set as default" toggle.
 - **Connections**: the user's LinkedIn status with Connect or Reconnect, and a clear stale-state banner.
 - **Users** (admin): roster, roles, and invites.
 

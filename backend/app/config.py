@@ -56,6 +56,14 @@ class Settings(BaseSettings):
     LLM_GATEWAY_URL: str
     LLM_API_KEY: str
     LLM_MODEL_NAME: str
+    # Comment-quality floor: generated interactions shorter than this (in words)
+    # are rejected and regenerated, so we never publish pod-like one-liners.
+    MIN_COMMENT_WORDS: int = 12
+
+    # Authenticity guardrails for publishing. Keep a person's account from acting
+    # too often or too fast, which is what LinkedIn's pod detection flags.
+    MAX_ACTIONS_PER_ACCOUNT_PER_DAY: int = 10
+    MIN_SECONDS_BETWEEN_ACCOUNT_ACTIONS: int = 90
 
     # Slack.
     SLACK_BOT_TOKEN: str | None = None

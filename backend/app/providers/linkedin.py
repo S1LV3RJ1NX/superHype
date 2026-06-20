@@ -141,6 +141,15 @@ class LinkedInProvider:
             _raise_for_status(put)
         return image_urn
 
+    async def delete_post(self, acct: SocialAccount, urn: str) -> None:
+        """Delete a published post. Used only to roll back a partial publish."""
+        encoded = quote(urn, safe="")
+        async with self._client() as client:
+            resp = await client.delete(
+                f"{_REST_BASE}/posts/{encoded}", headers=self._headers(acct)
+            )
+            _raise_for_status(resp)
+
     async def comment(
         self,
         acct: SocialAccount,

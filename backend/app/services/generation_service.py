@@ -14,6 +14,12 @@ from typing import Any
 
 from app.config import settings
 from app.integrations.llm import get_llm_client
+from app.prompts.generation import (
+    BANNED_COMMENT_OPENERS,
+    BANNED_PHRASES,
+    interactions_system,
+    variations_system,
+)
 from app.schemas.generation import InteractionTexts, VariationSet
 
 
@@ -39,15 +45,21 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 
-def _hint_block(*, tone: str | None, length: str | None, language: str | None) -> str:
-    parts = []
-    if tone:
-        parts.append(f"Tone: {tone}.")
-    if length:
-        parts.append(f"Length: {length}.")
-    if language:
-        parts.append(f"Write in: {language}.")
-    return " ".join(parts)
+def _is_low_quality_comment(text: str) -> bool:
+    """True if a comment is too short, empty, generic praise, or a banned phrase.
+
+    These read as a coordinated pod and score near-zero on the 2026 feed, so we
+    reject them and regenerate once before failing the job.
+    """
+    t = text.strip().lower()
+    if not t:
+        return True
+    if len(t.split()) < settings.MIN_COMMENT_WORDS:
+        return True
+    stripped = t.rstrip("!.? ")
+    if stripped in BANNED_COMMENT_OPENERS:
+        return True
+    return any(phrase in t for phrase in BANNED_PHRASES)
 
 
 async def _complete_json(messages: list[dict[str, Any]]) -> Any:
@@ -84,15 +96,9 @@ async def generate_variations(
     extra: str | None = None,
 ) -> list[str]:
     """Produce N distinct, natural variations of the seed post."""
-    hints = _hint_block(tone=tone, length=length, language=language)
-    system = (
-        "You write LinkedIn posts for an employee-advocacy campaign. Given a seed "
-        f"post, produce exactly {n} distinct variations that say the same thing in "
-        "genuinely different voices and structures, so they do not look coordinated. "
-        f"{hints} {extra or ''}\n\n"
-        'Respond with a single JSON object: {"variations": ["...", ...]} containing '
-        f"exactly {n} strings and nothing else."
-    ).strip()
+    system = variations_system(
+        n, tone=tone, length=length, language=language, extra=extra
+    )
 
     data = await _complete_json(
         [
@@ -137,37 +143,49 @@ async def generate_interactions(
     if not text_indices:
         return ["" for _ in items]
 
-    hints = _hint_block(tone=tone, length=length, language=language)
     enumerated = "\n".join(
         f"{pos}. action={items[i].get('action', 'comment')} "
         f"angle={items[i].get('angle', '') or 'natural reaction'}"
         for pos, i in enumerate(text_indices)
     )
-    system = (
-        "You write short, natural LinkedIn interactions (comments and reshare "
-        "commentary) reacting to a post. Each must be distinct and human, never "
-        f"templated or repetitive. {hints} {extra or ''}\n\n"
-        f"Produce exactly {len(text_indices)} texts for the numbered items below, "
-        'and respond with a single JSON object: {"texts": ["...", ...]} indexed to '
-        "those item numbers.\n\n"
-        f"Items:\n{enumerated}"
-    ).strip()
-
-    data = await _complete_json(
-        [
-            {"role": "system", "content": system},
-            {"role": "user", "content": target_text},
-        ]
+    system = interactions_system(
+        len(text_indices),
+        enumerated,
+        tone=tone,
+        length=length,
+        language=language,
+        extra=extra,
     )
-    try:
-        result = InteractionTexts.model_validate(data)
-    except Exception as exc:
-        raise GenerationError(
-            f"LLM output does not match the interactions contract: {exc}"
-        ) from exc
 
-    texts = result.texts
+    # The comment-quality floor: substantive, varied comments only. If the model
+    # returns short or generic praise, regenerate once before failing the job.
+    texts: list[str] = []
+    for _attempt in range(2):
+        data = await _complete_json(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": target_text},
+            ]
+        )
+        try:
+            result = InteractionTexts.model_validate(data)
+        except Exception as exc:
+            raise GenerationError(
+                f"LLM output does not match the interactions contract: {exc}"
+            ) from exc
+
+        candidate = [t.strip() for t in result.texts]
+        if len(candidate) >= len(text_indices) and not any(
+            _is_low_quality_comment(candidate[pos]) for pos in range(len(text_indices))
+        ):
+            texts = candidate
+            break
+    else:
+        raise GenerationError(
+            "LLM returned low-quality or too-few interaction texts after a retry."
+        )
+
     out = ["" for _ in items]
     for pos, i in enumerate(text_indices):
-        out[i] = texts[pos].strip() if pos < len(texts) else ""
+        out[i] = texts[pos] if pos < len(texts) else ""
     return out

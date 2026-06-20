@@ -56,6 +56,10 @@ class Post(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     external_id: Mapped[str | None] = mapped_column(Text)
+    # URN of the link-in-first-comment, when link_placement is first_comment. Set
+    # after the body publishes; doubles as the idempotency marker so a retry
+    # resumes at the comment instead of re-publishing the post.
+    first_comment_external_id: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
     retries: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"

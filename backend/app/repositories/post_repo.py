@@ -80,6 +80,29 @@ class PostRepository(BaseRepository[Post]):
         await db.flush()
         return posts
 
+    async def published_times_for_account(
+        self, db: AsyncSession, account_id: uuid.UUID, since: datetime
+    ) -> list[datetime]:
+        """Published_at timestamps for an account since `since`, across campaigns.
+
+        Backs the per-account daily cap and min-spacing guardrails. Filtering by
+        `since` happens in Python so naive/aware timestamps from SQLite in tests
+        compare cleanly; the row count per account is naturally bounded.
+        """
+        stmt = select(Post.published_at).where(
+            Post.social_account_id == account_id,
+            Post.published_at.is_not(None),
+        )
+        out: list[datetime] = []
+        for (ts,) in (await db.execute(stmt)).all():
+            if ts is None:
+                continue
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=UTC)
+            if ts >= since:
+                out.append(ts)
+        return out
+
     async def all_terminal(self, db: AsyncSession, campaign_id: uuid.UUID) -> bool:
         """True if the campaign has posts and every one is in a terminal state."""
         stmt = select(Post.status).where(Post.campaign_id == campaign_id)

@@ -73,12 +73,70 @@ async def test_generate_interactions_indexed_and_likes_empty():
         {"action": "like"},
         {"action": "repost_comment", "angle": "amplify"},
     ]
-    payload = json.dumps({"texts": ["nice work", "resharing this"]})
+    comment = (
+        "This matches what we saw building inference infra, the idle cost is the "
+        "real leak here."
+    )
+    reshare = (
+        "Resharing because the cold start numbers finally make scale to zero safe "
+        "for real production traffic."
+    )
+    payload = json.dumps({"texts": [comment, reshare]})
     with patch(
         "app.services.generation_service.get_llm_client", return_value=_client(payload)
     ):
         out = await generate_interactions("target", items)
-    assert out == ["nice work", "", "resharing this"]
+    assert out == [comment, "", reshare]
+
+
+async def test_generate_interactions_low_quality_fails_after_retry():
+    items = [{"action": "comment", "angle": "x"}]
+    payload = json.dumps({"texts": ["Great post!"]})
+    with (
+        patch(
+            "app.services.generation_service.get_llm_client",
+            return_value=_client(payload),
+        ),
+        pytest.raises(GenerationError, match="low-quality"),
+    ):
+        await generate_interactions("target", items)
+
+
+async def test_generate_interactions_banned_phrase_rejected():
+    items = [{"action": "comment", "angle": "x"}]
+    # Long enough to pass the word floor, but contains a banned buzzword.
+    text = (
+        "We are so thrilled to share this incredible game-changer that will "
+        "absolutely transform everything for everyone now"
+    )
+    payload = json.dumps({"texts": [text]})
+    with (
+        patch(
+            "app.services.generation_service.get_llm_client",
+            return_value=_client(payload),
+        ),
+        pytest.raises(GenerationError, match="low-quality"),
+    ):
+        await generate_interactions("target", items)
+
+
+async def test_generate_interactions_regenerates_then_succeeds():
+    items = [{"action": "comment", "angle": "x"}]
+    good = (
+        "Curious how you handled cold starts under load; we hit a wall around the "
+        "eight second mark too."
+    )
+    client = AsyncMock()
+    client.chat.completions.create = AsyncMock(
+        side_effect=[
+            _mock_completion(json.dumps({"texts": ["Love this"]})),
+            _mock_completion(json.dumps({"texts": [good]})),
+        ]
+    )
+    with patch("app.services.generation_service.get_llm_client", return_value=client):
+        out = await generate_interactions("target", items)
+    assert out == [good]
+    assert client.chat.completions.create.await_count == 2
 
 
 async def test_generate_interactions_all_likes_skips_llm():

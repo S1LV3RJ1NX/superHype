@@ -134,8 +134,9 @@ Scaffold tests (pytest + pytest-asyncio):
 - [x] `app/providers/linkedin.py` publish (versioned `/rest/posts`, `LinkedIn-Version` + `X-Restli-Protocol-Version` headers), `comment`, `like`, reshare-with-comment (via `reshareContext`), three-step image upload (`initializeUpload` -> PUT -> `urn:li:image`), `refresh`; injectable transport for tests
 - [x] Typed errors: `LinkedInAuthError` (401, non-retryable), `LinkedInRateLimitError` (429, `retry_after`), `LinkedInAPIError` (other)
 - [x] Wired in the worker: 401 -> mark account stale + enqueue `request_reconnect`; 429 -> deferred retry by `retry_after`; bounded exponential backoff to a cap on other errors; idempotent publish (no-op if `external_id` set); image uploaded under the post's own author and `image_asset_urn` reused on retry; `link_placement == "body"` routes the link into the commentary
-- [-] Link-in-first-comment sequence (first-comment URL placement deferred; current build supports body link and image/text publish)
-- [x] Tests (8 passing, mocked httpx): correct headers, link-in-body, three-step image upload, comment URN, 401 -> AuthError, 429 -> RateLimitError with `retry_after`, reshare uses `reshareContext`
+- [x] `provider.delete_post(acct, urn)` (versioned `DELETE /rest/posts/{urn}`), used only to roll back a partial first-comment publish
+- [x] Link-in-first-comment sequence: `link_placement == "first_comment"` publishes the body without the link, persists `external_id`, then places the link as the first comment. All-or-nothing and resumable via `posts.first_comment_external_id` (body committed before the comment so a retry never double-posts; resume picks up at the comment; on permanent comment failure the post is rolled back with `delete_post` then marked failed)
+- [x] Tests (9 passing, mocked httpx): correct headers, link-in-body, three-step image upload, comment URN, 401 -> AuthError, 429 -> RateLimitError with `retry_after`, reshare uses `reshareContext`, `delete_post` issues versioned DELETE
 
 ---
 
@@ -151,6 +152,8 @@ Scaffold tests (pytest + pytest-asyncio):
 - [x] `app/integrations/llm.py` `get_llm_client()` returning `AsyncOpenAI` pointed at `LLM_GATEWAY_URL`
 - [x] `app/schemas/generation.py` rewritten to two small contracts: `VariationSet` (`{"variations": [...]}`), `InteractionTexts` (`{"texts": [...]}`); old hero/variant/comment/brief schemas deleted
 - [x] `app/services/generation_service.py` rewritten: `generate_variations(seed, n, *, tone, length, language, extra)` and `generate_interactions(target_text, items, *, hints)`; `response_format=json_object`, strip fences, `json.loads`, validate, `_safe_exc` redaction, count normalization, `like` items skip the LLM; raises `GenerationError` on any failure
+- [x] `app/prompts/` package: `generation.py` builders (`variations_system`, `interactions_system`, `_hint_block`) plus `BANNED_PHRASES`/`BANNED_COMMENT_OPENERS`; prompt text lives here, the service owns orchestration. Craft rules salvaged from the retired SKILL.md (hook-first, opinion over announcement, specificity, human voice, a reason to engage, no buzzwords)
+- [x] Comment-quality floor: generated non-like interactions must clear `MIN_COMMENT_WORDS` and avoid generic praise / banned buzzwords; the service regenerates once, then raises `GenerationError`
 - [-] `scripts/smoke_generation.py` removed with the skill-based flow
 
 ### Users LinkedIn-status column (done)
@@ -165,7 +168,7 @@ Scaffold tests (pytest + pytest-asyncio):
 
 ### Tests
 - [-] `test_writing_skill_repo.py`, `test_skills.py`, `test_skill_test.py`, `test_generate_instructions.py` removed with the skills feature
-- [x] `test_generation.py` rewritten (7): variations count enforced, padded when too few, fenced JSON parses, non-JSON raises GenerationError, interaction texts indexed to items with `like` empty, all-likes skips the LLM, bad contract raises GenerationError
+- [x] `test_generation.py` (10): variations count enforced, padded when too few, fenced JSON parses, non-JSON raises GenerationError, interaction texts indexed to items with `like` empty, all-likes skips the LLM, bad contract raises GenerationError, comment-floor fails after retry on short/banned text, regenerates once then succeeds
 - [x] `test_users.py` extended (2): list_users returns linkedin_status=active for connected user, None for unconnected
 - [x] `test_config.py` env fixture extended with `LLM_GATEWAY_URL`, `LLM_API_KEY`, `LLM_MODEL_NAME`
 
@@ -179,6 +182,7 @@ Scaffold tests (pytest + pytest-asyncio):
 - [x] `app/models/asset.py` + `app/storage/base.py` (`AssetStore` Protocol) + `app/storage/db_store.py` (Postgres `bytea` backend, swappable to object storage later)
 - [x] `app/core/linkedin_urn.py` `parse_activity_urn(url)` for pasted LinkedIn URLs
 - [x] Migration `7f3a9c2b1d04`: drop `writing_skills`, drop campaign hero/skill/approval columns, add campaign type/seed/hints + `launched_*`, add `posts.target_post_id`/`image_asset_id`/`image_url`/`image_alt`, create `assets`
+- [x] Migration `8a1c4e7d9b20`: add `posts.first_comment_external_id` (URN of the link-in-first-comment; doubles as the resume/idempotency marker)
 
 ### Service (done)
 - [x] `app/services/campaign_service.py` state machine `draft -> generating | review`, `generating -> review | failed`, `review -> generating | publishing`, `publishing -> completed | failed` (no `approved` state); `transition` (validate + audit), `build_plan` (manual or LLM fill; variation `post` rows + interaction rows; unique idempotency keys `{cid}:{action}:{user}:{seq}`; rebuild preserves approved/published work), `check_completion`
@@ -194,10 +198,11 @@ Scaffold tests (pytest + pytest-asyncio):
 ### Worker (done)
 - [x] `arq` added; `app/workers/queue.py` enqueue helper + pool; `app/core/redis.py` `get_arq_redis_settings()`
 - [x] `app/workers/arq_app.py` `WorkerSettings` (functions, redis, startup/shutdown engine dispose)
-- [x] `app/workers/jobs.py` `generate_drafts` (build_plan with LLM; on `GenerationError` -> `failed`), `launch_campaign` (transition `publishing`, stagger fan-out of `notify_person`, enqueue `send_reminders`), `notify_person` (mark scheduled), `publish_post` (idempotent, dependency-aware self-defer until target post is live, per-author image upload, action dispatch, 401 -> stale + `request_reconnect`, 429 -> delayed retry, bounded backoff, `check_completion`), `send_reminders`/`request_reconnect` stubs
+- [x] `app/workers/jobs.py` `generate_drafts` (build_plan with LLM; on `GenerationError` -> `failed`), `launch_campaign` (transition `publishing`, stagger fan-out of `notify_person`, enqueue `send_reminders`), `notify_person` (mark scheduled), `publish_post` (idempotent, dependency-aware self-defer until target post is live, per-author image upload, action dispatch, first-comment placement + rollback, 401 -> stale + `request_reconnect`, 429 -> delayed retry, bounded backoff, `check_completion`), `send_reminders`/`request_reconnect` stubs
+- [x] Authenticity guardrails in `publish_post`: per-account daily action cap (`MAX_ACTIONS_PER_ACCOUNT_PER_DAY`) and minimum spacing between actions (`MIN_SECONDS_BETWEEN_ACCOUNT_ACTIONS`), enforced by deferral (re-enqueue) before the outbound call so a coordinated push does not read as a pod; the first-comment resume step is exempt. Backed by `post_repo.published_times_for_account`
 - [x] Stagger delay drawn from `[stagger_min_seconds, stagger_max_seconds]`
 - [x] Idempotency-key on every post; publish is a no-op once `external_id` is set
-- [x] Audit row on create, plan, status change, launch, edit, approve, skip, publish
+- [x] Audit row on create, plan, status change, launch, edit, approve, skip, publish, first-comment placed, rollback
 - [-] Daily expiry-sweep cron (deferred; not needed until token-expiry handling lands)
 
 ### Frontend (done)
@@ -205,14 +210,14 @@ Scaffold tests (pytest + pytest-asyncio):
 - [x] `CampaignDetail.tsx` two-pane: seed + plan builder (Save plan / Generate) + Launch on the left; posts grouped with inline edit and per-post Approve/Skip + publish progress bar on the right
 - [x] Reusable `.input` component class added to `globals.css`
 
-### Tests (102 backend passing; frontend `tsc` + `vite build` clean)
+### Tests (128 backend passing; frontend `tsc` + `vite build` clean)
 - [x] `test_linkedin_urn.py` (4): feed + posts URL forms, bare URN passthrough, junk -> None
 - [x] `test_campaign_service.py` (7): legal/illegal transitions; amplify targets seed URN; distribute links `target_post_id`; unique idempotency keys; rebuild keeps published; `check_completion` (and no-op when pending)
 - [x] `test_campaigns_api.py` (7): viewer creates amplify, viewer 403 on distribute, editor creates distribute, detail counts, generate enqueues + `generating`, launch requires review + enqueues, list shows only own
 - [x] `test_posts_api.py` (5): owner edit+approve enqueues publish, non-owner 403, skip, double-approve 409, missing 404
 - [x] `test_assets_api.py` (4): upload+serve round-trip, viewer 403, non-image 415, oversize 413
-- [x] `test_worker_jobs.py` (7): generate happy/fail, launch stagger range + enqueue, publish idempotent no-op, like completes campaign, distribute interaction defers until target live, 401 -> stale + reconnect
-- [-] Migration is hand-written (deterministic) rather than `--autogenerate`; not yet applied to the remote DB (deploy runs `alembic upgrade head`)
+- [x] `test_worker_jobs.py` (15): generate happy/fail, launch stagger range + enqueue, publish idempotent no-op, like completes campaign, distribute interaction defers until target live, 401 -> stale + reconnect, 429 re-enqueues with `retry_after`, generic backoff then fail, first-comment places link, first-comment resumes after body, body placement skips comment, first-comment permanent failure rolls back, defers on min-gap, defers on daily cap
+- [x] Migrations are hand-written (deterministic) rather than `--autogenerate`; `7f3a9c2b1d04` and `8a1c4e7d9b20` applied via `alembic upgrade head`
 
 ---
 

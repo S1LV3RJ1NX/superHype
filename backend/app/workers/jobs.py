@@ -6,10 +6,12 @@ window and human-paced approvals sequence correctly without a rigid phase lock.
 """
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.safe_fetch import fetch_image
 from app.db.session import async_session_factory
 from app.logger import get_logger
@@ -153,14 +155,62 @@ async def _dispatch(
     raise ValueError(f"Unknown action: {post.action}")
 
 
+async def _guardrail_defer(db: AsyncSession, account_id: uuid.UUID) -> float | None:
+    """Return seconds to defer if this account would breach an authenticity guard.
+
+    Two guards keep a coordinated push reading as authentic rather than as a pod:
+    a minimum spacing between an account's actions, and a daily action cap. When a
+    guard trips we defer (overflow rolls into the next day's window) rather than
+    skip, so the action still happens. Returns None when it is safe to proceed.
+    """
+    now = datetime.now(UTC)
+    since = now - timedelta(hours=24)
+    times = await post_repo.published_times_for_account(db, account_id, since)
+    if not times:
+        return None
+
+    elapsed = (now - max(times)).total_seconds()
+    min_gap = settings.MIN_SECONDS_BETWEEN_ACCOUNT_ACTIONS
+    if elapsed < min_gap:
+        return min_gap - elapsed
+
+    cap = settings.MAX_ACTIONS_PER_ACCOUNT_PER_DAY
+    if len(times) >= cap:
+        # Defer until the oldest of the most recent `cap` actions ages out of the
+        # trailing 24h window; self-resolving, so this never loops forever.
+        oldest_relevant = sorted(times)[-cap]
+        defer_by = (oldest_relevant + timedelta(hours=24) - now).total_seconds()
+        return max(defer_by, 60.0)
+
+    return None
+
+
+async def _rollback_published_post(
+    db: AsyncSession, acct: SocialAccount, post: Post
+) -> None:
+    """Best-effort delete a live post when its first comment cannot be placed.
+
+    Honors the all-or-nothing rule for link-in-first-comment: if the body is live
+    but the link comment never lands, we remove the post rather than leave it up
+    without the link. The delete itself is best-effort (it may fail on a stale
+    token); failures are logged, not raised.
+    """
+    if post.external_id is None:
+        return
+    try:
+        await _provider().delete_post(acct, post.external_id)
+    except Exception:
+        log.warning("publish_post.rollback_delete_failed", post_id=str(post.id))
+    await audit_repo.record(
+        db, action="post_rolled_back", campaign_id=post.campaign_id, post_id=post.id
+    )
+
+
 async def publish_post(ctx: dict, post_id: str) -> None:
     pid = uuid.UUID(post_id)
     async with async_session_factory() as db:
         post = await post_repo.get(db, pid)
         if post is None:
-            return
-        # Idempotent: a retry never double-posts.
-        if post.external_id is not None:
             return
         if post.status in ("skipped", "failed"):
             return
@@ -199,19 +249,77 @@ async def publish_post(ctx: dict, post_id: str) -> None:
             await db.commit()
             return
 
+        link = post.link or campaign.link
+        needs_fc = (
+            post.action == "post"
+            and campaign.link_placement == "first_comment"
+            and bool(link)
+        )
+
+        # Idempotent: no-op only when the post is fully done. For a first-comment
+        # post that means the body is live AND the link comment is placed; a retry
+        # in between resumes at the comment rather than re-publishing the body.
+        if post.external_id is not None and (
+            not needs_fc or post.first_comment_external_id is not None
+        ):
+            return
+
+        # Authenticity guardrails: only gate the outbound action itself (when the
+        # body is not yet live), never the first-comment resume.
+        if post.external_id is None:
+            defer_by = await _guardrail_defer(db, post.social_account_id)
+            if defer_by is not None:
+                await ctx["redis"].enqueue_job(
+                    "publish_post", post_id, _defer_by=defer_by
+                )
+                return
+
         try:
-            await _ensure_image_urn(db, post, acct)
-            external_id = await _dispatch(db, post, acct, campaign, target_urn)
-            await post_repo.mark_published(db, post, external_id)
-            await audit_repo.record(
-                db,
-                action="post_published",
-                campaign_id=post.campaign_id,
-                post_id=post.id,
-            )
+            # Phase 1: publish the body. external_id is committed before we touch
+            # the first comment, so a later failure can never re-publish it.
+            if post.external_id is None:
+                await _ensure_image_urn(db, post, acct)
+                external_id = await _dispatch(db, post, acct, campaign, target_urn)
+                post.external_id = external_id
+                post.published_at = datetime.now(UTC)
+                if not needs_fc:
+                    post.status = "published"
+                await db.flush()
+                await audit_repo.record(
+                    db,
+                    action="post_published",
+                    campaign_id=post.campaign_id,
+                    post_id=post.id,
+                )
+                await db.commit()
+                if not needs_fc:
+                    await campaign_service.check_completion(db, post.campaign_id)
+                    await db.commit()
+                    return
+
+            # Phase 2: place the link in the first comment (resumable + idempotent).
+            if needs_fc and post.first_comment_external_id is None and link:
+                fc_urn = await _provider().comment(acct, post.external_id or "", link)
+                post.first_comment_external_id = fc_urn
+                await audit_repo.record(
+                    db,
+                    action="first_comment_placed",
+                    campaign_id=post.campaign_id,
+                    post_id=post.id,
+                )
+            await post_repo.mark_published(db, post, post.external_id or "")
             await campaign_service.check_completion(db, post.campaign_id)
             await db.commit()
         except LinkedInAuthError:
+            await db.rollback()
+            post = await post_repo.get(db, pid)
+            if post is None or post.social_account_id is None:
+                return
+            acct = await social_account_repo.get(db, post.social_account_id)
+            # If the body went live but the comment could not (token went stale),
+            # try to roll it back so we do not leave a post without its link.
+            if acct is not None and post.external_id is not None and needs_fc:
+                await _rollback_published_post(db, acct, post)
             await social_account_repo.mark_stale(db, post.social_account_id)
             await post_repo.mark_failed(db, post, "LinkedIn token invalid (stale).")
             await campaign_service.check_completion(db, post.campaign_id)
@@ -231,6 +339,18 @@ async def publish_post(ctx: dict, post_id: str) -> None:
                 return
             post.retries += 1
             if post.retries >= MAX_RETRIES:
+                # Body live but first comment never landed: roll back for
+                # all-or-nothing before marking the post failed.
+                if post.external_id is not None and (
+                    needs_fc and post.first_comment_external_id is None
+                ):
+                    acct = (
+                        await social_account_repo.get(db, post.social_account_id)
+                        if post.social_account_id is not None
+                        else None
+                    )
+                    if acct is not None:
+                        await _rollback_published_post(db, acct, post)
                 await post_repo.mark_failed(db, post, f"Failed: {type(exc).__name__}")
                 await campaign_service.check_completion(db, post.campaign_id)
                 await db.commit()

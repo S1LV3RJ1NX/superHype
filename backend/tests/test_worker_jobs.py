@@ -1,6 +1,7 @@
 """Tests for ARQ jobs: generation, launch stagger, dependency-aware publish."""
 
 import uuid
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock
 
 import pytest
@@ -50,6 +51,9 @@ class _StubProvider:
     async def upload_image(self, acct, data, alt=None):
         self.calls.append(("upload_image", len(data)))
         return "urn:li:image:1"
+
+    async def delete_post(self, acct, urn):
+        self.calls.append(("delete_post", urn))
 
 
 @pytest_asyncio.fixture
@@ -427,3 +431,251 @@ async def test_publish_auth_error_marks_stale_and_reconnect(db, env, monkeypatch
         assert rp.status == "failed"
         assert ra.status == "stale"
     assert any(j[0] == "request_reconnect" for j in env["redis"].jobs)
+
+
+async def test_publish_first_comment_places_link(db, env):
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(
+        title="C",
+        type="distribute",
+        status="publishing",
+        link="https://ex.com",
+        link_placement="first_comment",
+    )
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="post",
+        body="hello world",
+        status="approved",
+        idempotency_key="k1",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    calls = env["provider"].calls
+    pub = next(ci for ci in calls if ci[0] == "publish")
+    assert pub[2].get("link_in_body") is False
+    com = next(ci for ci in calls if ci[0] == "comment")
+    assert com[1] == "urn:li:share:new"
+    assert com[2] == "https://ex.com"
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        rc = await s.get(Campaign, c.id)
+        assert rp.status == "published"
+        assert rp.external_id == "urn:li:share:new"
+        assert rp.first_comment_external_id == "urn:li:comment:new"
+        assert rc.status == "completed"
+
+
+async def test_publish_first_comment_resumes_after_body(db, env):
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(
+        title="C",
+        type="distribute",
+        status="publishing",
+        link="https://ex.com",
+        link_placement="first_comment",
+    )
+    db.add(c)
+    await db.flush()
+    # Body already live from a prior attempt; only the first comment is pending.
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="post",
+        body="hello",
+        status="approved",
+        external_id="urn:li:share:existing",
+        idempotency_key="k2",
+    )
+    p.published_at = datetime.now(UTC)
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    calls = env["provider"].calls
+    assert not any(ci[0] == "publish" for ci in calls)
+    com = next(ci for ci in calls if ci[0] == "comment")
+    assert com[1] == "urn:li:share:existing"
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "published"
+        assert rp.first_comment_external_id == "urn:li:comment:new"
+
+
+async def test_publish_body_placement_no_first_comment(db, env):
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(
+        title="C",
+        type="distribute",
+        status="publishing",
+        link="https://ex.com",
+        link_placement="body",
+    )
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="post",
+        body="hello",
+        status="approved",
+        idempotency_key="k3",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    calls = env["provider"].calls
+    pub = next(ci for ci in calls if ci[0] == "publish")
+    assert pub[2].get("link_in_body") is True
+    assert not any(ci[0] == "comment" for ci in calls)
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "published"
+        assert rp.first_comment_external_id is None
+
+
+async def test_publish_first_comment_permanent_failure_rolls_back(db, env):
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(
+        title="C",
+        type="distribute",
+        status="publishing",
+        link="https://ex.com",
+        link_placement="first_comment",
+    )
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="post",
+        body="hello",
+        status="approved",
+        idempotency_key="k4",
+    )
+    db.add(p)
+    await db.commit()
+
+    async def _boom(*a, **k):
+        raise RuntimeError("comment failed")
+
+    env["provider"].comment = _boom
+
+    # Body publishes on the first pass, then every comment attempt fails until the
+    # retry cap, at which point the post is rolled back (deleted) and marked failed.
+    for _ in range(jobs_mod.MAX_RETRIES + 1):
+        await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    calls = env["provider"].calls
+    assert ("delete_post", "urn:li:share:new") in calls
+    # The body is published exactly once despite many attempts (no double post).
+    assert sum(1 for ci in calls if ci[0] == "publish") == 1
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "failed"
+
+
+async def test_publish_defers_on_min_gap(db, env):
+    from app.config import settings
+
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    recent = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="post",
+        status="published",
+        external_id="urn:li:share:old",
+        idempotency_key="recent",
+    )
+    recent.published_at = datetime.now(UTC)
+    db.add(recent)
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="like",
+        status="approved",
+        target_external_id="urn:li:activity:1",
+        idempotency_key="k5",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    assert not any(ci[0] == "like" for ci in env["provider"].calls)
+    deferred = [j for j in env["redis"].jobs if j[0] == "publish_post"]
+    assert deferred
+    assert (
+        0 < deferred[0][2]["_defer_by"] <= settings.MIN_SECONDS_BETWEEN_ACCOUNT_ACTIONS
+    )
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "approved"
+
+
+async def test_publish_defers_on_daily_cap(db, env):
+    from app.config import settings
+
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    cap = settings.MAX_ACTIONS_PER_ACCOUNT_PER_DAY
+    for i in range(cap):
+        # Spread across the day so min-gap passes but the daily cap is hit.
+        pr = Post(
+            campaign_id=c.id,
+            user_id=user.id,
+            social_account_id=acct.id,
+            action="post",
+            status="published",
+            external_id=f"urn:li:share:{i}",
+            idempotency_key=f"old{i}",
+        )
+        pr.published_at = datetime.now(UTC) - timedelta(hours=i + 1)
+        db.add(pr)
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="like",
+        status="approved",
+        target_external_id="urn:li:activity:1",
+        idempotency_key="k6",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    assert not any(ci[0] == "like" for ci in env["provider"].calls)
+    deferred = [j for j in env["redis"].jobs if j[0] == "publish_post"]
+    assert deferred
+    assert deferred[0][2]["_defer_by"] >= 60
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "approved"
