@@ -16,7 +16,11 @@ from app.models.campaign import Campaign
 from app.models.post import Post
 from app.models.social_account import SocialAccount
 from app.models.user import User
-from app.providers.linkedin import LinkedInAuthError, LinkedInRateLimitError
+from app.providers.linkedin import (
+    LinkedInAPIError,
+    LinkedInAuthError,
+    LinkedInRateLimitError,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -400,6 +404,44 @@ async def test_publish_generic_error_backoff_then_fail(db, env):
         assert rp.status == "failed"
 
 
+async def test_publish_comment_403_fails_fast_with_scope_message(db, env):
+    # Comments need w_member_social_feed; a 403 must fail immediately (no retry)
+    # with an actionable message about the Community Management API.
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="comment",
+        body="nice",
+        status="approved",
+        target_external_id="urn:li:activity:1",
+        idempotency_key="k403",
+    )
+    db.add(p)
+    await db.commit()
+
+    async def _forbidden(*a, **k):
+        raise LinkedInAPIError(403, "ACCESS_DENIED")
+
+    env["provider"].comment = _forbidden
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    # No retry was scheduled.
+    assert not [j for j in env["redis"].jobs if j[0] == "publish_post"]
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "failed"
+        assert rp.retries == 0
+        assert "w_member_social_feed" in (rp.error or "")
+        assert "Community Management" in (rp.error or "")
+
+
 async def test_publish_auth_error_marks_stale_and_reconnect(db, env, monkeypatch):
     user = await _user(db)
     acct = await _account(db, user)
@@ -547,6 +589,52 @@ async def test_publish_body_placement_no_first_comment(db, env):
         rp = await s.get(Post, p.id)
         assert rp.status == "published"
         assert rp.first_comment_external_id is None
+
+
+async def test_publish_first_comment_403_rolls_back_immediately(db, env):
+    # First-comment placement also needs w_member_social_feed. A 403 there must
+    # roll back the already-live body (all-or-nothing) and fail fast, not retry.
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(
+        title="C",
+        type="distribute",
+        status="publishing",
+        link="https://ex.com",
+        link_placement="first_comment",
+    )
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="post",
+        body="hello",
+        status="approved",
+        idempotency_key="k403fc",
+    )
+    db.add(p)
+    await db.commit()
+
+    async def _forbidden(*a, **k):
+        raise LinkedInAPIError(403, "ACCESS_DENIED")
+
+    env["provider"].comment = _forbidden
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    calls = env["provider"].calls
+    # Body published once, then rolled back; no retry was scheduled.
+    assert sum(1 for ci in calls if ci[0] == "publish") == 1
+    assert ("delete_post", "urn:li:share:new") in calls
+    assert not [j for j in env["redis"].jobs if j[0] == "publish_post"]
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "failed"
+        assert rp.retries == 0
+        assert "first comment" in (rp.error or "")
+        assert "w_member_social_feed" in (rp.error or "")
 
 
 async def test_publish_first_comment_permanent_failure_rolls_back(db, env):

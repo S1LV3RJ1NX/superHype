@@ -39,6 +39,14 @@ def _require_owner_or_admin(post: Post, user: User) -> None:
         raise HTTPException(403, "You can only act on your own posts.")
 
 
+def _require_owner(post: Post, user: User) -> None:
+    # Approval publishes under the owner's own LinkedIn token, and only the owner
+    # can re-consent a stale token, so no one (not even an admin) approves on
+    # another person's behalf. Admin override stays on skip/edit for cleanup.
+    if post.user_id != user.id:
+        raise HTTPException(403, "Only the post owner can approve this post.")
+
+
 async def list_posts(
     db: AsyncSession, campaign_id: uuid.UUID, params: PageParams, user: User
 ) -> Page[PostOut]:
@@ -83,21 +91,27 @@ async def update_post(
 
 async def approve_post(db: AsyncSession, post_id: uuid.UUID, actor: User) -> PostOut:
     post = await _load_or_404(db, post_id)
-    _require_owner_or_admin(post, actor)
+    _require_owner(post, actor)
     if post.status not in ("pending", "scheduled"):
         raise HTTPException(409, "Only pending posts can be approved.")
 
+    # Launch is compulsory: nothing publishes until the campaign is launched.
+    # Before launch only edits to the plan are allowed. launched_at is set
+    # synchronously by the launch controller, so this gate has no race with the
+    # async transition to "publishing".
+    campaign = await campaign_repo.get(db, post.campaign_id)
+    if campaign is None:
+        raise HTTPException(404, "Campaign not found.")
+    if campaign.launched_at is None:
+        raise HTTPException(409, "Launch the campaign before approving posts.")
+
     # Pre-check the publishing account so we never approve against a dying token.
-    # Only the post owner can re-consent, so the proactive reconnect-then-act gate
-    # applies to them; an admin acting on another user's post falls back to the
-    # reactive 401 path (mark stale + request_reconnect) at publish time.
+    # The actor is always the owner here, so they can re-consent through the
+    # proactive reconnect-then-act gate.
     account = await social_account_repo.get_by_user(db, post.user_id)
-    if actor.id == post.user_id and (
-        account is None
-        or account.needs_reconnect(
-            now=datetime.now(UTC),
-            buffer_hours=settings.LINKEDIN_RECONNECT_BUFFER_HOURS,
-        )
+    if account is None or account.needs_reconnect(
+        now=datetime.now(UTC),
+        buffer_hours=settings.LINKEDIN_RECONNECT_BUFFER_HOURS,
     ):
         raise HTTPException(
             409,

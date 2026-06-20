@@ -35,7 +35,10 @@ class Settings(BaseSettings):
     # Security.
     JWT_SECRET: str
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 720
+    # App session lifetime. 7 days by default for an internal tool, so people are
+    # not pushed back through Google login during a normal work week. There is no
+    # refresh token; when this expires the next request 401s and the SPA re-logs in.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080
     TOKEN_ENCRYPTION_KEY: str
     OAUTHLIB_INSECURE_TRANSPORT: bool = False
 

@@ -30,6 +30,20 @@ class GenerationError(Exception):
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?", re.MULTILINE)
 _FENCE_CLOSE_RE = re.compile(r"\n?```\s*$", re.MULTILINE)
 
+# AGENTS.md bans em dashes in any copy, and on the 2026 feed they read as an AI
+# tell. The prompts forbid them, but models slip, so we strip em and en dashes
+# deterministically as a hard guarantee before the text ever reaches LinkedIn.
+_DASH_BREAK_RE = re.compile(r"\s*[\u2014\u2013]\s*")
+_NUM_RANGE_DASH_RE = re.compile(r"(?<=\d)\s*[\u2014\u2013]\s*(?=\d)")
+
+
+def _strip_em_dashes(text: str) -> str:
+    """Replace em/en dashes with natural punctuation (ranges keep a hyphen)."""
+    text = _NUM_RANGE_DASH_RE.sub("-", text)
+    text = _DASH_BREAK_RE.sub(", ", text)
+    text = re.sub(r"\s+,", ",", text)
+    return re.sub(r",\s*,", ",", text)
+
 
 def _safe_exc(exc: Exception) -> str:
     """Return a log-safe summary, stripping anything that looks like a token."""
@@ -113,7 +127,7 @@ async def generate_variations(
             f"LLM output does not match the variations contract: {exc}"
         ) from exc
 
-    items = [v.strip() for v in result.variations if v.strip()]
+    items = [_strip_em_dashes(v.strip()) for v in result.variations if v.strip()]
     if not items:
         raise GenerationError("LLM returned no usable variations.")
     # Defensively normalize to exactly n: truncate extras, pad by cycling.
@@ -187,5 +201,5 @@ async def generate_interactions(
 
     out = ["" for _ in items]
     for pos, i in enumerate(text_indices):
-        out[i] = texts[pos] if pos < len(texts) else ""
+        out[i] = _strip_em_dashes(texts[pos]) if pos < len(texts) else ""
     return out

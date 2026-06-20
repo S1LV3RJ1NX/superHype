@@ -8,6 +8,7 @@ synthetic user of a given role, auth_headers mints a real JWT.
 import uuid
 from collections.abc import AsyncGenerator
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import (
@@ -34,6 +35,20 @@ _SQLITE_TABLES = [
     AuditLog.__table__,
     SocialAccount.__table__,
 ]
+
+
+@pytest.fixture(autouse=True)
+def _pin_account_guardrails(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin per-account action guardrails so the suite ignores local .env tuning.
+
+    The publish-defer tests assert on exact min-gap spacing and the daily cap. A
+    developer's backend/.env may relax these for fast local UI testing, so pin
+    them to the code defaults here to keep tests deterministic.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "MIN_SECONDS_BETWEEN_ACCOUNT_ACTIONS", 90)
+    monkeypatch.setattr(settings, "MAX_ACTIONS_PER_ACCOUNT_PER_DAY", 10)
 
 
 @pytest_asyncio.fixture

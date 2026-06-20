@@ -47,14 +47,31 @@ async def _amplify_with_post(client, user):
     return cid, posts.json()["items"][0]
 
 
-async def test_owner_can_edit_then_approve(client, as_role, enqueued, db):
+async def _launch(client, cid):
+    """Launch a campaign so its posts can be approved (launch is compulsory)."""
+    resp = await client.post(f"/v1/campaigns/{cid}/launch")
+    assert resp.status_code == 200
+
+
+async def test_cannot_approve_before_launch(client, as_role, db):
+    # Launch is compulsory: pre-launch only edits to the plan are allowed.
     async with as_role("editor") as user:
         _, post = await _amplify_with_post(client, user)
+        await _connect(db, user.id)
+        resp = await client.post(f"/v1/posts/{post['id']}/approve")
+    assert resp.status_code == 409
+    assert "Launch" in resp.json()["detail"]
+
+
+async def test_owner_can_edit_then_approve(client, as_role, enqueued, db):
+    async with as_role("editor") as user:
+        cid, post = await _amplify_with_post(client, user)
         await _connect(db, user.id)
         edited = await client.patch(f"/v1/posts/{post['id']}", json={"body": "edited"})
         assert edited.status_code == 200
         assert edited.json()["body"] == "edited"
 
+        await _launch(client, cid)
         approved = await client.post(f"/v1/posts/{post['id']}/approve")
     assert approved.status_code == 200
     assert approved.json()["status"] == "approved"
@@ -63,7 +80,8 @@ async def test_owner_can_edit_then_approve(client, as_role, enqueued, db):
 
 async def test_approve_requires_reconnect_without_account(client, as_role):
     async with as_role("editor") as user:
-        _, post = await _amplify_with_post(client, user)
+        cid, post = await _amplify_with_post(client, user)
+        await _launch(client, cid)
         resp = await client.post(f"/v1/posts/{post['id']}/approve")
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "linkedin_reconnect_required"
@@ -71,8 +89,9 @@ async def test_approve_requires_reconnect_without_account(client, as_role):
 
 async def test_approve_requires_reconnect_when_stale(client, as_role, db):
     async with as_role("editor") as user:
-        _, post = await _amplify_with_post(client, user)
+        cid, post = await _amplify_with_post(client, user)
         await _connect(db, user.id, status="stale")
+        await _launch(client, cid)
         resp = await client.post(f"/v1/posts/{post['id']}/approve")
     assert resp.status_code == 409
     assert resp.json()["detail"]["code"] == "linkedin_reconnect_required"
@@ -86,6 +105,27 @@ async def test_non_owner_cannot_approve(client, as_role):
     assert resp.status_code == 403
 
 
+async def test_admin_cannot_approve_others_post(client, as_role, db):
+    # Approval publishes under the owner's own token, so even an admin must not
+    # approve on someone else's behalf.
+    async with as_role("editor") as owner:
+        _, post = await _amplify_with_post(client, owner)
+        await _connect(db, owner.id)
+    async with as_role("admin", email="boss@test.local"):
+        resp = await client.post(f"/v1/posts/{post['id']}/approve")
+    assert resp.status_code == 403
+
+
+async def test_admin_can_skip_others_post(client, as_role):
+    # Admin keeps the override on skip so a stuck or abandoned item can be cleared.
+    async with as_role("editor") as owner:
+        _, post = await _amplify_with_post(client, owner)
+    async with as_role("admin", email="boss@test.local"):
+        resp = await client.post(f"/v1/posts/{post['id']}/skip")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "skipped"
+
+
 async def test_skip_marks_skipped(client, as_role):
     async with as_role("editor") as user:
         _, post = await _amplify_with_post(client, user)
@@ -96,8 +136,9 @@ async def test_skip_marks_skipped(client, as_role):
 
 async def test_cannot_approve_already_approved(client, as_role, db):
     async with as_role("editor") as user:
-        _, post = await _amplify_with_post(client, user)
+        cid, post = await _amplify_with_post(client, user)
         await _connect(db, user.id)
+        await _launch(client, cid)
         await client.post(f"/v1/posts/{post['id']}/approve")
         again = await client.post(f"/v1/posts/{post['id']}/approve")
     assert again.status_code == 409

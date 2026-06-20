@@ -196,6 +196,81 @@ async def test_viewer_cannot_plan_distribute(client, as_role):
     assert resp.status_code == 403
 
 
+async def test_delete_campaign_removes_posts_and_audits(client, as_role, db):
+    from sqlalchemy import func, select
+
+    from app.models.audit_log import AuditLog
+    from app.models.post import Post
+
+    async with as_role("editor") as user:
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+        await client.post(
+            f"/v1/campaigns/{cid}/plan",
+            json={"assignments": [{"user_id": str(user.id), "action": "like"}]},
+        )
+        resp = await client.delete(f"/v1/campaigns/{cid}")
+        assert resp.status_code == 204
+
+        # Detail is gone, and no posts or campaign-scoped audit rows remain.
+        gone = await client.get(f"/v1/campaigns/{cid}")
+        assert gone.status_code == 404
+
+    import uuid as _uuid
+
+    cuid = _uuid.UUID(cid)
+    posts = await db.scalar(
+        select(func.count()).select_from(Post).where(Post.campaign_id == cuid)
+    )
+    audits = await db.scalar(
+        select(func.count()).select_from(AuditLog).where(AuditLog.campaign_id == cuid)
+    )
+    assert posts == 0
+    assert audits == 0
+    # A terminal campaign_deleted audit row is written with a null campaign_id.
+    deleted_rows = await db.scalar(
+        select(func.count())
+        .select_from(AuditLog)
+        .where(AuditLog.action == "campaign_deleted")
+    )
+    assert deleted_rows >= 1
+
+
+async def test_delete_campaign_non_owner_forbidden(client, as_role):
+    async with as_role("editor"):
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+    async with as_role("editor", email="intruder@test.local"):
+        resp = await client.delete(f"/v1/campaigns/{cid}")
+    assert resp.status_code == 403
+
+
+async def test_delete_campaign_blocked_after_launch(client, as_role, db):
+    from app.models.campaign import Campaign
+
+    async with as_role("editor"):
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+
+        import uuid as _uuid
+
+        campaign = await db.get(Campaign, _uuid.UUID(cid))
+        campaign.status = "publishing"
+        await db.commit()
+
+        resp = await client.delete(f"/v1/campaigns/{cid}")
+    assert resp.status_code == 409
+
+
 async def test_list_only_shows_own_campaigns(client, as_role):
     async with as_role("editor"):
         await client.post(

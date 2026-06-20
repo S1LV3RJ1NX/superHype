@@ -44,20 +44,33 @@ class PostRepository(BaseRepository[Post]):
         )
         return list((await db.execute(stmt)).scalars().all())
 
-    async def delete_unlocked_for_campaign(
+    async def delete_pending_for_campaign(
         self, db: AsyncSession, campaign_id: uuid.UUID
     ) -> None:
-        """Delete posts that are still editable (not approved/published/skipped).
+        """Delete only pending posts (those not yet approved or triggered).
 
-        Used when rebuilding or regenerating a plan; approved or published work is
-        never touched.
+        Used when rebuilding or regenerating a plan. Posts that have been approved
+        and are awaiting publish (``scheduled``), already published, failed, or
+        skipped are never touched, so editing a plan cannot undo work in flight.
         """
         await db.execute(
             delete(Post).where(
                 Post.campaign_id == campaign_id,
-                Post.status.in_(("pending", "scheduled")),
+                Post.status == "pending",
             )
         )
+        await db.flush()
+
+    async def delete_all_for_campaign(
+        self, db: AsyncSession, campaign_id: uuid.UUID
+    ) -> None:
+        """Delete every post for a campaign, regardless of status.
+
+        Used when deleting a whole campaign. The self-referential `target_post_id`
+        is resolved within the single statement, so posters and interactions go
+        together.
+        """
+        await db.execute(delete(Post).where(Post.campaign_id == campaign_id))
         await db.flush()
 
     async def mark_published(

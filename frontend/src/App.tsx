@@ -8,6 +8,7 @@ import { Dashboard } from "@/pages/Dashboard";
 import { Landing } from "@/pages/Landing";
 import { LinkedInCallback } from "@/pages/LinkedInCallback";
 import { CampaignDetail } from "@/pages/CampaignDetail";
+import { CampaignEditor } from "@/pages/CampaignEditor";
 import { Campaigns } from "@/pages/Campaigns";
 import { Users } from "@/pages/Users";
 
@@ -34,10 +35,26 @@ export default function App() {
           }
         />
         <Route
+          path="/app/campaigns/new"
+          element={
+            <ProtectedRoute>
+              <CampaignEditor />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="/app/campaigns/:id"
           element={
             <ProtectedRoute>
               <CampaignDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app/campaigns/:id/edit"
+          element={
+            <ProtectedRoute>
+              <CampaignEditor />
             </ProtectedRoute>
           }
         />

@@ -125,6 +125,31 @@ async def test_build_plan_replaces_pending_but_keeps_published(db):
     assert statuses == ["pending", "published"]
 
 
+async def test_build_plan_keeps_scheduled_posts(db):
+    u = await _user(db)
+    c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:2")
+    # An approved post awaiting publish must survive a re-plan.
+    scheduled = Post(
+        campaign_id=c.id,
+        user_id=u.id,
+        action="like",
+        status="scheduled",
+        idempotency_key="old:scheduled",
+    )
+    db.add(scheduled)
+    await db.flush()
+
+    await campaign_service.build_plan(
+        db,
+        c.id,
+        [Assignment(user_id=u.id, action="comment", body="fresh")],
+        generate=False,
+    )
+    all_posts = await post_repo.list_for_campaign(db, c.id)
+    statuses = sorted(p.status for p in all_posts)
+    assert statuses == ["pending", "scheduled"]
+
+
 async def test_check_completion_moves_to_completed(db):
     u = await _user(db)
     c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:1")

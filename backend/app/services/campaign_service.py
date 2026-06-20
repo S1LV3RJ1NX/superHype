@@ -41,6 +41,35 @@ TRANSITIONS: dict[str, set[str]] = {
 }
 
 
+async def delete_campaign(
+    db: AsyncSession,
+    campaign: Campaign,
+    *,
+    actor_id: uuid.UUID | None = None,
+) -> None:
+    """Delete a campaign and everything that references it.
+
+    The FKs from posts and audit_log to campaigns have no ON DELETE rule, so the
+    children are removed first. The final `campaign_deleted` audit row carries a
+    null campaign_id (the row is gone) with the identity in `detail`. The caller
+    owns the commit.
+    """
+    detail = {
+        "id": str(campaign.id),
+        "title": campaign.title,
+        "type": campaign.type,
+    }
+    await audit_repo.delete_for_campaign(db, campaign.id)
+    await post_repo.delete_all_for_campaign(db, campaign.id)
+    await campaign_repo.delete(db, campaign)
+    await audit_repo.record(
+        db,
+        actor_id=actor_id,
+        action="campaign_deleted",
+        detail=detail,
+    )
+
+
 async def transition(
     db: AsyncSession,
     campaign: Campaign,
@@ -74,15 +103,15 @@ async def build_plan(
 ) -> list[Post]:
     """Create post rows from an assignment plan, optionally filling text via LLM.
 
-    Replaces any existing editable (pending/scheduled) posts so the call is safe to
-    re-run; approved or published work is never touched. Moves the campaign to
-    `review`.
+    Replaces only the pending posts so the call is safe to re-run; approved work
+    awaiting publish (`scheduled`), published, failed, or skipped posts are never
+    touched. Moves the campaign to `review`.
     """
     campaign = await campaign_repo.get(db, campaign_id)
     if campaign is None:
         raise TransitionError("Campaign not found.")
 
-    await post_repo.delete_unlocked_for_campaign(db, campaign_id)
+    await post_repo.delete_pending_for_campaign(db, campaign_id)
 
     post_assignments = [a for a in assignments if a.action == "post"]
     interaction_assignments = [a for a in assignments if a.action != "post"]

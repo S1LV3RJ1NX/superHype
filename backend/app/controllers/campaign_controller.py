@@ -145,6 +145,21 @@ async def update_campaign(
     return CampaignOut.model_validate(campaign)
 
 
+_DELETABLE_STATUSES = ("draft", "review", "failed")
+
+
+async def delete_campaign(
+    db: AsyncSession, campaign_id: uuid.UUID, actor: User
+) -> None:
+    campaign = await _load_or_404(db, campaign_id)
+    if not (_is_admin(actor) or campaign.created_by == actor.id):
+        raise HTTPException(403, "Only the creator or an admin can delete a campaign.")
+    if campaign.status not in _DELETABLE_STATUSES:
+        raise HTTPException(409, "Only un-launched campaigns can be deleted.")
+    await campaign_service.delete_campaign(db, campaign, actor_id=actor.id)
+    await db.commit()
+
+
 async def build_plan(
     db: AsyncSession, campaign_id: uuid.UUID, body: PlanRequest, actor: User
 ) -> list[PostOut]:

@@ -62,6 +62,15 @@ async def update_campaign(
     return await campaign_controller.update_campaign(db, campaign_id, body, actor)
 
 
+@router.delete("/{campaign_id}", status_code=204)
+async def delete_campaign(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_user),
+) -> None:
+    await campaign_controller.delete_campaign(db, campaign_id, actor)
+
+
 @router.post("/{campaign_id}/plan", response_model=list[PostOut])
 async def build_plan(
     campaign_id: uuid.UUID,

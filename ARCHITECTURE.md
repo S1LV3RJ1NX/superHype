@@ -342,10 +342,16 @@ stateDiagram-v2
 - `build_plan` turns an assignment list into post rows. For amplify it creates
   interaction rows against the seed URN. For distribute it creates `post`
   (variation) rows and interaction rows linked by `target_post_id`. Each row gets
-  a unique idempotency key, and a rebuild preserves already approved or published
-  work.
+  a unique idempotency key. A rebuild replaces only `pending` rows, so approved
+  work awaiting publish (`scheduled`), published, failed, or skipped posts survive
+  editing the plan. The portal edits a plan through the two-step campaign wizard
+  (`/app/campaigns/:id/edit`); the read-only campaign view does not show it.
 - `check_completion` moves a `publishing` campaign to `completed` once every post
   is terminal.
+- `delete_campaign` removes an un-launched campaign (`draft`, `review`, or
+  `failed`) along with its posts and audit rows; the FKs carry no ON DELETE rule,
+  so the children are cleared first and a final `campaign_deleted` audit row is
+  written with a null campaign_id. Restricted to the creator or an admin.
 
 RBAC for campaigns: amplify create, launch, and generate are open to any role;
 distribute create and generate require editor or above. The fine ownership rules
@@ -376,6 +382,9 @@ SDK, and never a hardcoded model name.
   regenerates once, then raises `GenerationError`. This keeps a coordinated push
   from reading as a bot pod.
 - `like` items never call the LLM (a like has no text).
+- Tone and length hints govern distribute variation bodies and reshare commentary
+  (`repost_comment`) only. Comments are written from the pasted post content and
+  ignore the tone/length presets, so they read as genuine reactions.
 
 ## 9. Worker and publishing pipeline
 
@@ -392,7 +401,11 @@ SDK, and never a hardcoded model name.
 - `send_reminders` and `request_reconnect`: stubs until the Slack phase.
 
 Approvals: when a person approves their own post (via `post_controller`), an
-individual `publish_post` job is enqueued.
+individual `publish_post` job is enqueued. Launch is compulsory, so approval is
+rejected (409) until the campaign is launched (`campaigns.launched_at` is set).
+Before launch only plan edits are allowed; nothing reaches the publish queue. The
+portal hides the per-post Approve and Skip buttons until launch and surfaces a
+hint, and renders the `publishing` status as "Active".
 
 ### publish_post
 
@@ -494,3 +507,10 @@ image upload, `delete_post`, and `refresh`.
 - Expiry-sweep cron. A daily sweep over `social_accounts.expires_at` to refresh or
   prompt reconnect is deferred (the supporting index already exists).
 - Insights. `provider.insights` is not implemented in v1.
+- Amplify post text. Generation needs the target post's text to write relevant
+  comments, but we only store the URN and cannot read arbitrary post bodies with
+  the `w_member_social` scope (`GET /rest/posts/{urn}` needs the restricted
+  `r_member_social`). For now the user pastes the post text into `seed_content`. A
+  future best-effort fetch from the public embed page
+  (`/embed/feed/update/urn:li:share:{id}`) via `safe_fetch` could prefill it, with
+  manual paste as the fallback.

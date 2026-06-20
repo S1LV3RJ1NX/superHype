@@ -87,6 +87,8 @@ def variations_system(
         "- End most posts with a genuine reason to engage (a real question or a "
         "mild take).\n"
         "- Aim for roughly 120 to 200 words.\n"
+        "- Never use em dashes or en dashes (the characters and the words). Use "
+        "commas, periods, colons, or parentheses instead.\n"
         f"- {_banned_phrase_line()}\n\n"
         f"{hints} {extra or ''}\n\n"
         'Respond with a single JSON object: {"variations": ["...", ...]} '
@@ -105,19 +107,30 @@ def interactions_system(
 ) -> str:
     """System prompt for generating `count` distinct interaction texts."""
     hints = _hint_block(tone=tone, length=length, language=language)
+    reshare_style = (
+        f"For reshare commentary (action=repost_comment) only, apply this style: "
+        f"{hints}\n\n"
+        if hints
+        else ""
+    )
     return (
         "You write short, natural LinkedIn interactions (comments and reshare "
         "commentary) reacting to a post. Each must be distinct and human, never "
         "templated or repetitive.\n\n"
-        "Comment rules:\n"
-        "- 1 to 3 sentences that add a new point, ask a real question, or share a "
-        "related experience. Be specific to the post's actual content.\n"
+        "Comment rules (action=comment):\n"
+        "- React to the post's actual content. 1 to 3 sentences that add a new "
+        "point, ask a real question, or share a related experience.\n"
+        "- Driven by the post content, not by any tone or length preset.\n"
         "- Never restate the post, and make each text clearly different from the "
         "others.\n"
         '- Banned: generic praise such as "Great post", "Congrats team", "Love '
-        'this", or "This is huge", and any one-word or emoji-only reaction.\n'
-        f"- {_banned_phrase_line()}\n\n"
-        f"{hints} {extra or ''}\n\n"
+        'this", or "This is huge", and any one-word or emoji-only reaction.\n\n'
+        "Reshare commentary rules (action=repost_comment):\n"
+        "- A short framing line a person adds when resharing the post, in their "
+        "own voice and specific to the post.\n\n"
+        "All texts: never use em dashes or en dashes; use commas, periods, or "
+        f"parentheses instead. {_banned_phrase_line()}\n\n"
+        f"{reshare_style}{extra or ''}\n\n"
         f"Produce exactly {count} texts for the numbered items below, and respond "
         'with a single JSON object: {"texts": ["...", ...]} indexed to those item '
         "numbers.\n\n"

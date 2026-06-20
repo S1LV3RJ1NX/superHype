@@ -195,7 +195,7 @@ Scaffold tests (pytest + pytest-asyncio):
 ### Service (done)
 - [x] `app/services/campaign_service.py` state machine `draft -> generating | review`, `generating -> review | failed`, `review -> generating | publishing`, `publishing -> completed | failed` (no `approved` state); `transition` (validate + audit), `build_plan` (manual or LLM fill; variation `post` rows + interaction rows; unique idempotency keys `{cid}:{action}:{user}:{seq}`; rebuild preserves approved/published work), `check_completion`
 - [x] `app/repositories/campaign_repo.py` `set_status`, `count_by_status`, `paginate_for_user` (creator/participant/admin visibility)
-- [x] `app/repositories/post_repo.py` `paginate_for_campaign`, `list_for_campaign`, `list_pending_for_user`, `mark_published`, `mark_failed`, `bulk_create`, `delete_unlocked_for_campaign`, `all_terminal`
+- [x] `app/repositories/post_repo.py` `paginate_for_campaign`, `list_for_campaign`, `list_pending_for_user`, `mark_published`, `mark_failed`, `bulk_create`, `delete_pending_for_campaign`, `all_terminal`
 
 ### API (done)
 - [x] `app/views/campaigns.py` list, `POST` create (controller gates distribute to editor+), `GET /{id}` (creator/admin/participant), `PATCH /{id}` (creator/admin, draft/review only), `POST /{id}/plan` (manual assignments), `POST /{id}/generate` (LLM; amplify any role, distribute editor+; enqueues `generate_drafts`), `POST /{id}/launch` (creator/admin; enqueues `launch_campaign`)
@@ -214,13 +214,14 @@ Scaffold tests (pytest + pytest-asyncio):
 - [-] Daily expiry-sweep cron (deferred; not needed until token-expiry handling lands)
 
 ### Frontend (done)
-- [x] `Campaigns.tsx` list with status badges + pagination + amplify/distribute create form (distribute gated to editors); nav + routes wired in `App.tsx`/`AppShell.tsx`
-- [x] `CampaignDetail.tsx` two-pane: seed + plan builder (Save plan / Generate) + Launch on the left; posts grouped with inline edit and per-post Approve/Skip + publish progress bar on the right
+- [x] `Campaigns.tsx` list with status badges + pagination + per-row View/Edit/Delete actions (edit gated to draft/review, edit+delete gated to creator/admin); nav + routes wired in `App.tsx`/`AppShell.tsx`
+- [x] `CampaignEditor.tsx` hosts the shared two-step `CampaignWizard` for both create (`/app/campaigns/new`) and edit (`/app/campaigns/:id/edit`): step 1 details (`CampaignFields`, type locked on edit), step 2 people matrix (`PlanBuilder`: search, connected filter, select-all + bulk apply, per-person like/comment/repost) with Save plan / Generate; edit guarded to draft/review + creator/admin
+- [x] `CampaignDetail.tsx` read-only view: seed/info + posts grouped with inline edit and per-post Approve/Skip + publish progress bar; Edit (to wizard) / Delete (type-to-confirm) / Launch in the header; distribute create + generate gated to editors
 - [x] Reusable `.input` component class added to `globals.css`
 
-### Tests (128 backend passing; frontend `tsc` + `vite build` clean)
+### Tests (144 backend passing; frontend `tsc` + `vite build` clean)
 - [x] `test_linkedin_urn.py` (4): feed + posts URL forms, bare URN passthrough, junk -> None
-- [x] `test_campaign_service.py` (7): legal/illegal transitions; amplify targets seed URN; distribute links `target_post_id`; unique idempotency keys; rebuild keeps published; `check_completion` (and no-op when pending)
+- [x] `test_campaign_service.py` (8): legal/illegal transitions; amplify targets seed URN; distribute links `target_post_id`; unique idempotency keys; rebuild keeps published; rebuild keeps scheduled; `check_completion` (and no-op when pending)
 - [x] `test_campaigns_api.py` (7): viewer creates amplify, viewer 403 on distribute, editor creates distribute, detail counts, generate enqueues + `generating`, launch requires review + enqueues, list shows only own
 - [x] `test_posts_api.py` (5): owner edit+approve enqueues publish, non-owner 403, skip, double-approve 409, missing 404
 - [x] `test_assets_api.py` (4): upload+serve round-trip, viewer 403, non-image 415, oversize 413

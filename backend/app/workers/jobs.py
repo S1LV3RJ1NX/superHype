@@ -19,6 +19,7 @@ from app.models.campaign import Campaign
 from app.models.post import Post
 from app.models.social_account import SocialAccount
 from app.providers.linkedin import (
+    LinkedInAPIError,
     LinkedInAuthError,
     LinkedInProvider,
     LinkedInRateLimitError,
@@ -206,6 +207,26 @@ async def _rollback_published_post(
     )
 
 
+def _forbidden_message(action: str, exc: LinkedInAPIError) -> str:
+    """Human-readable reason for a 403 so the failure is actionable in the UI.
+
+    Comments and likes go through the socialActions API, which needs the
+    w_member_social_feed scope. That scope is part of the Community Management
+    API and is not self-serve; a standard Share-on-LinkedIn app (w_member_social)
+    can publish and reshare but cannot comment or like.
+    """
+    if action in ("comment", "like"):
+        return (
+            "Failed: LinkedIn denied this action (403). Comments and likes use the "
+            "socialActions API, which requires the w_member_social_feed scope. That "
+            "scope is granted only through the Community Management API (not "
+            "self-serve). This app currently holds w_member_social, which covers "
+            "posts and reshares but not comments or likes. Request Community "
+            "Management API access to enable them."
+        )
+    return f"Failed: LinkedIn denied this action (403). {exc}"[:1000]
+
+
 async def publish_post(ctx: dict, post_id: str) -> None:
     pid = uuid.UUID(post_id)
     async with async_session_factory() as db:
@@ -334,8 +355,47 @@ async def publish_post(ctx: dict, post_id: str) -> None:
             )
         except Exception as exc:
             await db.rollback()
+            # Surface the real reason (LinkedInAPIError carries the status code and
+            # response body) so failures are debuggable from logs and the post row.
+            log.warning(
+                "publish_post.attempt_failed",
+                post_id=post_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
             post = await post_repo.get(db, pid)
             if post is None:
+                return
+            # A 403 is a permissions problem (typically a missing scope, e.g.
+            # comments/likes need w_member_social_feed). Retrying never helps, so
+            # fail immediately with an actionable message.
+            if isinstance(exc, LinkedInAPIError) and exc.status_code == 403:
+                # If the body is already live and only the link-in-first-comment
+                # failed (the first comment also needs w_member_social_feed), roll
+                # the post back so we honor all-or-nothing instead of leaving a
+                # live post recorded as failed.
+                if post.external_id is not None and (
+                    needs_fc and post.first_comment_external_id is None
+                ):
+                    acct = (
+                        await social_account_repo.get(db, post.social_account_id)
+                        if post.social_account_id is not None
+                        else None
+                    )
+                    if acct is not None:
+                        await _rollback_published_post(db, acct, post)
+                    msg = (
+                        "Failed: the post was rolled back because the link could not "
+                        "be placed in the first comment. Comments require the "
+                        "w_member_social_feed scope (Community Management API), which "
+                        "this app does not have. Use body link placement or request "
+                        "the scope."
+                    )
+                else:
+                    msg = _forbidden_message(post.action, exc)
+                await post_repo.mark_failed(db, post, msg)
+                await campaign_service.check_completion(db, post.campaign_id)
+                await db.commit()
                 return
             post.retries += 1
             if post.retries >= MAX_RETRIES:
@@ -351,7 +411,7 @@ async def publish_post(ctx: dict, post_id: str) -> None:
                     )
                     if acct is not None:
                         await _rollback_published_post(db, acct, post)
-                await post_repo.mark_failed(db, post, f"Failed: {type(exc).__name__}")
+                await post_repo.mark_failed(db, post, f"Failed: {exc}"[:1000])
                 await campaign_service.check_completion(db, post.campaign_id)
                 await db.commit()
             else:
