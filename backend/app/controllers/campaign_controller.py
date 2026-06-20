@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.deps import ROLE_HIERARCHY
-from app.core.linkedin_urn import parse_activity_urn
+from app.core.linkedin_urn import parse_post_urn
 from app.models.campaign import Campaign
 from app.models.user import User
 from app.repositories import audit_repo
@@ -79,7 +79,7 @@ async def create_campaign(
         type=body.type,
         raw_brief=body.raw_brief,
         seed_url=body.seed_url,
-        seed_urn=parse_activity_urn(body.seed_url),
+        seed_urn=parse_post_urn(body.seed_url),
         seed_content=body.seed_content,
         tone=body.tone,
         length=body.length,
@@ -130,7 +130,7 @@ async def update_campaign(
 
     updates = body.model_dump(exclude_unset=True)
     if "seed_url" in updates:
-        updates["seed_urn"] = parse_activity_urn(updates["seed_url"])
+        updates["seed_urn"] = parse_post_urn(updates["seed_url"])
     if updates:
         await campaign_repo.update(db, campaign, **updates)
         await audit_repo.record(

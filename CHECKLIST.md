@@ -188,7 +188,7 @@ Scaffold tests (pytest + pytest-asyncio):
 
 ### Model and storage (done)
 - [x] `app/models/asset.py` + `app/storage/base.py` (`AssetStore` Protocol) + `app/storage/db_store.py` (Postgres `bytea` backend, swappable to object storage later)
-- [x] `app/core/linkedin_urn.py` `parse_activity_urn(url)` for pasted LinkedIn URLs
+- [x] `app/core/linkedin_urn.py` `parse_post_urn(url)` for pasted LinkedIn URLs (share/copy-link, embed, and feed forms; preserves the activity/share/ugcPost namespace)
 - [x] Migration `7f3a9c2b1d04`: drop `writing_skills`, drop campaign hero/skill/approval columns, add campaign type/seed/hints + `launched_*`, add `posts.target_post_id`/`image_asset_id`/`image_url`/`image_alt`, create `assets`
 - [x] Migration `8a1c4e7d9b20`: add `posts.first_comment_external_id` (URN of the link-in-first-comment; doubles as the resume/idempotency marker)
 
