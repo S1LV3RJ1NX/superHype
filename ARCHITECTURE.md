@@ -97,7 +97,7 @@ app/
     crypto.py        Fernet encrypt/decrypt for tokens
     redis.py         Redis + ARQ redis settings
     safe_fetch.py    SSRF-guarded image fetch
-    linkedin_urn.py  parse a pasted LinkedIn URL into an activity URN
+    linkedin_urn.py  parse a pasted LinkedIn URL into a post URN (keeps the activity/share/ugcPost namespace)
   db/
     base.py          DeclarativeBase, mixins, naming convention
     session.py       async engine, session factory, get_db
