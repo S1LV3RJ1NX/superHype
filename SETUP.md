@@ -29,19 +29,54 @@ Step-by-step setup for local development and the three external apps you must re
 
 ---
 
-## 3. LinkedIn app (Share on LinkedIn)
+## 3. LinkedIn app
 
-1. Go to the LinkedIn Developer Portal and create an app. Associate it with your Company Page and verify the association.
-2. Under **Products**, request **Share on LinkedIn** and **Sign In with LinkedIn using OpenID Connect**. These are self-serve and grant `w_member_social` (post, comment, like on the member's behalf) and basic profile access. Do not request the Community Management API; it is review-gated, is not needed for personal-profile posting, and is mutually exclusive with Share on LinkedIn on the same app.
-3. Under **Auth**, add the redirect URL (it points at the frontend, matching the Google pattern):
+super-hype uses LinkedIn only to act on a member's behalf (connect, then post,
+reshare, comment, like). It does not use LinkedIn to log people into the app;
+that is Google (section 2). Which LinkedIn product you need depends on which
+actions you want.
+
+**Two paths:**
+
+- **Posts and reshares only (self-serve, quick):** request the **Share on
+  LinkedIn** product. It grants `w_member_social` (publish and reshare) plus
+  basic profile. This is enough to test the full reconnect-then-act flow.
+  Comments and likes will fail with a 403, because they use a different scope.
+- **Comments and likes too (vetted):** you need the **Community Management API**,
+  which adds `w_member_social_feed`. It is review-gated, must be the **only**
+  product on a dedicated app, and requires organization and Page verification.
+  Its scope set (`w_member_social` + `w_member_social_feed` + `r_basicprofile`)
+  is a superset of the Share path, so one Community-Management-only app can
+  replace the Share app entirely once approved, with just a client id and secret
+  swap. The full application process, eligibility, and AI-policy notes are in
+  [`LINKEDIN_COMMUNITY_MANAGEMENT.md`](LINKEDIN_COMMUNITY_MANAGEMENT.md).
+
+**Set up the app:**
+
+1. Go to the LinkedIn Developer Portal and create an app. Associate it with your
+   Company Page, then have a Page **super admin** approve the verification (only
+   the super admin role can approve the app-to-Page association).
+2. Under **Products**, add **Share on LinkedIn** for the posts-only path, or the
+   **Community Management API** on a dedicated app for the full path. Do not put
+   the Community Management API on the same app as other products; the portal
+   blocks it ("must be the only product"), so create a separate app for it.
+3. Under **Auth**, add the redirect URL (it points at the frontend, matching the
+   Google pattern). It must equal `FRONTEND_URL` + `/connections/linkedin/callback`:
    ```
    http://localhost:5173/connections/linkedin/callback
    https://app.yourcompany.com/connections/linkedin/callback
    ```
-4. Confirm the requested scopes are exactly `w_member_social` and `r_basicprofile`. Adding scopes later forces every connected user to re-consent, so set them once.
-5. Copy the **Client ID** and **Client Secret** into `LINKEDIN_CLIENT_ID` and `LINKEDIN_CLIENT_SECRET`.
-6. Set `LINKEDIN_API_VERSION` to the current version header in `YYYYMM` form (for example `202606`). The publish call sends this as `LinkedIn-Version`.
-7. In the portal's **Token Inspector**, generate a token and check whether a `refresh_token` is returned. If it is, the backend refreshes silently; if not, the Slack reconnect flow is the refresh path. Either way the code handles it.
+4. Confirm the requested scopes: `w_member_social` and `r_basicprofile` for the
+   Share path, plus `w_member_social_feed` once you are on the Community
+   Management API. Adding scopes later forces every connected user to re-consent,
+   so set them once.
+5. Copy the **Client ID** and **Client Secret** into `LINKEDIN_CLIENT_ID` and
+   `LINKEDIN_CLIENT_SECRET`.
+6. Set `LINKEDIN_API_VERSION` to the current version header in `YYYYMM` form (for
+   example `202606`). The publish call sends this as `LinkedIn-Version`.
+7. In the portal's **Token Inspector**, generate a token and check whether a
+   `refresh_token` is returned. If it is, the backend refreshes silently; if not,
+   the Slack reconnect flow is the refresh path. Either way the code handles it.
 
 ---
 

@@ -49,8 +49,9 @@ people who actually built the thing, without the spam.
 - **Real approval.** Each person approves, edits, or skips their own post in one
   tap from the web app (Slack coming next). Nothing publishes without them.
 - **Official API only.** No scraping and no credential capture. Every action
-  runs on each member's own LinkedIn consent (`w_member_social`, plus OpenID
-  Connect for identity).
+  runs on each member's own LinkedIn consent: `w_member_social` for posts and
+  reshares, and `w_member_social_feed` (LinkedIn's Community Management API) for
+  comments and likes.
 - **Concentrated reach.** Approved posts publish on a randomized stagger,
   clustered in the first ninety minutes, never all at once.
 
@@ -92,20 +93,29 @@ and reachable Postgres and Redis instances.
 cd backend
 cp .env.example .env          # fill in DATABASE_URL, REDIS_URL, etc.
 uv sync
-uv run alembic upgrade head   # create the schema
-uv run python -m app.seed     # bootstrap admin users
-uv run uvicorn app.main:app --reload   # http://localhost:8000
+uv run alembic upgrade head            # create the schema
+uv run python -m scripts.seed          # insert the default writing skill
+uv run uvicorn app.main:app --reload   # API on http://localhost:8000
 
-# Frontend (in a second shell)
+# Worker (in a second shell): runs generation and publishing
+cd backend
+uv run arq app.workers.arq_app.WorkerSettings
+
+# Frontend (in a third shell)
 cd frontend
 npm install
-npm run dev                   # http://localhost:5173
+npm run dev                            # http://localhost:5173
 ```
+
+The worker is required: generation, launch fan-out, and publishing all run as
+ARQ jobs, so drafts and published posts only appear once it is running.
 
 The API serves `GET /healthz`. Interactive docs live at `/docs` and `/redoc` in
 local/dev (disabled when `ENV` is production). Detailed setup, including external
 app registration, is in [`backend/README.md`](backend/README.md),
-[`frontend/README.md`](frontend/README.md), and [`SETUP.md`](SETUP.md).
+[`frontend/README.md`](frontend/README.md), and [`SETUP.md`](SETUP.md). For
+enabling comments and likes (LinkedIn's vetted Community Management API), see
+[`LINKEDIN_COMMUNITY_MANAGEMENT.md`](LINKEDIN_COMMUNITY_MANAGEMENT.md).
 
 ## Project status
 
