@@ -1,10 +1,16 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react";
 import {
+  AlertTriangle,
   ArrowLeft,
   Check,
+  Copy,
+  ExternalLink,
+  Link2,
+  Loader2,
   Pencil,
   RefreshCw,
   Rocket,
+  RotateCcw,
   SkipForward,
   Trash2,
 } from "lucide-react";
@@ -40,7 +46,16 @@ interface Post {
   body: string | null;
   status: string;
   target_post_id: string | null;
+  engagement_url: string | null;
+  acknowledged_at: string | null;
   error: string | null;
+}
+
+interface Readiness {
+  pending_count: number;
+  requires_linkedin: boolean;
+  connected: boolean;
+  needs_reconnect: boolean;
 }
 
 export function CampaignDetail() {
@@ -51,6 +66,8 @@ export function CampaignDetail() {
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [posts, setPosts] = useState<Post[]>([]);
   const [roster, setRoster] = useState<RosterUser[]>([]);
+  const [readiness, setReadiness] = useState<Readiness | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -67,9 +84,11 @@ export function CampaignDetail() {
       return next;
     });
 
+  // Production only deletes un-launched campaigns; local/dev can delete any
+  // status (test cleanup), matching the backend gate.
   const canDelete =
     !!campaign &&
-    DELETABLE_STATUSES.includes(campaign.status) &&
+    (import.meta.env.DEV || DELETABLE_STATUSES.includes(campaign.status)) &&
     (user?.role === "admin" || campaign.created_by === user?.id);
 
   const canEdit =
@@ -108,9 +127,71 @@ export function CampaignDetail() {
     }
   }, [id]);
 
+  // Merge a single post returned by an action into local state, so the card
+  // updates instantly without refetching the whole page.
+  const applyPost = useCallback((updated: Post) => {
+    setPosts((prev) =>
+      prev.map((p) => (p.id === updated.id ? { ...p, ...updated } : p)),
+    );
+  }, []);
+
+  // Reconcile campaign-level counts and status (e.g. progress, completion) in
+  // the background after a per-post action, without blocking the card's spinner.
+  const refreshCampaign = useCallback(async () => {
+    if (!id) return;
+    try {
+      const c = await apiFetch<Campaign>(`/v1/campaigns/${id}`);
+      setCampaign(c);
+    } catch {
+      // Non-fatal: the next poll or manual refresh will catch up.
+    }
+  }, [id]);
+
+  // Pre-flight LinkedIn check for me on this campaign, so we can prompt a
+  // reconnect before I start approving instead of failing mid-flow.
+  const refreshReadiness = useCallback(async () => {
+    if (!id) return;
+    try {
+      const r = await apiFetch<Readiness>(
+        `/v1/campaigns/${id}/approval-readiness`,
+      );
+      setReadiness(r);
+    } catch {
+      // Non-fatal: approval still has its own reconnect-then-act fallback.
+    }
+  }, [id]);
+
+  // Proactively send me through re-consent (no resume_post_id) so I land back
+  // here connected and ready to approve.
+  const reconnect = async () => {
+    setReconnecting(true);
+    try {
+      const { authorize_url } = await apiFetch<{ authorize_url: string }>(
+        `/v1/connections/linkedin/authorize`,
+      );
+      window.location.href = authorize_url;
+    } catch {
+      setError("Could not start LinkedIn reconnect. Please try again.");
+      setReconnecting(false);
+    }
+  };
+
   useEffect(() => {
     load();
-  }, [load]);
+    refreshReadiness();
+  }, [load, refreshReadiness]);
+
+  // While the campaign is doing background work (generating drafts, or
+  // publishing after launch), poll so new or published items appear without a
+  // manual refresh. Polling stops as soon as the status settles.
+  useEffect(() => {
+    const status = campaign?.status;
+    if (status !== "generating" && status !== "publishing") return;
+    const timer = setInterval(() => {
+      load();
+    }, 6000);
+    return () => clearInterval(timer);
+  }, [campaign?.status, load]);
 
   // Campaign-level action (Launch): blocks the header while it runs.
   const run = async (fn: () => Promise<unknown>) => {
@@ -126,13 +207,17 @@ export function CampaignDetail() {
     }
   };
 
-  // Per-post action: only the acted-on card is disabled while it runs.
-  const runPost = async (postId: string, fn: () => Promise<unknown>) => {
+  // Per-post action: only the acted-on card is disabled while it runs. The
+  // action returns the updated post, so we apply it directly (instant) and
+  // reconcile campaign counts in the background instead of reloading the page.
+  const runPost = async (postId: string, fn: () => Promise<Post>) => {
     setError(null);
     startActing(postId);
     try {
-      await fn();
-      await load();
+      const updated = await fn();
+      applyPost(updated);
+      void refreshCampaign();
+      void refreshReadiness();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Action failed");
     } finally {
@@ -152,8 +237,12 @@ export function CampaignDetail() {
     setError(null);
     startActing(postId);
     try {
-      await apiFetch(`/v1/posts/${postId}/approve`, { method: "POST" });
-      await load();
+      const updated = await apiFetch<Post>(`/v1/posts/${postId}/approve`, {
+        method: "POST",
+      });
+      applyPost(updated);
+      void refreshCampaign();
+      void refreshReadiness();
     } catch (err) {
       const code =
         err instanceof ApiError
@@ -184,14 +273,23 @@ export function CampaignDetail() {
           {error ? (
             <p className="text-sm text-fail">{error}</p>
           ) : (
-            <p className="text-sm text-muted-ink">Loading...</p>
+            <div className="flex items-center gap-2 text-muted-ink">
+              <Loader2 className="h-5 w-5 animate-spin" />
+              <p className="text-sm">Loading campaign...</p>
+            </div>
           )}
         </div>
       </AppShell>
     );
   }
 
-  const published = campaign.counts.published ?? 0;
+  // "Done" counts every settled item, not just API-published ones: acknowledged
+  // assisted-manual comments/likes and intentionally skipped items are resolved
+  // too. Failed items are excluded since they still need a retry or a skip.
+  const done =
+    (campaign.counts.published ?? 0) +
+    (campaign.counts.acknowledged ?? 0) +
+    (campaign.counts.skipped ?? 0);
   const total = campaign.post_count;
 
   return (
@@ -278,15 +376,15 @@ export function CampaignDetail() {
         {total > 0 && (
           <div className="mt-4">
             <div className="flex justify-between text-xs text-muted-ink">
-              <span>Published</span>
+              <span>Done</span>
               <span className="tabular">
-                {published} of {total}
+                {done} of {total}
               </span>
             </div>
             <div className="mt-1 h-2 overflow-hidden rounded-full bg-sand">
               <div
                 className="h-full bg-ok transition-all"
-                style={{ width: total ? `${(published / total) * 100}%` : "0%" }}
+                style={{ width: total ? `${(done / total) * 100}%` : "0%" }}
               />
             </div>
           </div>
@@ -315,6 +413,16 @@ export function CampaignDetail() {
             <h2 className="text-sm font-medium text-ink">
               Posts &amp; interactions
             </h2>
+            {campaign.status === "generating" && (
+              <div className="mt-3">
+                <Hint>
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Generating drafts. This page updates automatically.
+                  </span>
+                </Hint>
+              </div>
+            )}
             {posts.length > 0 && !campaign.launched_at && (
               <div className="mt-3">
                 <Hint>
@@ -322,6 +430,35 @@ export function CampaignDetail() {
                   plan. Launch notifies each person to approve, and approving is
                   what publishes their item.
                 </Hint>
+              </div>
+            )}
+            {readiness?.needs_reconnect && (
+              <div className="mt-3 flex items-start gap-3 rounded-lg border border-pending/30 bg-pending/5 p-4">
+                <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-pending" />
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-ink">
+                    {readiness.connected
+                      ? "Reconnect LinkedIn before approving"
+                      : "Connect LinkedIn before approving"}
+                  </p>
+                  <p className="mt-0.5 text-sm text-muted-ink">
+                    {readiness.connected
+                      ? "Your LinkedIn access is expired or expiring soon, so approvals here would fail. Reconnect now to publish smoothly."
+                      : "You have posts here that publish under your LinkedIn. Connect your account so you can approve them."}
+                  </p>
+                </div>
+                <button
+                  onClick={reconnect}
+                  disabled={reconnecting}
+                  className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-clay px-3 py-1.5 text-xs font-medium text-paper hover:bg-clay-press disabled:opacity-50"
+                >
+                  {reconnecting ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <Link2 className="h-3.5 w-3.5" />
+                  )}
+                  {readiness.connected ? "Reconnect" : "Connect"}
+                </button>
               </div>
             )}
             <div className="mt-3 space-y-3">
@@ -343,16 +480,25 @@ export function CampaignDetail() {
                   busy={actingIds.has(post.id)}
                   onEdit={(body) =>
                     runPost(post.id, () =>
-                      apiFetch(`/v1/posts/${post.id}`, {
+                      apiFetch<Post>(`/v1/posts/${post.id}`, {
                         method: "PATCH",
                         body: JSON.stringify({ body }),
                       }),
                     )
                   }
                   onApprove={() => approvePost(post.id)}
+                  onAck={() =>
+                    runPost(post.id, () =>
+                      apiFetch<Post>(`/v1/posts/${post.id}/ack`, {
+                        method: "POST",
+                      }),
+                    )
+                  }
                   onSkip={() =>
                     runPost(post.id, () =>
-                      apiFetch(`/v1/posts/${post.id}/skip`, { method: "POST" }),
+                      apiFetch<Post>(`/v1/posts/${post.id}/skip`, {
+                        method: "POST",
+                      }),
                     )
                   }
                 />
@@ -383,6 +529,7 @@ function PostCard({
   busy,
   onEdit,
   onApprove,
+  onAck,
   onSkip,
 }: {
   post: Post;
@@ -393,13 +540,17 @@ function PostCard({
   busy: boolean;
   onEdit: (body: string) => void;
   onApprove: () => void;
+  onAck: () => void;
   onSkip: () => void;
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(post.body ?? "");
   const owner = roster.find((u) => u.id === post.user_id);
-  const canAct = isAdmin || post.user_id === meId;
+  const isOwner = post.user_id === meId;
+  const canAct = isAdmin || isOwner;
   const pending = post.status === "pending" || post.status === "scheduled";
+  // Assisted-manual engagement: a comment or like the person performs by hand.
+  const actionRequired = post.status === "action_required";
 
   return (
     <div className="rounded-lg border border-border bg-surface p-4">
@@ -432,6 +583,16 @@ function PostCard({
             </p>
           )}
         </div>
+      )}
+
+      {actionRequired && (
+        <EngagementAsk
+          post={post}
+          isOwner={isOwner}
+          busy={busy}
+          onAck={onAck}
+          onSkip={canAct ? onSkip : undefined}
+        />
       )}
 
       {post.error && <p className="mt-2 text-xs text-fail">{post.error}</p>}
@@ -476,6 +637,118 @@ function PostCard({
           )}
         </div>
       )}
+
+      {/* A failed post can be retried by its owner (e.g. after reconnecting a
+          stale LinkedIn token); owner or admin can skip it to settle it. */}
+      {canAct && post.status === "failed" && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {isOwner && (
+            <button
+              onClick={onApprove}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md bg-clay px-3 py-1.5 text-xs font-medium text-paper hover:bg-clay-press disabled:opacity-50"
+            >
+              {busy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3.5 w-3.5" />
+              )}
+              Retry
+            </button>
+          )}
+          <button
+            onClick={onSkip}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
+          >
+            <SkipForward className="h-3.5 w-3.5" />
+            Skip
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The guided human step for a comment or like: open the post on LinkedIn, paste
+// the suggested text (comment only), act, then mark it done. Only the owner can
+// mark it done since only they can actually perform the action.
+function EngagementAsk({
+  post,
+  isOwner,
+  busy,
+  onAck,
+  onSkip,
+}: {
+  post: Post;
+  isOwner: boolean;
+  busy: boolean;
+  onAck: () => void;
+  onSkip?: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const isComment = post.action === "comment";
+
+  const copyText = async () => {
+    if (!post.body) return;
+    try {
+      await navigator.clipboard.writeText(post.body);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard can be blocked; the text is still visible above to copy by hand.
+    }
+  };
+
+  return (
+    <div className="mt-3 rounded-md border border-pending/30 bg-pending/5 p-3">
+      <p className="text-xs text-muted-ink">
+        {isComment
+          ? "Open the post, paste your comment, then mark it done."
+          : "Open the post, like it, then mark it done."}
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {post.engagement_url && (
+          <a
+            href={post.engagement_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-md bg-clay px-3 py-1.5 text-xs font-medium text-paper hover:bg-clay-press"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+            Open on LinkedIn
+          </a>
+        )}
+        {isComment && post.body && (
+          <button
+            onClick={copyText}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-ink hover:bg-sand"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            {copied ? "Copied" : "Copy text"}
+          </button>
+        )}
+        {isOwner && (
+          <button
+            onClick={onAck}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 rounded-md bg-ok/10 px-3 py-1.5 text-xs font-medium text-ok hover:bg-ok/20 disabled:opacity-50"
+          >
+            <Check className="h-3.5 w-3.5" />
+            Mark done
+          </button>
+        )}
+        {onSkip && (
+          <button
+            onClick={onSkip}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
+          >
+            <SkipForward className="h-3.5 w-3.5" />
+            Skip
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -500,18 +773,27 @@ const STATUS_BADGE: Record<string, string> = {
   pending: "bg-pending/15 text-pending",
   scheduled: "bg-pending/15 text-pending",
   approved: "bg-ok/15 text-ok",
+  action_required: "bg-clay/15 text-clay",
+  acknowledged: "bg-ok text-paper",
   published: "bg-ok text-paper",
   failed: "bg-fail/15 text-fail",
   skipped: "bg-sand text-muted-ink",
 };
 
+// Friendlier wording for the assisted-manual states than the raw status.
+const STATUS_LABEL: Record<string, string> = {
+  action_required: "action needed",
+  acknowledged: "done",
+};
+
 function StatusBadge({ status }: { status: string }) {
   const style = STATUS_BADGE[status] ?? "bg-sand text-muted-ink";
+  const label = STATUS_LABEL[status] ?? status.replace("_", " ");
   return (
     <span
       className={`rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${style}`}
     >
-      {status}
+      {label}
     </span>
   );
 }

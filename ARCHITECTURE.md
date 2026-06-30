@@ -211,6 +211,8 @@ erDiagram
         text idempotency_key UK
         text external_id
         text first_comment_external_id
+        text engagement_url
+        timestamptz acknowledged_at
         int retries
     }
     assets {
@@ -407,6 +409,19 @@ Before launch only plan edits are allowed; nothing reaches the publish queue. Th
 portal hides the per-post Approve and Skip buttons until launch and surfaces a
 hint, and renders the `publishing` status as "Active".
 
+Assisted-manual engagement: comments and likes need the `w_member_social_feed`
+scope (Community Management API), which is not self-serve. While
+`COMMUNITY_MANAGEMENT_ENABLED` is false (the default), `publish_post` does not
+call the API for a `comment` or `like`. Once the target is live it resolves the
+post permalink (`build_post_permalink`), sets the post to `action_required`, and
+stores `engagement_url`. The owner opens the post, comments or likes by hand, and
+calls `POST /v1/posts/{id}/ack` (owner-only) to move it to `acknowledged`
+(`acknowledged_at` set). Both `action_required` and `acknowledged` count as
+settled for campaign completion, so a campaign does not hang waiting on a human.
+The ask payload is factored into `services/engagement_service.py` so a Slack card
+can reuse it later. Posts and reshares stay fully automated; flip the flag to
+true to dispatch comments and likes through the API with no code change.
+
 ### publish_post
 
 `publish_post` is idempotent, dependency-aware, guardrailed, and supports the
@@ -418,9 +433,12 @@ sequenceDiagram
     participant DB as Postgres
     participant LI as LinkedIn
     W->>DB: load post, account, campaign
-    Note over W: return early if skipped/failed or fully done
+    Note over W: return early if settled (skipped/failed/action_required/acknowledged) or fully done
     alt interaction whose target post is not live yet
         W->>W: re-enqueue (defer) or fail if target will never publish
+    end
+    alt assisted comment/like (Community Management API disabled)
+        W->>DB: set action_required + engagement_url, audit, return
     end
     W->>DB: guardrail check (min-gap + daily cap)
     alt guard tripped (body not yet live)

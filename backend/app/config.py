@@ -57,6 +57,15 @@ class Settings(BaseSettings):
     # Re-consent is required once a token is stale, expired, or within this many
     # hours of expiry, so an action is never approved against a dying token.
     LINKEDIN_RECONNECT_BUFFER_HOURS: int = 24
+    # Comments and likes go through the socialActions API, which needs the
+    # w_member_social_feed scope, granted only through the Community Management
+    # API (not self-serve). Until that access lands this stays off and comments
+    # and likes become a guided human action (assisted-manual): we resolve the
+    # target, deep-link the person to it, and they act in their own browser.
+    # Posts and reshares stay fully automated either way. Flip to true the day
+    # Community Management access is approved to dispatch comments and likes
+    # through the API; no code change is needed.
+    COMMUNITY_MANAGEMENT_ENABLED: bool = False
 
     # LLM gateway (OpenAI-compatible).
     LLM_GATEWAY_URL: str

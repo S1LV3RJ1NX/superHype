@@ -15,7 +15,9 @@ export function DeleteCampaignDialog({
   onClose,
 }: DeleteCampaignDialogProps) {
   const [typed, setTyped] = useState("");
-  const matches = typed.trim().toLowerCase() === title.trim().toLowerCase();
+  // Exact, case-sensitive match: deleting is destructive and cannot be undone,
+  // so the typed title must match the campaign title character for character.
+  const matches = typed === title;
 
   return (
     <div

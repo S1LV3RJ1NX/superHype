@@ -48,10 +48,13 @@ people who actually built the thing, without the spam.
   reworded six ways. People can also hand-write everything.
 - **Real approval.** Each person approves, edits, or skips their own post in one
   tap from the web app (Slack coming next). Nothing publishes without them.
-- **Official API only.** No scraping and no credential capture. Every action
-  runs on each member's own LinkedIn consent: `w_member_social` for posts and
-  reshares, and `w_member_social_feed` (LinkedIn's Community Management API) for
-  comments and likes.
+- **Official API only.** No scraping and no credential capture. Posts and
+  reshares run on each member's own LinkedIn consent (`w_member_social`).
+  Comments and likes need `w_member_social_feed` (LinkedIn's Community
+  Management API); until that access lands they run assisted-manual: super-hype
+  deep-links the person to the post with the suggested text and they comment or
+  like in their own browser, then mark it done. Flip
+  `COMMUNITY_MANAGEMENT_ENABLED` to automate them through the API.
 - **Concentrated reach.** Approved posts publish on a randomized stagger,
   clustered in the first ninety minutes, never all at once.
 

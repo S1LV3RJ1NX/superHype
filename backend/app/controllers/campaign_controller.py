@@ -5,10 +5,12 @@ the fine-grained authorization the route-level role gate cannot.
 """
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core.deps import ROLE_HIERARCHY
 from app.core.linkedin_urn import parse_post_urn
 from app.models.campaign import Campaign
@@ -16,7 +18,9 @@ from app.models.user import User
 from app.repositories import audit_repo
 from app.repositories.campaign_repo import campaign_repo
 from app.repositories.post_repo import post_repo
+from app.repositories.social_account_repo import social_account_repo
 from app.schemas.campaign import (
+    ApprovalReadiness,
     CampaignCreate,
     CampaignDetail,
     CampaignOut,
@@ -26,6 +30,7 @@ from app.schemas.common import Page, PageParams
 from app.schemas.post import PlanRequest, PostOut
 from app.services import campaign_service
 from app.services.campaign_service import TransitionError
+from app.services.engagement_service import is_assisted
 from app.workers import queue
 
 
@@ -119,6 +124,40 @@ async def get_campaign(
     return detail
 
 
+async def approval_readiness(
+    db: AsyncSession, campaign_id: uuid.UUID, user: User
+) -> ApprovalReadiness:
+    """Pre-flight: can this user approve their posts here, or reconnect first?
+
+    Mirrors the approve gate exactly (same assisted rule and reconnect buffer) so
+    the UI can prompt for re-consent up front instead of failing mid-approval.
+    Assisted-manual posts (comments and likes done by hand) need no token, so a
+    user with only those never sees a reconnect prompt.
+    """
+    campaign = await _load_or_404(db, campaign_id)
+    if not await _can_view(db, campaign, user):
+        raise HTTPException(403, "You do not have access to this campaign.")
+
+    pending = await post_repo.list_pending_for_campaign_user(db, campaign_id, user.id)
+    requires_linkedin = any(not is_assisted(p.action) for p in pending)
+
+    account = await social_account_repo.get_by_user(db, user.id)
+    connected = account is not None
+    needs_reconnect = requires_linkedin and (
+        account is None
+        or account.requires_reconnect(
+            now=datetime.now(UTC),
+            buffer_hours=settings.LINKEDIN_RECONNECT_BUFFER_HOURS,
+        )
+    )
+    return ApprovalReadiness(
+        pending_count=len(pending),
+        requires_linkedin=requires_linkedin,
+        connected=connected,
+        needs_reconnect=needs_reconnect,
+    )
+
+
 async def update_campaign(
     db: AsyncSession, campaign_id: uuid.UUID, body: CampaignUpdate, actor: User
 ) -> CampaignOut:
@@ -154,7 +193,10 @@ async def delete_campaign(
     campaign = await _load_or_404(db, campaign_id)
     if not (_is_admin(actor) or campaign.created_by == actor.id):
         raise HTTPException(403, "Only the creator or an admin can delete a campaign.")
-    if campaign.status not in _DELETABLE_STATUSES:
+    # Production protects a launched campaign (it has live or in-flight posts) by
+    # allowing deletion only before launch. In local/dev we relax this so test
+    # campaigns in any state are easy to clean up.
+    if settings.is_production and campaign.status not in _DELETABLE_STATUSES:
         raise HTTPException(409, "Only un-launched campaigns can be deleted.")
     await campaign_service.delete_campaign(db, campaign, actor_id=actor.id)
     await db.commit()

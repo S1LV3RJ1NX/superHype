@@ -9,7 +9,6 @@ from app.controllers import connection_controller
 from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
-from app.repositories.social_account_repo import social_account_repo
 from app.schemas.connection import (
     AuthorizeUrlOut,
     ConnectionOut,
@@ -24,8 +23,7 @@ async def list_connections(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ) -> list[ConnectionOut]:
-    accounts = await social_account_repo.list(db, user_id=user.id)
-    return [ConnectionOut.model_validate(a) for a in accounts]
+    return await connection_controller.list_connections(db, user)
 
 
 @router.get("/linkedin/authorize", response_model=AuthorizeUrlOut)

@@ -49,6 +49,11 @@ def _pin_account_guardrails(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(settings, "MIN_SECONDS_BETWEEN_ACCOUNT_ACTIONS", 90)
     monkeypatch.setattr(settings, "MAX_ACTIONS_PER_ACCOUNT_PER_DAY", 10)
+    # Default to the self-serve world (assisted-manual comments and likes), so
+    # the suite is deterministic regardless of a developer's local .env. Tests
+    # that exercise the automated comment/like path opt in with the cm_enabled
+    # fixture.
+    monkeypatch.setattr(settings, "COMMUNITY_MANAGEMENT_ENABLED", False)
 
 
 @pytest_asyncio.fixture

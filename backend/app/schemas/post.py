@@ -29,6 +29,8 @@ class PostOut(BaseModel):
     status: str
     scheduled_at: datetime | None
     published_at: datetime | None
+    engagement_url: str | None
+    acknowledged_at: datetime | None
     external_id: str | None
     error: str | None
     retries: int

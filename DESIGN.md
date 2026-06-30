@@ -287,9 +287,12 @@ first_comment      text             -- link-in-first-comment content
 image_asset_urn    text             -- per-author uploaded image URN, set at publish (null until then)
 status             text not null default 'pending'
                    -- pending | approved | skipped | scheduled | publishing | published | failed
+                   -- | action_required | acknowledged  (assisted-manual comment/like)
 idempotency_key    text unique      -- guards against double-publish on retry
 scheduled_at       timestamptz
 published_at       timestamptz
+engagement_url     text             -- assisted-manual: deep link to the post to act on by hand
+acknowledged_at    timestamptz      -- assisted-manual: when the owner marked the action done
 external_id        text             -- resulting post/comment URN
 error              text
 retries            int not null default 0

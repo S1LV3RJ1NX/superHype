@@ -39,6 +39,21 @@ class CampaignDetail(CampaignOut):
     counts: dict[str, int] = {}
 
 
+class ApprovalReadiness(BaseModel):
+    """Pre-flight LinkedIn check for the current user on one campaign.
+
+    Answers "can I approve my posts here, or do I need to (re)connect first?" so
+    the UI can prompt for re-consent before the person starts approving instead
+    of failing mid-flow. requires_linkedin is false when the user's pending posts
+    are all assisted-manual (comments or likes done by hand), which need no token.
+    """
+
+    pending_count: int
+    requires_linkedin: bool
+    connected: bool
+    needs_reconnect: bool
+
+
 class CampaignCreate(BaseModel):
     title: str
     type: str = Field(pattern="^(amplify|distribute)$")

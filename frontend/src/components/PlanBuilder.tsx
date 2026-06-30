@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Pencil, Save, Search, Sparkles } from "lucide-react";
+import { Loader2, Pencil, Search, Sparkles } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -541,23 +541,17 @@ export function PlanBuilder({
 
       <div className="mt-3 flex gap-2">
         <button
-          onClick={() => onPlan(assignments, false)}
-          disabled={busy || total === 0}
-          className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md border border-border px-3 py-2 text-sm text-ink hover:bg-sand disabled:opacity-50"
-        >
-          <Save className="h-4 w-4" />
-          Save plan
-        </button>
-        <button
           onClick={() => onPlan(assignments, true)}
           disabled={busy || total === 0 || !canGenerate}
-          title={
-            !canGenerate ? "Generation requires the editor role" : undefined
-          }
+          title={!canGenerate ? "Generation requires the editor role" : undefined}
           className="inline-flex flex-1 items-center justify-center gap-1.5 rounded-md bg-ink px-3 py-2 text-sm font-medium text-paper hover:opacity-90 disabled:opacity-50"
         >
-          <Sparkles className="h-4 w-4" />
-          Generate
+          {busy ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Sparkles className="h-4 w-4" />
+          )}
+          {busy ? "Generating..." : "Generate"}
         </button>
       </div>
     </div>

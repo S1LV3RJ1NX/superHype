@@ -55,6 +55,11 @@ class Post(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     idempotency_key: Mapped[str | None] = mapped_column(Text, unique=True)
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Assisted-manual engagement: the deep link to the target post the owner opens
+    # to comment or like by hand, and when they marked that done. Set when the
+    # action becomes action_required (Community Management API not enabled).
+    engagement_url: Mapped[str | None] = mapped_column(Text)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     external_id: Mapped[str | None] = mapped_column(Text)
     # URN of the link-in-first-comment, when link_placement is first_comment. Set
     # after the body publishes; doubles as the idempotency marker so a retry

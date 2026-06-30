@@ -10,6 +10,7 @@ interface Connection {
   external_urn: string | null;
   display_name: string | null;
   status: string;
+  needs_reconnect: boolean;
   connected_at: string;
   updated_at: string;
 }
@@ -122,7 +123,7 @@ export function Connections() {
                 </button>
               )}
 
-              {linkedin && linkedin.status === "active" && (
+              {linkedin && !linkedin.needs_reconnect && (
                 <button
                   onClick={handleDisconnect}
                   disabled={actionLoading}
@@ -137,7 +138,7 @@ export function Connections() {
                 </button>
               )}
 
-              {linkedin && linkedin.status === "stale" && (
+              {linkedin && linkedin.needs_reconnect && (
                 <button
                   onClick={handleReconnect}
                   disabled={actionLoading}
@@ -153,20 +154,21 @@ export function Connections() {
               )}
             </div>
 
-            {linkedin && linkedin.status === "stale" && (
+            {linkedin && linkedin.needs_reconnect && (
               <div className="mt-4 flex items-start gap-2 rounded-md border border-pending/30 bg-pending/5 p-3">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-pending" />
                 <div className="text-sm">
-                  <p className="font-medium text-ink">Token expired</p>
+                  <p className="font-medium text-ink">Reconnect needed</p>
                   <p className="mt-0.5 text-muted-ink">
-                    Your LinkedIn access has expired. Reconnect to continue
-                    publishing posts.
+                    {linkedin.status === "stale"
+                      ? "Your LinkedIn access has expired. Reconnect to keep publishing posts."
+                      : "Your LinkedIn access is expiring soon. Reconnect now so approvals do not fail."}
                   </p>
                 </div>
               </div>
             )}
 
-            {linkedin && linkedin.status === "active" && (
+            {linkedin && !linkedin.needs_reconnect && (
               <div className="mt-4 grid grid-cols-2 gap-4 border-t border-border pt-4 text-sm">
                 <div>
                   <p className="text-muted-ink">Status</p>

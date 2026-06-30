@@ -189,7 +189,7 @@ export function CampaignWizard({
               disabled={submitting || !created}
               className="rounded-md border border-border px-4 py-2 text-sm text-muted-ink hover:bg-sand disabled:opacity-50"
             >
-              {isEdit ? "Done" : "Skip for now"}
+              {isEdit ? "Done" : "Save as draft"}
             </button>
           </div>
         </div>

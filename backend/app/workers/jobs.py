@@ -31,6 +31,7 @@ from app.repositories.post_repo import post_repo
 from app.repositories.social_account_repo import social_account_repo
 from app.schemas.post import Assignment
 from app.services import campaign_service
+from app.services.engagement_service import engagement_ask, is_assisted
 from app.services.generation_service import GenerationError
 from app.storage import db_asset_store
 
@@ -233,7 +234,9 @@ async def publish_post(ctx: dict, post_id: str) -> None:
         post = await post_repo.get(db, pid)
         if post is None:
             return
-        if post.status in ("skipped", "failed"):
+        # Terminal or already-asked states are no-ops: skipped/failed are done,
+        # action_required/acknowledged mean the assisted ask was already raised.
+        if post.status in ("skipped", "failed", "action_required", "acknowledged"):
             return
 
         # Dependency-aware: wait until our target post is live.
@@ -254,6 +257,33 @@ async def publish_post(ctx: dict, post_id: str) -> None:
             await ctx["redis"].enqueue_job(
                 "publish_post", post_id, _defer_by=_DEPENDENCY_DEFER_SECONDS
             )
+            return
+
+        # Assisted-manual engagement: hand the comment or like to the person
+        # rather than calling the API. The target is now live, so build the deep
+        # link, raise the ask, and stop before any provider call or token check.
+        # external_id is None guards against re-processing a row that somehow
+        # already published (e.g. data from when the flag was on).
+        if is_assisted(post.action) and post.external_id is None:
+            if target_urn is None:
+                await post_repo.mark_failed(
+                    db, post, "Interaction has no resolvable target."
+                )
+                await campaign_service.check_completion(db, post.campaign_id)
+                await db.commit()
+                return
+            ask = engagement_ask(post, target_urn)
+            post.status = "action_required"
+            post.engagement_url = ask.target_url
+            await db.flush()
+            await audit_repo.record(
+                db,
+                action="engagement_requested",
+                campaign_id=post.campaign_id,
+                post_id=post.id,
+            )
+            await campaign_service.check_completion(db, post.campaign_id)
+            await db.commit()
             return
 
         if post.social_account_id is None:

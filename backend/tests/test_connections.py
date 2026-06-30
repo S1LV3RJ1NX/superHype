@@ -246,31 +246,31 @@ def _account(*, status="active", expires_at=None):
 def test_needs_reconnect_healthy():
     now = datetime.now(UTC)
     acct = _account(expires_at=now + timedelta(days=30))
-    assert acct.needs_reconnect(now=now, buffer_hours=24) is False
+    assert acct.requires_reconnect(now=now, buffer_hours=24) is False
 
 
 def test_needs_reconnect_stale():
     now = datetime.now(UTC)
     acct = _account(status="stale", expires_at=now + timedelta(days=30))
-    assert acct.needs_reconnect(now=now, buffer_hours=24) is True
+    assert acct.requires_reconnect(now=now, buffer_hours=24) is True
 
 
 def test_needs_reconnect_expired():
     now = datetime.now(UTC)
     acct = _account(expires_at=now - timedelta(days=1))
-    assert acct.needs_reconnect(now=now, buffer_hours=24) is True
+    assert acct.requires_reconnect(now=now, buffer_hours=24) is True
 
 
 def test_needs_reconnect_within_buffer():
     now = datetime.now(UTC)
     acct = _account(expires_at=now + timedelta(hours=1))
-    assert acct.needs_reconnect(now=now, buffer_hours=24) is True
+    assert acct.requires_reconnect(now=now, buffer_hours=24) is True
 
 
 def test_needs_reconnect_null_expiry():
     now = datetime.now(UTC)
     acct = _account(expires_at=None)
-    assert acct.needs_reconnect(now=now, buffer_hours=24) is True
+    assert acct.requires_reconnect(now=now, buffer_hours=24) is True
 
 
 async def _pending_post(db, user_id):

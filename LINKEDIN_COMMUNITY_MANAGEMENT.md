@@ -11,17 +11,25 @@ path), which is why "repost thought" works. It is not enough to comment or like.
 
 Comments and likes go through the `socialActions` API, which requires the
 `w_member_social_feed` member scope. That scope is granted only through the
-Community Management API, which is a vetted product, not self-serve. Until we are
-approved, comment and like jobs fail with a 403 (the worker now records an
-explicit message saying the scope is missing).
+Community Management API, which is a vetted product, not self-serve.
+
+While we wait for approval, comments and likes run **assisted-manual** rather
+than failing: the `COMMUNITY_MANAGEMENT_ENABLED` setting defaults to false, so
+the worker never calls the `socialActions` API. Instead it resolves the target
+post, deep-links the person to it (with the suggested comment text), and the
+person comments or likes in their own browser, then marks it done. The whole
+product therefore runs today on a self-serve Share-on-LinkedIn app
+(`w_member_social`). The day Community Management access lands, set
+`COMMUNITY_MANAGEMENT_ENABLED=true` and comments and likes dispatch through the
+API automatically, with no code change.
 
 Scope to capability mapping:
 
 | Action in our app | LinkedIn endpoint | Scope needed | Status today |
 | --- | --- | --- | --- |
 | post / reshare ("repost thought") | `POST /rest/posts` | `w_member_social` | works |
-| comment | `POST /rest/socialActions/{urn}/comments` | `w_member_social_feed` | 403 until approved |
-| like | `POST /rest/socialActions/{urn}/likes` | `w_member_social_feed` | 403 until approved |
+| comment | `POST /rest/socialActions/{urn}/comments` | `w_member_social_feed` | assisted-manual until approved |
+| like | `POST /rest/socialActions/{urn}/likes` | `w_member_social_feed` | assisted-manual until approved |
 
 ## Eligibility and prerequisites
 

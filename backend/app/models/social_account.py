@@ -55,7 +55,7 @@ class SocialAccount(UUIDPrimaryKeyMixin, Base):
         nullable=False,
     )
 
-    def needs_reconnect(self, *, now: datetime, buffer_hours: int) -> bool:
+    def requires_reconnect(self, *, now: datetime, buffer_hours: int) -> bool:
         """True if this account cannot safely publish without re-consent.
 
         Standard Share-on-LinkedIn apps get no refresh token, so an expired or

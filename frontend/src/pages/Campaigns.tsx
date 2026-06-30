@@ -1,5 +1,5 @@
 import { type ReactNode, useCallback, useEffect, useState } from "react";
-import { Eye, Megaphone, Pencil, Plus, Trash2 } from "lucide-react";
+import { Eye, Loader2, Megaphone, Pencil, Plus, Trash2 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { useAuth } from "@/auth/AuthContext";
@@ -59,8 +59,10 @@ export function Campaigns() {
   const [deleteTarget, setDeleteTarget] = useState<Campaign | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // Production only deletes un-launched campaigns; local/dev can delete any
+  // status (test cleanup), matching the backend gate.
   const canDelete = (c: Campaign) =>
-    DELETABLE_STATUSES.includes(c.status) &&
+    (import.meta.env.DEV || DELETABLE_STATUSES.includes(c.status)) &&
     (user?.role === "admin" || c.created_by === user?.id);
 
   const canEdit = (c: Campaign) =>
@@ -128,7 +130,12 @@ export function Campaigns() {
         )}
 
         <div className="mt-6 overflow-hidden rounded-lg border border-border">
-          {campaigns.length === 0 && !loading ? (
+          {loading && campaigns.length === 0 ? (
+            <div className="flex flex-col items-center gap-2 p-12 text-center text-muted-ink">
+              <Loader2 className="h-6 w-6 animate-spin" />
+              <p className="text-sm">Loading campaigns...</p>
+            </div>
+          ) : campaigns.length === 0 ? (
             <div className="flex flex-col items-center gap-2 p-12 text-center">
               <Megaphone className="h-8 w-8 text-muted-ink" />
               <p className="text-sm text-muted-ink">No campaigns yet.</p>

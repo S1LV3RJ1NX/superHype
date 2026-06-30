@@ -10,7 +10,17 @@ from app.models.post import Post
 from app.repositories.base import BaseRepository
 from app.schemas.common import Page, PageParams
 
-_TERMINAL = ("published", "failed", "skipped")
+# A campaign is settled once every post reaches one of these. action_required
+# and acknowledged are assisted-manual engagement asks: the automated work is
+# done and the ask has been handed to the person, so the campaign should not
+# hang in publishing waiting on a human to click "mark done".
+_TERMINAL = (
+    "published",
+    "failed",
+    "skipped",
+    "action_required",
+    "acknowledged",
+)
 
 
 class PostRepository(BaseRepository[Post]):
@@ -37,6 +47,21 @@ class PostRepository(BaseRepository[Post]):
         stmt = (
             select(Post)
             .where(
+                Post.user_id == user_id,
+                Post.status.in_(("pending", "scheduled")),
+            )
+            .order_by(Post.created_at, Post.id)
+        )
+        return list((await db.execute(stmt)).scalars().all())
+
+    async def list_pending_for_campaign_user(
+        self, db: AsyncSession, campaign_id: uuid.UUID, user_id: uuid.UUID
+    ) -> list[Post]:
+        """A user's not-yet-approved posts in one campaign (for readiness checks)."""
+        stmt = (
+            select(Post)
+            .where(
+                Post.campaign_id == campaign_id,
                 Post.user_id == user_id,
                 Post.status.in_(("pending", "scheduled")),
             )
@@ -117,7 +142,7 @@ class PostRepository(BaseRepository[Post]):
         return out
 
     async def all_terminal(self, db: AsyncSession, campaign_id: uuid.UUID) -> bool:
-        """True if the campaign has posts and every one is in a terminal state."""
+        """True if the campaign has posts and every one is settled (see _TERMINAL)."""
         stmt = select(Post.status).where(Post.campaign_id == campaign_id)
         statuses = [row[0] for row in (await db.execute(stmt)).all()]
         return bool(statuses) and all(s in _TERMINAL for s in statuses)

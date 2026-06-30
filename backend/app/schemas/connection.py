@@ -23,6 +23,10 @@ class ConnectionOut(BaseModel):
     external_urn: str | None
     display_name: str | None
     status: str
+    # True when this account cannot safely publish without re-consent: missing,
+    # marked stale, or expiring within the reconnect buffer. Same signal the
+    # approve gate uses, so the UI can prompt a reconnect before publishing fails.
+    needs_reconnect: bool = False
     connected_at: datetime
     updated_at: datetime
     # Set only on a callback that resumed a pending action (reconnect-then-act),

@@ -8,11 +8,13 @@ resumes the original approve in one flow (reconnect-then-act).
 import json
 import secrets
 import uuid
+from datetime import UTC, datetime
 
 import httpx
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.core import crypto
 from app.core.redis import get_redis
 from app.models.user import User
@@ -46,6 +48,25 @@ async def authorize_linkedin(
     )
     url = linkedin_oauth_service.authorize_url(state)
     return AuthorizeUrlOut(authorize_url=url)
+
+
+async def list_connections(db: AsyncSession, user: User) -> list[ConnectionOut]:
+    """The user's social accounts, each flagged with its reconnect need.
+
+    needs_reconnect is computed with the same buffer the approve gate uses, so the
+    Connections page can prompt a reconnect for a token that is stale or merely
+    expiring soon, not only one already marked stale.
+    """
+    accounts = await social_account_repo.list(db, user_id=user.id)
+    now = datetime.now(UTC)
+    out: list[ConnectionOut] = []
+    for account in accounts:
+        result = ConnectionOut.model_validate(account)
+        result.needs_reconnect = account.requires_reconnect(
+            now=now, buffer_hours=settings.LINKEDIN_RECONNECT_BUFFER_HOURS
+        )
+        out.append(result)
+    return out
 
 
 def _parse_state(raw: str | bytes | None, user: User) -> uuid.UUID | None:

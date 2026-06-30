@@ -41,3 +41,15 @@ def parse_post_urn(url: str | None) -> str | None:
     if bare is not None:
         return f"urn:li:activity:{bare.group(0)}"
     return None
+
+
+def build_post_permalink(urn: str | None) -> str | None:
+    """Public feed URL for a post URN, for deep-linking a person to act on it.
+
+    LinkedIn renders any post URN (activity, share, or ugcPost) at
+    /feed/update/{urn}/, so this is the link we hand a member when a comment or
+    like is an assisted-manual action: they open the post and act by hand.
+    """
+    if not urn:
+        return None
+    return f"https://www.linkedin.com/feed/update/{urn}/"

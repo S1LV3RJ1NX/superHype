@@ -251,9 +251,12 @@ async def test_delete_campaign_non_owner_forbidden(client, as_role):
     assert resp.status_code == 403
 
 
-async def test_delete_campaign_blocked_after_launch(client, as_role, db):
+async def test_delete_campaign_blocked_after_launch(client, as_role, db, monkeypatch):
+    from app.config import settings
     from app.models.campaign import Campaign
 
+    # Production protects launched campaigns from deletion.
+    monkeypatch.setattr(settings, "ENV", "production")
     async with as_role("editor"):
         created = await client.post(
             "/v1/campaigns",
@@ -269,6 +272,31 @@ async def test_delete_campaign_blocked_after_launch(client, as_role, db):
 
         resp = await client.delete(f"/v1/campaigns/{cid}")
     assert resp.status_code == 409
+
+
+async def test_delete_campaign_after_launch_allowed_in_local(
+    client, as_role, db, monkeypatch
+):
+    from app.config import settings
+    from app.models.campaign import Campaign
+
+    # Local/dev relaxes the rule so test campaigns in any state can be cleaned up.
+    monkeypatch.setattr(settings, "ENV", "local")
+    async with as_role("editor"):
+        created = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        cid = created.json()["id"]
+
+        import uuid as _uuid
+
+        campaign = await db.get(Campaign, _uuid.UUID(cid))
+        campaign.status = "completed"
+        await db.commit()
+
+        resp = await client.delete(f"/v1/campaigns/{cid}")
+    assert resp.status_code == 204
 
 
 async def test_list_only_shows_own_campaigns(client, as_role):

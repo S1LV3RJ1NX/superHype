@@ -14,6 +14,7 @@ from app.core.deps import get_current_user
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.campaign import (
+    ApprovalReadiness,
     CampaignCreate,
     CampaignDetail,
     CampaignOut,
@@ -50,6 +51,15 @@ async def get_campaign(
     user: User = Depends(get_current_user),
 ) -> CampaignDetail:
     return await campaign_controller.get_campaign(db, campaign_id, user)
+
+
+@router.get("/{campaign_id}/approval-readiness", response_model=ApprovalReadiness)
+async def approval_readiness(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> ApprovalReadiness:
+    return await campaign_controller.approval_readiness(db, campaign_id, user)
 
 
 @router.patch("/{campaign_id}", response_model=CampaignOut)

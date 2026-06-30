@@ -5,7 +5,7 @@ indexes, constraints, and foreign keys) which matters for clean downgrades.
 """
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import DateTime, MetaData, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -27,13 +27,27 @@ class UUIDPrimaryKeyMixin:
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
 
 
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
+
+
 class TimestampMixin:
+    # Python-side default and onupdate (alongside the SQL server_default): the
+    # value is set on the in-memory object during flush, so callers can serialize
+    # the row right after commit without a db.refresh round trip. A SQL-only
+    # default/onupdate leaves the attribute expired (the DB computed it), and
+    # reading it then attempts async IO during serialization, which fails with
+    # MissingGreenlet outside a greenlet context.
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), nullable=False
+        DateTime(timezone=True),
+        default=_utcnow,
+        server_default=func.now(),
+        nullable=False,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        default=_utcnow,
         server_default=func.now(),
-        onupdate=func.now(),
+        onupdate=_utcnow,
         nullable=False,
     )

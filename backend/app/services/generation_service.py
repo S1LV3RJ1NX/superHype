@@ -8,6 +8,7 @@ Both are governed by lightweight per-campaign hints (tone, length, language) and
 parse the model's JSON defensively, raising GenerationError on any failure.
 """
 
+import asyncio
 import json
 import re
 from typing import Any
@@ -25,6 +26,15 @@ from app.schemas.generation import InteractionTexts, VariationSet
 
 class GenerationError(Exception):
     """Raised when the LLM output cannot be parsed into a valid contract."""
+
+
+# Interactions are generated in bounded parallel chunks rather than one giant
+# completion: a single call asked for hundreds of texts risks the output token
+# limit, degrades quality, and fails all-or-nothing. Chunks keep each prompt
+# small and let a 100-person campaign fan out instead of serializing. The
+# concurrency cap protects the gateway from a thundering herd.
+_INTERACTION_CHUNK_SIZE = 20
+_MAX_GENERATION_CONCURRENCY = 5
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?", re.MULTILINE)
@@ -136,6 +146,65 @@ async def generate_variations(
     return [items[i % len(items)] for i in range(n)]
 
 
+async def _interaction_chunk(
+    target_text: str,
+    items: list[dict[str, str]],
+    chunk_indices: list[int],
+    *,
+    tone: str | None,
+    length: str | None,
+    language: str | None,
+    extra: str | None,
+    sem: asyncio.Semaphore,
+) -> list[str]:
+    """Generate texts for one chunk of interaction items, with the quality retry.
+
+    Returns the chunk's texts in chunk order. Raises GenerationError if the
+    chunk cannot produce substantive, varied text after one regeneration.
+    """
+    enumerated = "\n".join(
+        f"{pos}. action={items[i].get('action', 'comment')} "
+        f"angle={items[i].get('angle', '') or 'natural reaction'}"
+        for pos, i in enumerate(chunk_indices)
+    )
+    system = interactions_system(
+        len(chunk_indices),
+        enumerated,
+        tone=tone,
+        length=length,
+        language=language,
+        extra=extra,
+    )
+
+    async with sem:
+        # The comment-quality floor: substantive, varied comments only. If the
+        # model returns short or generic praise, regenerate once before failing.
+        for _attempt in range(2):
+            data = await _complete_json(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": target_text},
+                ]
+            )
+            try:
+                result = InteractionTexts.model_validate(data)
+            except Exception as exc:
+                raise GenerationError(
+                    f"LLM output does not match the interactions contract: {exc}"
+                ) from exc
+
+            candidate = [t.strip() for t in result.texts]
+            if len(candidate) >= len(chunk_indices) and not any(
+                _is_low_quality_comment(candidate[pos])
+                for pos in range(len(chunk_indices))
+            ):
+                return candidate
+
+    raise GenerationError(
+        "LLM returned low-quality or too-few interaction texts after a retry."
+    )
+
+
 async def generate_interactions(
     target_text: str,
     items: list[dict[str, str]],
@@ -148,7 +217,9 @@ async def generate_interactions(
     """Produce one interaction text per item (empty string for `like`).
 
     `items` is a list of {"action": ..., "angle": ...}. The output is indexed to
-    the input order.
+    the input order. Text items are split into bounded chunks generated
+    concurrently, so a large campaign fans out instead of serializing one huge
+    completion; if any chunk fails the whole call fails (all-or-nothing).
     """
     if not items:
         return []
@@ -157,49 +228,36 @@ async def generate_interactions(
     if not text_indices:
         return ["" for _ in items]
 
-    enumerated = "\n".join(
-        f"{pos}. action={items[i].get('action', 'comment')} "
-        f"angle={items[i].get('angle', '') or 'natural reaction'}"
-        for pos, i in enumerate(text_indices)
+    chunks = [
+        text_indices[i : i + _INTERACTION_CHUNK_SIZE]
+        for i in range(0, len(text_indices), _INTERACTION_CHUNK_SIZE)
+    ]
+    sem = asyncio.Semaphore(_MAX_GENERATION_CONCURRENCY)
+    results = await asyncio.gather(
+        *(
+            _interaction_chunk(
+                target_text,
+                items,
+                chunk,
+                tone=tone,
+                length=length,
+                language=language,
+                extra=extra,
+                sem=sem,
+            )
+            for chunk in chunks
+        ),
+        return_exceptions=True,
     )
-    system = interactions_system(
-        len(text_indices),
-        enumerated,
-        tone=tone,
-        length=length,
-        language=language,
-        extra=extra,
-    )
-
-    # The comment-quality floor: substantive, varied comments only. If the model
-    # returns short or generic praise, regenerate once before failing the job.
-    texts: list[str] = []
-    for _attempt in range(2):
-        data = await _complete_json(
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": target_text},
-            ]
-        )
-        try:
-            result = InteractionTexts.model_validate(data)
-        except Exception as exc:
-            raise GenerationError(
-                f"LLM output does not match the interactions contract: {exc}"
-            ) from exc
-
-        candidate = [t.strip() for t in result.texts]
-        if len(candidate) >= len(text_indices) and not any(
-            _is_low_quality_comment(candidate[pos]) for pos in range(len(text_indices))
-        ):
-            texts = candidate
-            break
-    else:
-        raise GenerationError(
-            "LLM returned low-quality or too-few interaction texts after a retry."
-        )
+    # Surface the first real failure rather than letting a partial result through.
+    chunk_texts: list[list[str]] = []
+    for r in results:
+        if isinstance(r, BaseException):
+            raise r
+        chunk_texts.append(r)
 
     out = ["" for _ in items]
-    for pos, i in enumerate(text_indices):
-        out[i] = _strip_em_dashes(texts[pos]) if pos < len(texts) else ""
+    for chunk, texts in zip(chunks, chunk_texts, strict=True):
+        for pos, i in enumerate(chunk):
+            out[i] = _strip_em_dashes(texts[pos]) if pos < len(texts) else ""
     return out

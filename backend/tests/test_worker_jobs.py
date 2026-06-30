@@ -75,6 +75,18 @@ async def env(engine, monkeypatch):
     }
 
 
+@pytest.fixture
+def cm_enabled(monkeypatch):
+    """Turn the automated comment/like path on (Community Management API granted).
+
+    With the flag off (the default), comments and likes are assisted-manual and
+    never call the provider; tests of the automated dispatch opt in here.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "COMMUNITY_MANAGEMENT_ENABLED", True)
+
+
 async def _user(db) -> User:
     u = User(email=f"{uuid.uuid4().hex}@corp.com", role="editor", is_active=True)
     db.add(u)
@@ -216,7 +228,7 @@ async def test_publish_idempotent_noop(db, env):
     assert env["provider"].calls == []
 
 
-async def test_publish_like_completes_campaign(db, env):
+async def test_publish_like_completes_campaign(db, env, cm_enabled):
     user = await _user(db)
     acct = await _account(db, user)
     c = Campaign(title="C", type="amplify", status="publishing")
@@ -244,7 +256,80 @@ async def test_publish_like_completes_campaign(db, env):
     assert ("like", "urn:li:activity:1") in env["provider"].calls
 
 
-async def test_distribute_interaction_defers_until_target_live(db, env):
+async def test_publish_comment_assisted_when_cm_disabled(db, env):
+    # Flag off (default): a comment is a guided human action, not an API call.
+    # The worker resolves the target, sets action_required + engagement_url, and
+    # never touches the provider. action_required counts as settled, so a single-
+    # post campaign completes.
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="comment",
+        body="great work",
+        status="approved",
+        target_external_id="urn:li:activity:1",
+        idempotency_key="kassist",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    assert env["provider"].calls == []
+    assert not [j for j in env["redis"].jobs if j[0] == "publish_post"]
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        rc = await s.get(Campaign, c.id)
+        assert rp.status == "action_required"
+        assert (
+            rp.engagement_url
+            == "https://www.linkedin.com/feed/update/urn:li:activity:1/"
+        )
+        assert rc.status == "completed"
+
+    # Re-running is a no-op: an already-raised ask is not re-raised.
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+    assert env["provider"].calls == []
+
+
+async def test_publish_like_assisted_needs_no_account(db, env):
+    # A like has no text and needs no token in assisted mode: even with no
+    # connected account the worker raises the human ask.
+    user = await _user(db)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=None,
+        action="like",
+        status="approved",
+        target_external_id="urn:li:activity:9",
+        idempotency_key="klike",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    assert env["provider"].calls == []
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "action_required"
+        assert (
+            rp.engagement_url
+            == "https://www.linkedin.com/feed/update/urn:li:activity:9/"
+        )
+
+
+async def test_distribute_interaction_defers_until_target_live(db, env, cm_enabled):
     poster = await _user(db)
     fan = await _user(db)
     acct = await _account(db, fan)
@@ -330,7 +415,7 @@ async def test_distribute_interaction_fails_when_target_skipped(db, env):
         assert ri.status == "failed"
 
 
-async def test_publish_rate_limit_reenqueues_with_retry_after(db, env):
+async def test_publish_rate_limit_reenqueues_with_retry_after(db, env, cm_enabled):
     user = await _user(db)
     acct = await _account(db, user)
     c = Campaign(title="C", type="amplify", status="publishing")
@@ -363,7 +448,7 @@ async def test_publish_rate_limit_reenqueues_with_retry_after(db, env):
         assert rp.status == "approved"  # not failed; will retry
 
 
-async def test_publish_generic_error_backoff_then_fail(db, env):
+async def test_publish_generic_error_backoff_then_fail(db, env, cm_enabled):
     user = await _user(db)
     acct = await _account(db, user)
     c = Campaign(title="C", type="amplify", status="publishing")
@@ -404,7 +489,7 @@ async def test_publish_generic_error_backoff_then_fail(db, env):
         assert rp.status == "failed"
 
 
-async def test_publish_comment_403_fails_fast_with_scope_message(db, env):
+async def test_publish_comment_403_fails_fast_with_scope_message(db, env, cm_enabled):
     # Comments need w_member_social_feed; a 403 must fail immediately (no retry)
     # with an actionable message about the Community Management API.
     user = await _user(db)
@@ -442,7 +527,9 @@ async def test_publish_comment_403_fails_fast_with_scope_message(db, env):
         assert "Community Management" in (rp.error or "")
 
 
-async def test_publish_auth_error_marks_stale_and_reconnect(db, env, monkeypatch):
+async def test_publish_auth_error_marks_stale_and_reconnect(
+    db, env, monkeypatch, cm_enabled
+):
     user = await _user(db)
     acct = await _account(db, user)
     c = Campaign(title="C", type="amplify", status="publishing")
@@ -680,7 +767,7 @@ async def test_publish_first_comment_permanent_failure_rolls_back(db, env):
         assert rp.status == "failed"
 
 
-async def test_publish_defers_on_min_gap(db, env):
+async def test_publish_defers_on_min_gap(db, env, cm_enabled):
     from app.config import settings
 
     user = await _user(db)
@@ -724,7 +811,7 @@ async def test_publish_defers_on_min_gap(db, env):
         assert rp.status == "approved"
 
 
-async def test_publish_defers_on_daily_cap(db, env):
+async def test_publish_defers_on_daily_cap(db, env, cm_enabled):
     from app.config import settings
 
     user = await _user(db)

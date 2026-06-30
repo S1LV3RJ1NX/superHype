@@ -44,6 +44,15 @@ async def approve_post(
     return await post_controller.approve_post(db, post_id, actor)
 
 
+@router.post("/v1/posts/{post_id}/ack", response_model=PostOut)
+async def acknowledge_post(
+    post_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_user),
+) -> PostOut:
+    return await post_controller.acknowledge_post(db, post_id, actor)
+
+
 @router.post("/v1/posts/{post_id}/skip", response_model=PostOut)
 async def skip_post(
     post_id: uuid.UUID,

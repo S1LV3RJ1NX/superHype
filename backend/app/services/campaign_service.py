@@ -5,6 +5,7 @@ into post rows (with optional LLM fill). Repositories do the DB access; this
 layer owns the multi-step logic and writes audit rows.
 """
 
+import asyncio
 import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,7 +37,9 @@ TRANSITIONS: dict[str, set[str]] = {
     "generating": {"review", "failed"},
     "review": {"generating", "publishing"},
     "publishing": {"completed", "failed"},
-    "completed": set(),
+    # Retrying a failed post reopens a completed campaign so the worker can run
+    # again and check_completion can settle it once more.
+    "completed": {"publishing"},
     "failed": set(),
 }
 
@@ -123,39 +126,45 @@ async def build_plan(
             acct = await social_account_repo.get_by_user(db, a.user_id)
             account_by_user[a.user_id] = acct.id if acct else None
 
-    # Variation bodies for distribute posters.
-    variation_bodies: list[str] = []
-    if post_assignments:
-        if generate:
-            variation_bodies = await generate_variations(
-                campaign.seed_content or campaign.raw_brief or campaign.title,
-                len(post_assignments),
-                tone=campaign.tone,
-                length=campaign.length,
-                language=campaign.language,
-                extra=campaign.extra_instructions,
-            )
-        else:
-            variation_bodies = [a.body or "" for a in post_assignments]
+    # Variation bodies for distribute posters and interaction text are
+    # independent LLM calls; run them concurrently so a large plan does not pay
+    # for both serially. Manual text (generate=False) comes straight off the
+    # assignment and never touches the gateway.
+    async def _resolve_variations() -> list[str]:
+        if not post_assignments:
+            return []
+        if not generate:
+            return [a.body or "" for a in post_assignments]
+        return await generate_variations(
+            campaign.seed_content or campaign.raw_brief or campaign.title,
+            len(post_assignments),
+            tone=campaign.tone,
+            length=campaign.length,
+            language=campaign.language,
+            extra=campaign.extra_instructions,
+        )
 
-    # Interaction text (LLM only; manual text comes straight off the assignment).
-    interaction_texts: list[str] = []
-    if interaction_assignments:
-        if generate:
-            target_text = campaign.seed_content or campaign.title
-            interaction_texts = await generate_interactions(
-                target_text,
-                [
-                    {"action": a.action, "angle": a.angle or ""}
-                    for a in interaction_assignments
-                ],
-                tone=campaign.tone,
-                length=campaign.length,
-                language=campaign.language,
-                extra=campaign.extra_instructions,
-            )
-        else:
-            interaction_texts = [a.body or "" for a in interaction_assignments]
+    async def _resolve_interactions() -> list[str]:
+        if not interaction_assignments:
+            return []
+        if not generate:
+            return [a.body or "" for a in interaction_assignments]
+        target_text = campaign.seed_content or campaign.title
+        return await generate_interactions(
+            target_text,
+            [
+                {"action": a.action, "angle": a.angle or ""}
+                for a in interaction_assignments
+            ],
+            tone=campaign.tone,
+            length=campaign.length,
+            language=campaign.language,
+            extra=campaign.extra_instructions,
+        )
+
+    variation_bodies, interaction_texts = await asyncio.gather(
+        _resolve_variations(), _resolve_interactions()
+    )
 
     rows: list[Post] = []
 
