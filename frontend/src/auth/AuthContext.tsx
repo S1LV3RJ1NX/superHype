@@ -16,6 +16,8 @@ export interface AppUser {
   avatar_url: string | null;
   role: string;
   is_active: boolean;
+  team_id: string | null;
+  team_name: string | null;
 }
 
 interface AuthContextValue {
@@ -23,6 +25,7 @@ interface AuthContextValue {
   loading: boolean;
   login: (token: string) => Promise<void>;
   logout: () => void;
+  refresh: () => Promise<void>;
 }
 
 const AuthCtx = createContext<AuthContextValue | null>(null);
@@ -64,7 +67,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthCtx.Provider value={{ user, loading, login, logout }}>
+    <AuthCtx.Provider value={{ user, loading, login, logout, refresh: fetchMe }}>
       {children}
     </AuthCtx.Provider>
   );

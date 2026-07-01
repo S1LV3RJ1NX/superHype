@@ -14,6 +14,7 @@ import {
   type RosterUser,
 } from "@/components/PlanBuilder";
 import { ApiError, apiFetch } from "@/lib/api";
+import { fetchAllRoster } from "@/lib/roster";
 
 export function CampaignWizard({
   mode,
@@ -77,8 +78,7 @@ export function CampaignWizard({
         });
         setCreated(c);
         try {
-          const r = await apiFetch<{ items: RosterUser[] }>("/v1/users/roster");
-          setRoster(r.items);
+          setRoster(await fetchAllRoster());
         } catch {
           setError(
             "Campaign created, but loading the team list failed. You can still continue.",

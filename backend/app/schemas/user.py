@@ -17,8 +17,14 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     created_at: datetime
+    team_id: uuid.UUID | None = None
+    team_name: str | None = None
     linkedin_status: str | None = None
 
 
 class RoleUpdate(BaseModel):
     role: Literal["admin", "editor", "viewer"]
+
+
+class TeamAssign(BaseModel):
+    team_id: uuid.UUID

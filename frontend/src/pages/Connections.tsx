@@ -82,9 +82,9 @@ export function Connections() {
   return (
     <AppShell>
       <div className="mx-auto max-w-2xl">
-        <h1 className="font-serif text-2xl text-ink">Connections</h1>
+        <h1 className="font-serif text-2xl text-ink">Connectors</h1>
         <p className="mt-1 text-sm text-muted-ink">
-          Connect your LinkedIn account to publish posts through super-hype.
+          Connector accounts to publish posts through super-hype.
         </p>
 
         {loading ? (

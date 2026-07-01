@@ -25,9 +25,12 @@ from app.models.audit_log import AuditLog
 from app.models.campaign import Campaign
 from app.models.post import Post
 from app.models.social_account import SocialAccount
+from app.models.team import Team
 from app.models.user import User
 
 _SQLITE_TABLES = [
+    # teams before users: users.team_id has a foreign key to teams.
+    Team.__table__,
     User.__table__,
     Asset.__table__,
     Campaign.__table__,

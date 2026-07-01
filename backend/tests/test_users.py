@@ -3,6 +3,7 @@
 import uuid
 
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.models.audit_log import AuditLog
 from app.models.social_account import SocialAccount
@@ -84,6 +85,71 @@ async def test_role_change_writes_audit(client: AsyncClient, as_role, engine):
         logs = list(result.scalars().all())
     assert len(logs) >= 1
     assert logs[0].detail["new_role"] == "editor"
+
+
+async def test_list_users_search_filters(client: AsyncClient, as_role, engine):
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        session.add_all(
+            [
+                User(
+                    id=uuid.uuid4(),
+                    email="alice@corp.com",
+                    name="Alice Anderson",
+                    role="viewer",
+                    is_active=True,
+                ),
+                User(
+                    id=uuid.uuid4(),
+                    email="bob@corp.com",
+                    name="Bob Brown",
+                    role="viewer",
+                    is_active=True,
+                ),
+            ]
+        )
+        await session.commit()
+
+    async with as_role("admin"):
+        resp = await client.get("/v1/users?search=alice")
+    assert resp.status_code == 200
+    emails = [u["email"] for u in resp.json()["items"]]
+    assert "alice@corp.com" in emails
+    assert "bob@corp.com" not in emails
+
+
+async def test_list_users_pagination_no_overlap(client: AsyncClient, as_role, engine):
+    maker = async_sessionmaker(engine, expire_on_commit=False)
+    async with maker() as session:
+        session.add_all(
+            [
+                User(
+                    id=uuid.uuid4(),
+                    email=f"page{i}@corp.com",
+                    name=f"Page User {i}",
+                    role="viewer",
+                    is_active=True,
+                )
+                for i in range(5)
+            ]
+        )
+        await session.commit()
+
+    async with as_role("admin"):
+        first = await client.get("/v1/users?limit=3")
+        assert first.status_code == 200
+        body1 = first.json()
+        assert len(body1["items"]) == 3
+        assert body1["next_cursor"] is not None
+
+        second = await client.get(f"/v1/users?limit=3&cursor={body1['next_cursor']}")
+        assert second.status_code == 200
+        body2 = second.json()
+
+    ids1 = {u["id"] for u in body1["items"]}
+    ids2 = {u["id"] for u in body2["items"]}
+    # No overlap between consecutive pages (keyset guarantees this).
+    assert ids1.isdisjoint(ids2)
 
 
 async def test_last_admin_guard(client: AsyncClient, as_role, engine):

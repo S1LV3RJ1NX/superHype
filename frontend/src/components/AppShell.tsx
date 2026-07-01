@@ -3,6 +3,7 @@ import {
   Link2,
   LogOut,
   Megaphone,
+  UsersRound,
   Users,
 } from "lucide-react";
 import type { ReactNode } from "react";
@@ -15,7 +16,8 @@ import { cn } from "@/lib/utils";
 const NAV = [
   { label: "Dashboard", icon: LayoutDashboard, href: "/app" },
   { label: "Campaigns", icon: Megaphone, href: "/app/campaigns" },
-  { label: "Connections", icon: Link2, href: "/app/connections" },
+  { label: "Connectors", icon: Link2, href: "/app/connections" },
+  { label: "Teams", icon: UsersRound, href: "/app/teams", adminOnly: true },
   { label: "Users", icon: Users, href: "/app/users", adminOnly: true },
 ];
 
@@ -65,9 +67,18 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-16 items-center justify-between border-b border-border bg-paper px-6">
           <Wordmark className="text-lg md:hidden" />
-          <div className="ml-auto flex items-center gap-3">
-            <span className="text-sm text-muted-ink">
-              {user?.name ?? user?.email ?? ""}
+          <Link
+            to="/app/profile"
+            className="ml-auto flex items-center gap-3 rounded-full py-1 pl-3 pr-1 transition-colors hover:bg-sand"
+            title="Your profile"
+          >
+            <span className="flex flex-col items-end leading-tight">
+              <span className="text-sm text-ink">
+                {user?.name ?? user?.email ?? ""}
+              </span>
+              {user?.team_name && (
+                <span className="text-xs text-muted-ink">{user.team_name}</span>
+              )}
             </span>
             {user?.avatar_url ? (
               <img
@@ -79,7 +90,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             ) : (
               <div className="h-8 w-8 rounded-full bg-clay/15 ring-1 ring-border" />
             )}
-          </div>
+          </Link>
         </header>
         <main className="flex-1 overflow-y-auto p-6">{children}</main>
       </div>

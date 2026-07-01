@@ -59,7 +59,7 @@ export function LinkedInCallback() {
           href="/app/connections"
           className="text-sm text-clay underline underline-offset-2"
         >
-          Back to Connections
+          Back to Connectors
         </a>
       </div>
     );

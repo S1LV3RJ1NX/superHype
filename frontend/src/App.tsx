@@ -10,6 +10,9 @@ import { LinkedInCallback } from "@/pages/LinkedInCallback";
 import { CampaignDetail } from "@/pages/CampaignDetail";
 import { CampaignEditor } from "@/pages/CampaignEditor";
 import { Campaigns } from "@/pages/Campaigns";
+import { Onboarding } from "@/pages/Onboarding";
+import { Profile } from "@/pages/Profile";
+import { Teams } from "@/pages/Teams";
 import { Users } from "@/pages/Users";
 
 export default function App() {
@@ -79,6 +82,30 @@ export default function App() {
           element={
             <ProtectedRoute>
               <Users />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app/onboarding"
+          element={
+            <ProtectedRoute>
+              <Onboarding />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app/profile"
+          element={
+            <ProtectedRoute>
+              <Profile />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app/teams"
+          element={
+            <ProtectedRoute>
+              <Teams />
             </ProtectedRoute>
           }
         />

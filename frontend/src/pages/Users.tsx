@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link2, Shield, ShieldAlert, User } from "lucide-react";
+import { Link2, Loader2, Search, Shield, ShieldAlert, User } from "lucide-react";
 
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/auth/AuthContext";
@@ -35,26 +35,40 @@ export function Users() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
 
-  const fetchUsers = useCallback(async (nextCursor?: string | null) => {
-    setLoading(true);
-    try {
-      const qs = nextCursor ? `?cursor=${nextCursor}` : "";
-      const page = await apiFetch<UsersPage>(`/v1/users${qs}`);
-      setUsers((prev) =>
-        nextCursor ? [...prev, ...page.items] : page.items,
-      );
-      setCursor(page.next_cursor);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load users");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const fetchUsers = useCallback(
+    async (opts?: { cursor?: string | null; search?: string }) => {
+      setLoading(true);
+      try {
+        const p = new URLSearchParams();
+        p.set("limit", "20");
+        if (opts?.cursor) p.set("cursor", opts.cursor);
+        const q = (opts?.search ?? "").trim();
+        if (q) p.set("search", q);
+        const page = await apiFetch<UsersPage>(`/v1/users?${p.toString()}`);
+        setUsers((prev) =>
+          opts?.cursor ? [...prev, ...page.items] : page.items,
+        );
+        setCursor(page.next_cursor);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to load users");
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
 
+  // Search hits the server so it spans every user, not just loaded pages. This
+  // also drives the initial load (search starts empty). Debounced so we do not
+  // fire a request on every keystroke.
   useEffect(() => {
-    fetchUsers();
-  }, [fetchUsers]);
+    const t = setTimeout(() => {
+      fetchUsers({ search });
+    }, 300);
+    return () => clearTimeout(t);
+  }, [search, fetchUsers]);
 
   const handleRoleChange = async (userId: string, newRole: string) => {
     setError(null);
@@ -89,7 +103,22 @@ export function Users() {
           </div>
         )}
 
-        <div className="mt-6 overflow-hidden rounded-lg border border-border">
+        <div className="relative mt-6">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-ink" />
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search by name, email, or role"
+            className="w-full rounded-md border border-border bg-surface py-2 pl-9 pr-3 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-ring"
+          />
+        </div>
+
+        {loading && users.length === 0 ? (
+          <div className="mt-4 flex justify-center rounded-lg border border-border py-16">
+            <Loader2 className="h-5 w-5 animate-spin text-muted-ink" />
+          </div>
+        ) : (
+        <div className="mt-4 overflow-hidden rounded-lg border border-border">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-border bg-sand/50 text-left text-xs font-medium uppercase tracking-wider text-muted-ink">
@@ -99,6 +128,16 @@ export function Users() {
               </tr>
             </thead>
             <tbody>
+              {users.length === 0 && !loading && (
+                <tr>
+                  <td
+                    colSpan={3}
+                    className="px-4 py-8 text-center text-sm text-muted-ink"
+                  >
+                    No users match your search.
+                  </td>
+                </tr>
+              )}
               {users.map((u) => {
                 const RoleIcon =
                   ROLE_ICONS[u.role as keyof typeof ROLE_ICONS] ?? User;
@@ -183,12 +222,13 @@ export function Users() {
             </tbody>
           </table>
         </div>
+        )}
 
         {cursor && (
           <button
-            onClick={() => fetchUsers(cursor)}
+            onClick={() => fetchUsers({ cursor, search })}
             disabled={loading}
-            className="mt-4 rounded-md border border-border px-4 py-2 text-sm text-muted-ink hover:bg-sand"
+            className="mt-4 rounded-md border border-border px-4 py-2 text-sm text-muted-ink hover:bg-sand disabled:opacity-50"
           >
             {loading ? "Loading..." : "Load more"}
           </button>

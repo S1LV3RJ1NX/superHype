@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Loader2, Pencil, Search, Sparkles } from "lucide-react";
 
+import { fetchAllTeams } from "@/lib/roster";
 import { cn } from "@/lib/utils";
 
 export interface RosterUser {
@@ -8,6 +9,12 @@ export interface RosterUser {
   name: string | null;
   email: string;
   linkedin_status: string | null;
+  team_id: string | null;
+}
+
+export interface TeamOption {
+  id: string;
+  name: string;
 }
 
 export interface AssignmentDraft {
@@ -101,7 +108,20 @@ export function PlanBuilder({
   const [filter, setFilter] = useState<"all" | "connected" | "unconnected">(
     "all",
   );
+  const [teamFilter, setTeamFilter] = useState<string>("all");
+  const [teams, setTeams] = useState<TeamOption[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  useEffect(() => {
+    fetchAllTeams()
+      .then(setTeams)
+      .catch(() => setTeams([]));
+  }, []);
+
+  // Only show team controls for teams that actually have someone in the roster.
+  const teamsInRoster = teams.filter((t) =>
+    roster.some((u) => u.team_id === t.id),
+  );
 
   const getA = (uid: string) => assigns[uid] ?? blankAssign();
 
@@ -190,6 +210,44 @@ export function PlanBuilder({
 
   const isConnected = (u: RosterUser) => !!u.linkedin_status;
 
+  // Clicking a team chip selects every roster member on that team into the
+  // per-person picker (the bulk action buttons then apply as usual). Clicking it
+  // again when all are already selected deselects them and clears their actions.
+  const teamMembers = (teamId: string) =>
+    roster.filter((u) => u.team_id === teamId);
+
+  const toggleTeam = (teamId: string) => {
+    const members = teamMembers(teamId);
+    if (members.length === 0) return;
+    const allSelected = members.every((u) => selected.has(u.id));
+    if (allSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        members.forEach((u) => next.delete(u.id));
+        return next;
+      });
+      setAssigns((prev) => {
+        const next = { ...prev };
+        members.forEach((u) => {
+          const cur = next[u.id] ?? blankAssign();
+          next[u.id] = {
+            ...cur,
+            like: false,
+            comment: false,
+            repost_comment: false,
+          };
+        });
+        return next;
+      });
+    } else {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        members.forEach((u) => next.add(u.id));
+        return next;
+      });
+    }
+  };
+
   const filtered = roster.filter((u) => {
     const q = search.trim().toLowerCase();
     const matchesQuery =
@@ -201,7 +259,8 @@ export function PlanBuilder({
       filter === "all" ||
       (filter === "connected" && connected) ||
       (filter === "unconnected" && !connected);
-    return matchesQuery && matchesFilter;
+    const matchesTeam = teamFilter === "all" || u.team_id === teamFilter;
+    return matchesQuery && matchesFilter && matchesTeam;
   });
 
   const allFilteredSelected =
@@ -370,6 +429,37 @@ export function PlanBuilder({
 
       <p className="mb-2 text-xs font-medium text-muted-ink">Engagement</p>
 
+      {teamsInRoster.length > 0 && (
+        <div className="mb-2">
+          <p className="mb-1.5 text-xs text-muted-ink">
+            Add a whole team, then pick actions below.
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {teamsInRoster.map((t) => {
+              const members = teamMembers(t.id);
+              const allSelected =
+                members.length > 0 && members.every((u) => selected.has(u.id));
+              return (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => toggleTeam(t.id)}
+                  aria-pressed={allSelected}
+                  className={cn(
+                    "rounded-full border px-3 py-1 text-xs transition-colors",
+                    allSelected
+                      ? "border-clay bg-clay text-paper"
+                      : "border-border bg-sand/40 text-muted-ink hover:bg-sand",
+                  )}
+                >
+                  {t.name} ({members.length})
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <div className="relative mb-2">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-ink" />
         <input
@@ -380,7 +470,7 @@ export function PlanBuilder({
         />
       </div>
 
-      <div className="mb-2 flex flex-wrap gap-1.5">
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
         <FilterChip
           label="All"
           active={filter === "all"}
@@ -396,6 +486,20 @@ export function PlanBuilder({
           active={filter === "unconnected"}
           onClick={() => setFilter("unconnected")}
         />
+        {teamsInRoster.length > 0 && (
+          <select
+            value={teamFilter}
+            onChange={(e) => setTeamFilter(e.target.value)}
+            className="ml-auto rounded-full border border-border bg-sand/40 px-3 py-1 text-xs text-muted-ink focus:outline-none focus:ring-2 focus:ring-ring"
+          >
+            <option value="all">All teams</option>
+            {teamsInRoster.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-sand/30 px-2 py-1.5">

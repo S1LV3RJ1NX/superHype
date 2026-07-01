@@ -15,6 +15,7 @@ import {
   type RosterUser,
 } from "@/components/PlanBuilder";
 import { apiFetch } from "@/lib/api";
+import { fetchAllRoster } from "@/lib/roster";
 
 const EDITABLE_STATUSES = ["draft", "review"];
 
@@ -101,10 +102,10 @@ export function CampaignEditor() {
       const [c, p, r] = await Promise.all([
         apiFetch<Campaign>(`/v1/campaigns/${id}`),
         apiFetch<{ items: Post[] }>(`/v1/campaigns/${id}/posts`),
-        apiFetch<{ items: RosterUser[] }>(`/v1/users/roster`),
+        fetchAllRoster(),
       ]);
       setCampaign(c);
-      setRoster(r.items);
+      setRoster(r);
       setInitialFields(fieldsFromCampaign(c));
       setInitialRows(rowsFromPosts(p.items));
       setLockedPosts(
