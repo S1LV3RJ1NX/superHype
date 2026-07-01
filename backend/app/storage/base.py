@@ -2,7 +2,7 @@
 
 A single small Protocol so the API and worker depend on the interface, not on
 where bytes physically live. The Postgres-backed implementation ships now;
-object storage or TrueFoundry can be dropped in later without touching callers.
+an S3-compatible object store can be dropped in later without touching callers.
 """
 
 import uuid

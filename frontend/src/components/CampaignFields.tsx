@@ -257,7 +257,7 @@ export function CampaignFields({
                 value={value.selfComment}
                 onChange={(e) => onChange({ selfComment: e.target.value })}
                 rows={2}
-                placeholder="For more details: https://www.truefoundry.com/blog/..."
+                placeholder="For more details: https://www.example.com/blog/..."
                 className="input"
               />
               <div className="mt-2">

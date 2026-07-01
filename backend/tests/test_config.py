@@ -19,6 +19,7 @@ _REQUIRED_ENV = {
     "LLM_GATEWAY_URL": "https://gateway.test.local",
     "LLM_API_KEY": "test-llm-key",
     "LLM_MODEL_NAME": "test-model",
+    "BRAND_KEYWORDS": "Acme,ACME",
 }
 
 

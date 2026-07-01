@@ -9,10 +9,10 @@
 </p>
 
 <p align="center">
-  Human-in-the-loop employee advocacy for LinkedIn. Amplify an existing post
-  with genuine interactions, or distribute distinct, on-voice variations across
-  your team, each approved by a real person and published on a stagger through
-  LinkedIn's official API.
+  Human-in-the-loop employee advocacy platform. LinkedIn is supported today,
+  more channels coming soon. Amplify an existing post with genuine interactions,
+  or distribute distinct, on-voice variations across your team, each approved by
+  a real person and published on a stagger through the channel's official API.
 </p>
 
 <p align="center">
@@ -22,6 +22,7 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/S1LV3RJ1NX/superHype/actions/workflows/ci.yml"><img src="https://github.com/S1LV3RJ1NX/superHype/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License: MIT" />
   <img src="https://img.shields.io/badge/python-3.13+-3776AB.svg?logo=python&logoColor=white" alt="Python 3.13+" />
   <img src="https://img.shields.io/badge/FastAPI-009688.svg?logo=fastapi&logoColor=white" alt="FastAPI" />
@@ -32,6 +33,39 @@
 </p>
 
 ---
+
+## Why I built this
+
+Startups do not lose because the product is bad. They lose because nobody hears
+about it. You ship something you are proud of, you hit post, and it lands to
+crickets, because the LinkedIn feed rewards a wave of real people talking, not
+one lonely company update.
+
+So the founder does what every founder does: drops the link in the team channel
+and asks everyone to "please like and comment." It half works. Some people miss
+it. Some paste the same canned line five minutes apart, which the algorithm reads
+as a pod and the audience reads as fake. Some forget. The launch that deserved a
+week of momentum gets a Tuesday afternoon and then goes quiet.
+
+The tools that claim to fix this are built for enterprise marketing teams: they
+scrape, they ask for your password, they auto-generate the same soulless post for
+everyone, and they treat your teammates as broadcast bots rather than people with
+their own voice and their own consent. That is exactly the thing that makes
+advocacy feel gross.
+
+I wanted the opposite. super-hype turns one announcement into genuine, varied
+advocacy from the people who actually built the thing:
+
+- Every action runs on each person's own consented account through the official
+  API. No scraping, no shared logins, no credential capture.
+- The words are theirs. Drafts are tuned to each person's team voice, and nobody
+  publishes anything they did not approve, edit, or skip.
+- It reads as real. Posts and interactions go out on a randomized stagger with
+  spacing and daily caps, so a coordinated push never looks like a bot pod.
+
+It started as a way to make our own launches actually travel without nagging the
+team or faking engagement. LinkedIn is the first channel because that is where
+B2B distribution lives, and the design generalizes to more channels next.
 
 ## Why super-hype
 

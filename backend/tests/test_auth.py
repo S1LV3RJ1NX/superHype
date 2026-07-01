@@ -14,7 +14,7 @@ from app.repositories.user_repo import user_repo
 
 
 def _make_openid(
-    email: str = "user@truefoundry.com",
+    email: str = "user@example.com",
     display_name: str = "Test User",
     google_sub: str | None = None,
     picture: str | None = None,
@@ -29,7 +29,7 @@ def _make_openid(
 
 
 async def test_rejects_non_company_domain(db: AsyncSession, monkeypatch):
-    monkeypatch.setattr(settings, "COMPANY_EMAIL_DOMAIN", "truefoundry.com")
+    monkeypatch.setattr(settings, "COMPANY_EMAIL_DOMAIN", "example.com")
     sso_user = _make_openid(email="outsider@gmail.com")
     with pytest.raises(HTTPException) as exc_info:
         await complete_google_login(db, sso_user)
@@ -37,44 +37,44 @@ async def test_rejects_non_company_domain(db: AsyncSession, monkeypatch):
 
 
 async def test_bootstrap_email_becomes_admin(db: AsyncSession, monkeypatch):
-    monkeypatch.setattr(settings, "COMPANY_EMAIL_DOMAIN", "truefoundry.com")
-    monkeypatch.setattr(settings, "BOOTSTRAP_ADMIN_EMAILS", "admin@truefoundry.com")
-    sso_user = _make_openid(email="admin@truefoundry.com")
+    monkeypatch.setattr(settings, "COMPANY_EMAIL_DOMAIN", "example.com")
+    monkeypatch.setattr(settings, "BOOTSTRAP_ADMIN_EMAILS", "admin@example.com")
+    sso_user = _make_openid(email="admin@example.com")
     result = await complete_google_login(db, sso_user)
     payload = decode_access_token(result.access_token)
     assert payload.role == "admin"
 
 
 async def test_normal_email_becomes_viewer(db: AsyncSession, monkeypatch):
-    monkeypatch.setattr(settings, "COMPANY_EMAIL_DOMAIN", "truefoundry.com")
-    monkeypatch.setattr(settings, "BOOTSTRAP_ADMIN_EMAILS", "other@truefoundry.com")
-    sso_user = _make_openid(email="regular@truefoundry.com")
+    monkeypatch.setattr(settings, "COMPANY_EMAIL_DOMAIN", "example.com")
+    monkeypatch.setattr(settings, "BOOTSTRAP_ADMIN_EMAILS", "other@example.com")
+    sso_user = _make_openid(email="regular@example.com")
     result = await complete_google_login(db, sso_user)
     payload = decode_access_token(result.access_token)
     assert payload.role == "viewer"
 
 
 async def test_existing_user_is_reused(db: AsyncSession, monkeypatch):
-    monkeypatch.setattr(settings, "COMPANY_EMAIL_DOMAIN", "truefoundry.com")
+    monkeypatch.setattr(settings, "COMPANY_EMAIL_DOMAIN", "example.com")
     monkeypatch.setattr(settings, "BOOTSTRAP_ADMIN_EMAILS", "")
-    sso_user = _make_openid(email="repeat@truefoundry.com")
+    sso_user = _make_openid(email="repeat@example.com")
 
     await complete_google_login(db, sso_user)
     await complete_google_login(db, sso_user)
 
-    user = await user_repo.get_by_email(db, "repeat@truefoundry.com")
+    user = await user_repo.get_by_email(db, "repeat@example.com")
     assert user is not None
-    all_users = await user_repo.list(db, email="repeat@truefoundry.com")
+    all_users = await user_repo.list(db, email="repeat@example.com")
     assert len(all_users) == 1
 
 
 async def test_inactive_user_rejected(db: AsyncSession, monkeypatch):
-    monkeypatch.setattr(settings, "COMPANY_EMAIL_DOMAIN", "truefoundry.com")
+    monkeypatch.setattr(settings, "COMPANY_EMAIL_DOMAIN", "example.com")
     monkeypatch.setattr(settings, "BOOTSTRAP_ADMIN_EMAILS", "")
-    sso_user = _make_openid(email="disabled@truefoundry.com")
+    sso_user = _make_openid(email="disabled@example.com")
     await complete_google_login(db, sso_user)
 
-    user = await user_repo.get_by_email(db, "disabled@truefoundry.com")
+    user = await user_repo.get_by_email(db, "disabled@example.com")
     assert user is not None
     user.is_active = False
     await db.commit()

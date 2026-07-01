@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
+from app.config import settings
 from app.models.post import Post
 from app.models.team import Team
 from app.models.user import User
@@ -129,12 +130,14 @@ async def test_pending_posts_excluded(client: AsyncClient, as_role, engine):
     assert all(e["user_id"] != str(carol.id) for e in resp.json()["entries"])
 
 
-async def test_brand_text_post_bonus(client: AsyncClient, as_role, engine):
+async def test_brand_text_post_bonus(client: AsyncClient, as_role, engine, monkeypatch):
+    # Pin the brand keywords so the bonus does not depend on the ambient env.
+    monkeypatch.setattr(settings, "BRAND_KEYWORDS", "Acme,ACME")
     dave = _user("Dave")
     await _seed(
         engine,
         users=[dave],
-        posts=[_post(dave.id, "post", body="Loving the TrueFoundry launch")],
+        posts=[_post(dave.id, "post", body="Loving the Acme launch")],
     )
     async with as_role("viewer"):
         resp = await client.get("/v1/leaderboard")
@@ -143,7 +146,11 @@ async def test_brand_text_post_bonus(client: AsyncClient, as_role, engine):
     assert entry["score"] == 10
 
 
-async def test_brand_media_post_bonus(client: AsyncClient, as_role, engine):
+async def test_brand_media_post_bonus(
+    client: AsyncClient, as_role, engine, monkeypatch
+):
+    # Pin the brand keywords so the bonus does not depend on the ambient env.
+    monkeypatch.setattr(settings, "BRAND_KEYWORDS", "Acme,ACME")
     erin = _user("Erin")
     await _seed(
         engine,
@@ -152,7 +159,7 @@ async def test_brand_media_post_bonus(client: AsyncClient, as_role, engine):
             _post(
                 erin.id,
                 "post",
-                body="TFY ships again",
+                body="ACME ships again",
                 image_url="https://x/i.png",
             )
         ],
