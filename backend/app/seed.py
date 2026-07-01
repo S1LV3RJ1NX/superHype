@@ -19,15 +19,44 @@ from app.models.user import User
 
 log = get_logger(__name__)
 
-# The starting org teams. The migration seeds these too; this keeps local DB
-# resets (and any env where the data migration was skipped) in sync.
-DEFAULT_TEAMS = [
-    "Founders",
-    "Founder's Office",
-    "GTM",
-    "Marketing and Sales",
-    "Engineering",
-    "EO/FDE",
+# The starting org teams and their default personas (voice guidance injected
+# into generated comments and reshares). The migration seeds the names too; this
+# keeps local DB resets (and any env where the data migration was skipped) in
+# sync, and fills a default persona for teams that do not have one yet.
+DEFAULT_TEAMS: list[tuple[str, str]] = [
+    (
+        "Founders",
+        "A founder voice: direct, high-conviction, and outcome-focused. Talks "
+        "about the problem and the bet behind it, not features. Comfortable with "
+        "a strong opinion and a real question.",
+    ),
+    (
+        "Founder's Office",
+        "Operates across the company: connects strategy to execution, cites "
+        "concrete metrics or milestones, and frames things in terms of leverage "
+        "and priorities.",
+    ),
+    (
+        "GTM",
+        "A go-to-market voice: customer and pipeline oriented, speaks to buyer "
+        "pain, use cases, and outcomes in the field, grounded and practical.",
+    ),
+    (
+        "Marketing and Sales",
+        "A marketing and sales voice: crisp positioning, a clear hook, and value "
+        "framed for the reader. Persuasive without hype or buzzwords.",
+    ),
+    (
+        "Engineering",
+        "An engineer's voice: precise and technical, curious about how it works, "
+        "trade-offs, and real-world constraints. Skeptical of marketing spin.",
+    ),
+    (
+        "EO/FDE",
+        "A forward-deployed engineer voice: hands-on with customers, pragmatic "
+        "about what actually ships, and specific about the technical detail that "
+        "matters.",
+    ),
 ]
 
 
@@ -42,12 +71,17 @@ async def seed_bootstrap_admins(db: AsyncSession) -> None:
 
 
 async def seed_default_teams(db: AsyncSession) -> None:
-    for name in DEFAULT_TEAMS:
+    for name, persona in DEFAULT_TEAMS:
         existing = await db.scalar(select(Team).where(Team.name == name))
         if existing is not None:
-            log.info("seed.team.exists", name=name)
+            # Backfill a persona for teams seeded before personas existed.
+            if not existing.persona:
+                existing.persona = persona
+                log.info("seed.team.persona_backfilled", name=name)
+            else:
+                log.info("seed.team.exists", name=name)
             continue
-        db.add(Team(name=name, is_active=True))
+        db.add(Team(name=name, is_active=True, persona=persona))
         log.info("seed.team.created", name=name)
 
 

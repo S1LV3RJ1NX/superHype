@@ -40,12 +40,15 @@ async def list_all_teams(db: AsyncSession, params: PageParams) -> Page[TeamOut]:
     )
 
 
-async def create_team(db: AsyncSession, *, name: str, actor: User) -> TeamOut:
+async def create_team(
+    db: AsyncSession, *, name: str, persona: str | None = None, actor: User
+) -> TeamOut:
     name = name.strip()
     existing = await team_repo.get_by_name(db, name)
     if existing is not None:
         raise HTTPException(status_code=409, detail="A team with that name exists.")
-    team = await team_repo.create(db, name=name, is_active=True)
+    persona = persona.strip() if persona else None
+    team = await team_repo.create(db, name=name, is_active=True, persona=persona)
     await audit_repo.record(
         db,
         actor_id=actor.id,
@@ -75,6 +78,9 @@ async def update_team(
         fields["name"] = new_name
     if body.is_active is not None:
         fields["is_active"] = body.is_active
+    if body.persona is not None:
+        stripped = body.persona.strip()
+        fields["persona"] = stripped or None
 
     if not fields:
         counts = await team_repo.member_counts(db, [team.id])

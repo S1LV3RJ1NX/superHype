@@ -28,6 +28,9 @@ class DummyProvider:
     ) -> str:
         return "urn:li:image:1"
 
+    async def upload_video(self, acct: SocialAccount, data: bytes) -> str:
+        return "urn:li:video:1"
+
     async def comment(self, acct: SocialAccount, target_urn: str, text: str) -> str:
         return "urn:li:comment:1"
 

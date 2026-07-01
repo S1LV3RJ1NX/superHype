@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Loader2, Pencil, Search, Sparkles } from "lucide-react";
+import { Loader2, Pencil, Search, Sparkles, Star } from "lucide-react";
 
 import { fetchAllTeams } from "@/lib/roster";
 import { cn } from "@/lib/utils";
@@ -87,6 +87,10 @@ export function PlanBuilder({
       .map((r) => ({ user_id: r.user_id, body: r.body ?? "" })),
   );
 
+  // The "hero" post is the one variation everyone rallies around (a founder's
+  // announcement, say). Marking it lets us one-click point commenters at it.
+  const [heroIndex, setHeroIndex] = useState<number | null>(null);
+
   const [assigns, setAssigns] = useState<Record<string, UserAssign>>(() => {
     const a: Record<string, UserAssign> = {};
     for (const u of roster) a[u.id] = blankAssign();
@@ -172,6 +176,27 @@ export function PlanBuilder({
       });
       return next;
     });
+
+  // With a single variation it is implicitly the hero; otherwise use the
+  // explicitly marked one.
+  const effectiveHero =
+    heroIndex != null && heroIndex < variations.length
+      ? heroIndex
+      : variations.length === 1
+        ? 0
+        : null;
+
+  const bulkCommentOnHero = () => {
+    if (effectiveHero == null) return;
+    setAssigns((prev) => {
+      const next = { ...prev };
+      selected.forEach((id) => {
+        const cur = next[id] ?? blankAssign();
+        next[id] = { ...cur, comment: true, target: effectiveHero };
+      });
+      return next;
+    });
+  };
 
   const bulkClear = () =>
     setAssigns((prev) => {
@@ -408,6 +433,28 @@ export function PlanBuilder({
                     ))}
                   </select>
                   <button
+                    type="button"
+                    onClick={() =>
+                      setHeroIndex((cur) => (cur === i ? null : i))
+                    }
+                    aria-pressed={effectiveHero === i}
+                    title="Mark this as the hero post everyone comments on"
+                    className={cn(
+                      "inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition-colors",
+                      effectiveHero === i
+                        ? "border-clay bg-clay text-paper"
+                        : "border-border bg-sand/40 text-muted-ink hover:bg-sand",
+                    )}
+                  >
+                    <Star
+                      className={cn(
+                        "h-3.5 w-3.5",
+                        effectiveHero === i && "fill-current",
+                      )}
+                    />
+                    {effectiveHero === i ? "Hero" : "Set hero"}
+                  </button>
+                  <button
                     onClick={() => removeVariation(i)}
                     className="text-xs text-fail hover:underline"
                   >
@@ -523,6 +570,13 @@ export function PlanBuilder({
               disabled={selected.size === 0}
             />
           ))}
+          {isDistribute && effectiveHero != null && (
+            <SmallButton
+              label="+ Comment on hero"
+              onClick={bulkCommentOnHero}
+              disabled={selected.size === 0}
+            />
+          )}
           <SmallButton
             label="Clear"
             onClick={bulkClear}

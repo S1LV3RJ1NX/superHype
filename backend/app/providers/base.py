@@ -35,6 +35,14 @@ class Provider(Protocol):
         """Upload an image and return urn:li:image owned by acct."""
         ...
 
+    async def upload_video(
+        self,
+        acct: SocialAccount,
+        data: bytes,
+    ) -> str:
+        """Upload a video and return urn:li:video owned by acct."""
+        ...
+
     async def comment(
         self,
         acct: SocialAccount,

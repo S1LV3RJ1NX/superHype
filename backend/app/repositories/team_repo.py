@@ -34,6 +34,17 @@ class TeamRepository(BaseRepository[Team]):
         result = await db.execute(stmt)
         return {row[0]: row[1] for row in result}
 
+    async def personas_for(
+        self, db: AsyncSession, team_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, str | None]:
+        """Return {team_id: persona} for the given teams (for generation voice)."""
+        ids = [tid for tid in team_ids if tid is not None]
+        if not ids:
+            return {}
+        stmt = select(Team.id, Team.persona).where(Team.id.in_(ids))
+        result = await db.execute(stmt)
+        return {row[0]: row[1] for row in result}
+
     async def member_counts(
         self, db: AsyncSession, team_ids: list[uuid.UUID]
     ) -> dict[uuid.UUID, int]:

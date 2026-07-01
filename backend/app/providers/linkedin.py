@@ -141,6 +141,65 @@ class LinkedInProvider:
             _raise_for_status(put)
         return image_urn
 
+    async def upload_video(
+        self,
+        acct: SocialAccount,
+        data: bytes,
+    ) -> str:
+        """Upload a short video via the chunked Videos API; returns urn:li:video.
+
+        LinkedIn returns one or more byte-range upload instructions; we PUT each
+        chunk, collect the ETag part ids, then finalize. Short campaign clips are
+        usually a single part, but the loop handles a multi-part split too.
+        """
+        headers = self._headers(acct)
+        async with self._client() as client:
+            init = await client.post(
+                f"{_REST_BASE}/videos?action=initializeUpload",
+                headers=headers,
+                json={
+                    "initializeUploadRequest": {
+                        "owner": acct.external_urn,
+                        "fileSizeBytes": len(data),
+                        "uploadCaptions": False,
+                        "uploadThumbnail": False,
+                    }
+                },
+            )
+            _raise_for_status(init)
+            value = init.json()["value"]
+            video_urn = value["video"]
+            upload_token = value.get("uploadToken", "")
+            instructions = value.get("uploadInstructions", [])
+
+            part_ids: list[str] = []
+            for instr in instructions:
+                first = int(instr["firstByte"])
+                last = int(instr["lastByte"])
+                put = await client.put(
+                    instr["uploadUrl"],
+                    headers={"Authorization": headers["Authorization"]},
+                    content=data[first : last + 1],
+                )
+                _raise_for_status(put)
+                etag = put.headers.get("etag")
+                if etag:
+                    part_ids.append(etag)
+
+            finalize = await client.post(
+                f"{_REST_BASE}/videos?action=finalizeUpload",
+                headers=headers,
+                json={
+                    "finalizeUploadRequest": {
+                        "video": video_urn,
+                        "uploadToken": upload_token,
+                        "uploadedPartIds": part_ids,
+                    }
+                },
+            )
+            _raise_for_status(finalize)
+        return video_urn
+
     async def delete_post(self, acct: SocialAccount, urn: str) -> None:
         """Delete a published post. Used only to roll back a partial publish."""
         encoded = quote(urn, safe="")

@@ -1,7 +1,10 @@
-import { type ReactNode } from "react";
-import { Info } from "lucide-react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Info, Loader2, Upload, X } from "lucide-react";
 
+import { ApiError, fetchAssetObjectUrl, uploadAsset } from "@/lib/api";
 import { cn } from "@/lib/utils";
+
+const ACCEPTED_MEDIA = "image/png,image/jpeg,image/gif,image/webp,video/mp4,video/quicktime";
 
 export const TONE_OPTIONS = [
   "Professional",
@@ -37,8 +40,9 @@ export interface CampaignFieldsValue {
   seedContent: string;
   tones: string[];
   length: string;
-  link: string;
   imageUrl: string;
+  imageAssetId: string;
+  selfComment: string;
 }
 
 export function emptyCampaignFields(): CampaignFieldsValue {
@@ -49,8 +53,9 @@ export function emptyCampaignFields(): CampaignFieldsValue {
     seedContent: "",
     tones: [],
     length: "",
-    link: "",
     imageUrl: "",
+    imageAssetId: "",
+    selfComment: "",
   };
 }
 
@@ -62,8 +67,10 @@ export function campaignFieldsToPayload(v: CampaignFieldsValue) {
     seed_content: v.seedContent || null,
     tone: v.tones.join(", ") || null,
     length: v.length || null,
-    link: v.link || null,
+    // image_url is carried through untouched; media is now set via image_asset_id.
     image_url: v.imageUrl || null,
+    image_asset_id: v.imageAssetId || null,
+    self_comment: v.selfComment || null,
   };
 }
 
@@ -94,7 +101,7 @@ export function CampaignFields({
             <TypeToggle
               active={type === "distribute"}
               label="Distribute"
-              hint="Generate variations, publish, then amplify"
+              hint="Generate new posts for each member and amplify"
               disabled={!isEditor}
               onClick={() => isEditor && onChange({ type: "distribute" })}
             />
@@ -207,26 +214,188 @@ export function CampaignFields({
         </Hint>
 
         {type === "distribute" && (
-          <div className="grid grid-cols-2 gap-3">
-            <Field label="Link (optional)">
-              <input
-                value={value.link}
-                onChange={(e) => onChange({ link: e.target.value })}
-                placeholder="https://..."
+          <>
+            <Field label="Campaign media (optional)">
+              <MediaUpload
+                assetId={value.imageAssetId}
+                onChange={(id) => onChange({ imageAssetId: id })}
+              />
+              <div className="mt-2">
+                <Hint>
+                  One image or short video applied to every generated post. PNG,
+                  JPEG, GIF, WebP, or MP4/MOV.
+                </Hint>
+              </div>
+            </Field>
+            <Field label="Self comment (optional)">
+              <textarea
+                value={value.selfComment}
+                onChange={(e) => onChange({ selfComment: e.target.value })}
+                rows={2}
+                placeholder="For more details: https://www.truefoundry.com/blog/..."
                 className="input"
               />
+              <div className="mt-2">
+                <Hint>
+                  The author posts this as a comment on their own post a short
+                  while after publishing (a natural "link in the comments").
+                </Hint>
+              </div>
             </Field>
-            <Field label="Default image URL (optional)">
-              <input
-                value={value.imageUrl}
-                onChange={(e) => onChange({ imageUrl: e.target.value })}
-                placeholder="https://..."
-                className="input"
-              />
-            </Field>
-          </div>
+          </>
         )}
       </div>
+    </div>
+  );
+}
+
+function MediaUpload({
+  assetId,
+  onChange,
+}: {
+  assetId: string;
+  onChange: (id: string) => void;
+}) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [kind, setKind] = useState<"image" | "video">("image");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const objectUrlRef = useRef<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const setObjectUrl = (url: string | null) => {
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+    }
+    objectUrlRef.current = url;
+    setPreviewUrl(url);
+  };
+
+  // Load a preview for an already-attached asset (edit mode) that has no local
+  // file yet. Skipped once a fresh file provides its own object URL.
+  useEffect(() => {
+    let cancelled = false;
+    if (assetId && !objectUrlRef.current) {
+      fetchAssetObjectUrl(assetId)
+        .then(({ url, contentType }) => {
+          if (cancelled) {
+            URL.revokeObjectURL(url);
+            return;
+          }
+          setKind(contentType.startsWith("video/") ? "video" : "image");
+          setObjectUrl(url);
+        })
+        .catch(() => {
+          /* preview is best-effort */
+        });
+    }
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [assetId]);
+
+  useEffect(() => {
+    return () => {
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+      }
+    };
+  }, []);
+
+  const handleFile = async (file: File) => {
+    setError(null);
+    setKind(file.type.startsWith("video/") ? "video" : "image");
+    setObjectUrl(URL.createObjectURL(file));
+    setBusy(true);
+    try {
+      const { id } = await uploadAsset(file);
+      onChange(id);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Upload failed");
+      setObjectUrl(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const clear = () => {
+    setObjectUrl(null);
+    setError(null);
+    onChange("");
+    if (inputRef.current) {
+      inputRef.current.value = "";
+    }
+  };
+
+  return (
+    <div>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={ACCEPTED_MEDIA}
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) void handleFile(file);
+        }}
+      />
+      {previewUrl ? (
+        <div className="flex items-start gap-3">
+          {kind === "video" ? (
+            <video
+              src={previewUrl}
+              controls
+              className="h-28 w-28 rounded-md border border-border object-cover"
+            />
+          ) : (
+            <img
+              src={previewUrl}
+              alt="Campaign media preview"
+              className="h-28 w-28 rounded-md border border-border object-cover"
+            />
+          )}
+          <div className="flex flex-col gap-2">
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
+            >
+              {busy ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Upload className="h-3.5 w-3.5" />
+              )}
+              Replace
+            </button>
+            <button
+              type="button"
+              onClick={clear}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
+            >
+              <X className="h-3.5 w-3.5" />
+              Remove
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={busy}
+          className="inline-flex items-center gap-2 rounded-md border border-dashed border-border px-4 py-3 text-sm text-muted-ink hover:bg-sand disabled:opacity-50"
+        >
+          {busy ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <Upload className="h-4 w-4" />
+          )}
+          {busy ? "Uploading..." : "Upload image or video"}
+        </button>
+      )}
+      {error && <p className="mt-2 text-xs text-fail">{error}</p>}
     </div>
   );
 }

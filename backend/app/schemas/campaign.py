@@ -21,9 +21,11 @@ class CampaignOut(BaseModel):
     language: str
     extra_instructions: str | None
     image_url: str | None
+    image_asset_id: uuid.UUID | None
     image_alt: str | None
     link: str | None
     link_placement: str
+    self_comment: str | None
     status: str
     stagger_min_seconds: int
     stagger_max_seconds: int
@@ -65,9 +67,11 @@ class CampaignCreate(BaseModel):
     language: str = "en"
     extra_instructions: str | None = None
     image_url: str | None = None
+    image_asset_id: uuid.UUID | None = None
     image_alt: str | None = None
     link: str | None = None
     link_placement: str = "first_comment"
+    self_comment: str | None = None
     stagger_min_seconds: int = 600
     stagger_max_seconds: int = 1800
 
@@ -82,8 +86,10 @@ class CampaignUpdate(BaseModel):
     language: str | None = None
     extra_instructions: str | None = None
     image_url: str | None = None
+    image_asset_id: uuid.UUID | None = None
     image_alt: str | None = None
     link: str | None = None
     link_placement: str | None = None
+    self_comment: str | None = None
     stagger_min_seconds: int | None = None
     stagger_max_seconds: int | None = None

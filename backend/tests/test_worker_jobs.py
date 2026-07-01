@@ -56,6 +56,10 @@ class _StubProvider:
         self.calls.append(("upload_image", len(data)))
         return "urn:li:image:1"
 
+    async def upload_video(self, acct, data):
+        self.calls.append(("upload_video", len(data)))
+        return "urn:li:video:1"
+
     async def delete_post(self, acct, urn):
         self.calls.append(("delete_post", urn))
 
@@ -765,6 +769,162 @@ async def test_publish_first_comment_permanent_failure_rolls_back(db, env):
     async with env["maker"]() as s:
         rp = await s.get(Post, p.id)
         assert rp.status == "failed"
+
+
+async def _asset(
+    db, *, content_type: str, data: bytes = b"\x00\x00\x00\x18"
+) -> uuid.UUID:
+    from app.models.asset import Asset
+
+    asset = Asset(content_type=content_type, size_bytes=len(data), data=data)
+    db.add(asset)
+    await db.flush()
+    return asset.id
+
+
+async def test_publish_post_with_video_asset_uploads_video(db, env):
+    user = await _user(db)
+    acct = await _account(db, user)
+    video_id = await _asset(db, content_type="video/mp4")
+    c = Campaign(title="C", type="distribute", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="post",
+        body="watch this",
+        image_asset_id=video_id,
+        status="approved",
+        idempotency_key="kvid",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    calls = env["provider"].calls
+    assert any(ci[0] == "upload_video" for ci in calls)
+    assert not any(ci[0] == "upload_image" for ci in calls)
+    pub = next(ci for ci in calls if ci[0] == "publish")
+    assert pub[2].get("image_urn") == "urn:li:video:1"
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.image_asset_urn == "urn:li:video:1"
+        assert rp.status == "published"
+
+
+async def test_publish_post_with_image_asset_uploads_image(db, env):
+    user = await _user(db)
+    acct = await _account(db, user)
+    image_id = await _asset(db, content_type="image/png")
+    c = Campaign(title="C", type="distribute", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="post",
+        body="see this",
+        image_asset_id=image_id,
+        status="approved",
+        idempotency_key="kimg",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    calls = env["provider"].calls
+    assert any(ci[0] == "upload_image" for ci in calls)
+    assert not any(ci[0] == "upload_video" for ci in calls)
+    pub = next(ci for ci in calls if ci[0] == "publish")
+    assert pub[2].get("image_urn") == "urn:li:image:1"
+
+
+async def test_self_comment_scheduled_then_placed(db, env):
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="distribute", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="post",
+        body="hello",
+        first_comment="Link in comments: https://ex.com",
+        status="approved",
+        idempotency_key="kself",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    # Body published; a deferred self-comment job was scheduled (not placed yet).
+    scheduled = [j for j in env["redis"].jobs if j[0] == "place_self_comment"]
+    assert len(scheduled) == 1
+    assert scheduled[0][1][0] == str(p.id)
+    assert not any(ci[0] == "comment" for ci in env["provider"].calls)
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "published"
+        assert rp.first_comment_external_id is None
+
+    # Run the deferred job: the author's own comment lands, idempotency marker set.
+    await jobs_mod.place_self_comment(env["ctx"], str(p.id))
+    com = next(ci for ci in env["provider"].calls if ci[0] == "comment")
+    assert com[1] == "urn:li:share:new"
+    assert com[2] == "Link in comments: https://ex.com"
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.first_comment_external_id == "urn:li:comment:new"
+
+    # Re-running is a no-op once the marker is set.
+    before = len([ci for ci in env["provider"].calls if ci[0] == "comment"])
+    await jobs_mod.place_self_comment(env["ctx"], str(p.id))
+    after = len([ci for ci in env["provider"].calls if ci[0] == "comment"])
+    assert before == after
+
+
+async def test_self_comment_reschedules_after_lost_enqueue(db, env):
+    """A crash between the body commit and the schedule enqueue must not lose the
+    self-comment: a later publish_post run re-schedules it."""
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="distribute", status="publishing")
+    db.add(c)
+    await db.flush()
+    # Body already live (external_id committed) but the deferred job was never
+    # enqueued, mirroring a worker crash right after the body commit.
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="post",
+        body="hello",
+        first_comment="Link in comments: https://ex.com",
+        status="published",
+        external_id="urn:li:share:live",
+        first_comment_external_id=None,
+        idempotency_key="kresume",
+    )
+    p.published_at = datetime.now(UTC)
+    db.add(p)
+    await db.commit()
+
+    # Re-invoking publish_post hits the idempotent early-return and re-schedules.
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    scheduled = [j for j in env["redis"].jobs if j[0] == "place_self_comment"]
+    assert len(scheduled) == 1
+    assert scheduled[0][1][0] == str(p.id)
+    # The body was not re-published.
+    assert not any(ci[0] == "publish" for ci in env["provider"].calls)
 
 
 async def test_publish_defers_on_min_gap(db, env, cm_enabled):

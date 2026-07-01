@@ -99,6 +99,41 @@ async def test_image_upload_three_step_returns_urn():
     assert any(c.startswith("PUT") for c in calls)
 
 
+async def test_video_upload_initialize_put_finalize_returns_urn():
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(
+            f"{request.method} {request.url.query.decode() or request.url.path}"
+        )
+        if request.url.path.endswith("/rest/videos"):
+            if b"initializeUpload" in request.url.query:
+                return httpx.Response(
+                    200,
+                    json={
+                        "value": {
+                            "video": "urn:li:video:77",
+                            "uploadToken": "tok",
+                            "uploadInstructions": [
+                                {
+                                    "uploadUrl": "https://upload.linkedin.com/v",
+                                    "firstByte": 0,
+                                    "lastByte": 3,
+                                }
+                            ],
+                        }
+                    },
+                )
+            return httpx.Response(200)  # finalize
+        return httpx.Response(200, headers={"etag": "part-1"})  # PUT chunk
+
+    urn = await _provider(handler).upload_video(_account(), b"\x00\x00\x00\x18")
+    assert urn == "urn:li:video:77"
+    assert any("initializeUpload" in c for c in calls)
+    assert any(c.startswith("PUT") for c in calls)
+    assert any("finalizeUpload" in c for c in calls)
+
+
 async def test_comment_returns_urn():
     def handler(request: httpx.Request) -> httpx.Response:
         assert "/rest/socialActions/" in request.url.path

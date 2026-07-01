@@ -46,8 +46,10 @@ class Campaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     )
     extra_instructions: Mapped[str | None] = mapped_column(Text)
 
-    # Shared campaign image defaults (a variation may override per post).
+    # Shared campaign media, applied to every generated post. image_url is an
+    # external URL; image_asset_id points at an uploaded asset (image or video).
     image_url: Mapped[str | None] = mapped_column(Text)
+    image_asset_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("assets.id"))
     image_alt: Mapped[str | None] = mapped_column(Text)
     link: Mapped[str | None] = mapped_column(Text)
     link_placement: Mapped[str] = mapped_column(
@@ -56,6 +58,9 @@ class Campaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default="first_comment",
         server_default="first_comment",
     )
+    # Author self-comment ("link in the comments"), copied to each post's
+    # first_comment and placed by the author on their own post after a delay.
+    self_comment: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="draft", server_default="draft"
     )

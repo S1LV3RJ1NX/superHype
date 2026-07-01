@@ -18,3 +18,6 @@ class Team(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="true"
     )
+    # Voice/style guidance injected into generated comments and reshares so a
+    # member's interactions read in their team's tone. Admin-editable, optional.
+    persona: Mapped[str | None] = mapped_column(Text)

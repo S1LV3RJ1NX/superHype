@@ -28,8 +28,9 @@ interface Campaign {
   seed_content: string | null;
   tone: string | null;
   length: string | null;
-  link: string | null;
   image_url: string | null;
+  image_asset_id: string | null;
+  self_comment: string | null;
   created_by: string | null;
 }
 
@@ -55,8 +56,9 @@ function fieldsFromCampaign(c: Campaign): CampaignFieldsValue {
           .filter(Boolean)
       : [],
     length: c.length ?? "",
-    link: c.link ?? "",
     imageUrl: c.image_url ?? "",
+    imageAssetId: c.image_asset_id ?? "",
+    selfComment: c.self_comment ?? "",
   };
 }
 

@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { Fragment, useCallback, useEffect, useState } from "react";
 import {
   Archive,
   ArchiveRestore,
   Check,
   Loader2,
+  MessageSquareText,
   Pencil,
   Plus,
   UsersRound,
@@ -18,6 +19,7 @@ interface Team {
   id: string;
   name: string;
   is_active: boolean;
+  persona: string | null;
   member_count: number;
   created_at: string;
 }
@@ -30,6 +32,8 @@ export function Teams() {
   const [creating, setCreating] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [personaId, setPersonaId] = useState<string | null>(null);
+  const [personaText, setPersonaText] = useState("");
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const fetchTeams = useCallback(async () => {
@@ -85,6 +89,7 @@ export function Teams() {
       });
       upsert(team);
       setEditingId(null);
+      setPersonaId(null);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Update failed");
     } finally {
@@ -149,8 +154,8 @@ export function Teams() {
                 {teams.map((t) => {
                   const busy = busyId === t.id;
                   return (
+                    <Fragment key={t.id}>
                     <tr
-                      key={t.id}
                       className="border-b border-border last:border-b-0"
                     >
                       <td className="px-4 py-3">
@@ -223,6 +228,21 @@ export function Teams() {
                             </button>
                           )}
                           <button
+                            onClick={() => {
+                              const opening = personaId !== t.id;
+                              setPersonaId(opening ? t.id : null);
+                              if (opening) setPersonaText(t.persona ?? "");
+                            }}
+                            disabled={busy}
+                            className={cn(
+                              "rounded p-1.5 hover:bg-sand disabled:opacity-50",
+                              personaId === t.id ? "text-clay" : "text-muted-ink",
+                            )}
+                            title="Edit persona"
+                          >
+                            <MessageSquareText className="h-4 w-4" />
+                          </button>
+                          <button
                             onClick={() =>
                               patch(t.id, { is_active: !t.is_active })
                             }
@@ -244,6 +264,47 @@ export function Teams() {
                         </div>
                       </td>
                     </tr>
+                    {personaId === t.id && (
+                      <tr className="border-b border-border bg-sand/20 last:border-b-0">
+                        <td colSpan={4} className="px-4 py-3">
+                          <label className="mb-1 block text-xs font-medium text-muted-ink">
+                            Persona: the voice injected into this team's generated
+                            comments and reshares.
+                          </label>
+                          <textarea
+                            value={personaText}
+                            onChange={(e) => setPersonaText(e.target.value)}
+                            rows={3}
+                            maxLength={2000}
+                            placeholder="e.g. An engineer's voice: precise, curious about how it works, skeptical of marketing spin."
+                            className="w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-ink focus:outline-none focus:ring-2 focus:ring-ring"
+                          />
+                          <div className="mt-2 flex justify-end gap-2">
+                            <button
+                              onClick={() => setPersonaId(null)}
+                              className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={() =>
+                                patch(t.id, { persona: personaText.trim() })
+                              }
+                              disabled={busy}
+                              className="inline-flex items-center gap-1.5 rounded-md bg-clay px-3 py-1.5 text-xs font-medium text-paper hover:bg-clay-press disabled:opacity-50"
+                            >
+                              {busy ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                              ) : (
+                                <Check className="h-3.5 w-3.5" />
+                              )}
+                              Save persona
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </Fragment>
                   );
                 })}
               </tbody>

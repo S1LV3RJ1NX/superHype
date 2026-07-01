@@ -52,6 +52,45 @@ export async function apiFetch<T = unknown>(
   return res.json() as Promise<T>;
 }
 
+export async function uploadAsset(file: File): Promise<{ id: string }> {
+  const token = getToken();
+  const form = new FormData();
+  form.append("file", file);
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetch(`${API_BASE}/v1/assets`, {
+    method: "POST",
+    body: form,
+    headers,
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const detail = body.detail;
+    const message =
+      typeof detail === "string" ? detail : (detail?.message ?? "Upload failed");
+    throw new ApiError(res.status, message, detail);
+  }
+  return res.json() as Promise<{ id: string }>;
+}
+
+export async function fetchAssetObjectUrl(
+  id: string,
+): Promise<{ url: string; contentType: string }> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetch(`${API_BASE}/v1/assets/${id}`, { headers });
+  if (!res.ok) {
+    throw new ApiError(res.status, "Failed to load media");
+  }
+  const blob = await res.blob();
+  return { url: URL.createObjectURL(blob), contentType: blob.type };
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,

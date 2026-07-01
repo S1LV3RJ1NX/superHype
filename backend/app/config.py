@@ -80,6 +80,16 @@ class Settings(BaseSettings):
     MAX_ACTIONS_PER_ACCOUNT_PER_DAY: int = 10
     MIN_SECONDS_BETWEEN_ACCOUNT_ACTIONS: int = 90
 
+    # Uploaded campaign video cap. Short clips only; bytes still live in the DB
+    # asset store for now, so keep this modest until object storage lands.
+    MAX_VIDEO_BYTES: int = 64 * 1024 * 1024
+
+    # A post's self-comment ("link in the comments") is placed by the author on
+    # their own post after a random delay in this window, so it reads like a
+    # natural follow-up rather than an instant bot reply.
+    SELF_COMMENT_MIN_SECONDS: int = 300
+    SELF_COMMENT_MAX_SECONDS: int = 3600
+
     # Leaderboard: a direct post whose text mentions one of these keywords earns
     # the brand bonus (case-insensitive substring match). Comma-separated.
     BRAND_KEYWORDS: str = "TrueFoundry,TFY,true foundry"

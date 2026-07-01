@@ -146,6 +146,18 @@ async def generate_variations(
     return [items[i % len(items)] for i in range(n)]
 
 
+def _format_interaction_item(pos: int, item: dict[str, str]) -> str:
+    """Render one numbered interaction item for the prompt, with optional persona."""
+    line = (
+        f"{pos}. action={item.get('action', 'comment')} "
+        f"angle={item.get('angle', '') or 'natural reaction'}"
+    )
+    persona = " ".join((item.get("persona") or "").split())
+    if persona:
+        line += f" persona={persona}"
+    return line
+
+
 async def _interaction_chunk(
     target_text: str,
     items: list[dict[str, str]],
@@ -163,9 +175,7 @@ async def _interaction_chunk(
     chunk cannot produce substantive, varied text after one regeneration.
     """
     enumerated = "\n".join(
-        f"{pos}. action={items[i].get('action', 'comment')} "
-        f"angle={items[i].get('angle', '') or 'natural reaction'}"
-        for pos, i in enumerate(chunk_indices)
+        _format_interaction_item(pos, items[i]) for pos, i in enumerate(chunk_indices)
     )
     system = interactions_system(
         len(chunk_indices),

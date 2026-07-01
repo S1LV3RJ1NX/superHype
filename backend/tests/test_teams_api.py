@@ -119,6 +119,22 @@ async def test_create_team_writes_audit(client: AsyncClient, as_role, engine):
     assert any(log.detail.get("name") == "Audited Team" for log in logs)
 
 
+async def test_admin_can_create_and_edit_persona(client: AsyncClient, as_role, engine):
+    async with as_role("admin"):
+        created = await client.post(
+            "/v1/teams", json={"name": "Voice Team", "persona": "a founder voice"}
+        )
+        assert created.status_code == 201
+        assert created.json()["persona"] == "a founder voice"
+        team_id = created.json()["id"]
+
+        updated = await client.patch(
+            f"/v1/teams/{team_id}", json={"persona": "an engineer voice"}
+        )
+    assert updated.status_code == 200
+    assert updated.json()["persona"] == "an engineer voice"
+
+
 async def test_member_count_reflects_assignment(client: AsyncClient, as_role, engine):
     team = await _make_team(engine, "Counted Team")
     maker = async_sessionmaker(engine, expire_on_commit=False)

@@ -13,6 +13,7 @@ from app.workers.jobs import (
     generate_drafts,
     launch_campaign,
     notify_person,
+    place_self_comment,
     publish_post,
     request_reconnect,
     send_reminders,
@@ -36,6 +37,7 @@ class WorkerSettings:
         launch_campaign,
         notify_person,
         publish_post,
+        place_self_comment,
         send_reminders,
         request_reconnect,
     ]

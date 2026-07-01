@@ -130,6 +130,9 @@ def interactions_system(
         "own voice and specific to the post.\n\n"
         "All texts: never use em dashes or en dashes; use commas, periods, or "
         f"parentheses instead. {_banned_phrase_line()}\n\n"
+        "When an item includes a persona=... field, write that text in that "
+        "person's team voice and point of view, while still following every rule "
+        "above.\n\n"
         f"{reshare_style}{extra or ''}\n\n"
         f"Produce exactly {count} texts for the numbered items below, and respond "
         'with a single JSON object: {"texts": ["...", ...]} indexed to those item '

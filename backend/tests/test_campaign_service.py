@@ -83,6 +83,77 @@ async def test_build_plan_distribute_links_target_post(db):
     assert comment_row.target_external_id is None
 
 
+async def test_build_plan_copies_media_and_self_comment(db):
+    from app.models.asset import Asset
+
+    poster = await _user(db)
+    asset = Asset(content_type="image/png", size_bytes=3, data=b"abc")
+    db.add(asset)
+    await db.flush()
+    c = await _campaign(
+        db,
+        ctype="distribute",
+        seed_content="seed",
+        image_asset_id=asset.id,
+        self_comment="link in the comments",
+    )
+
+    rows = await campaign_service.build_plan(
+        db,
+        c.id,
+        [Assignment(user_id=poster.id, action="post", body="A")],
+        generate=False,
+    )
+    post_row = next(r for r in rows if r.action == "post")
+    assert post_row.image_asset_id == asset.id
+    assert post_row.first_comment == "link in the comments"
+
+
+async def test_build_plan_distribute_comment_uses_target_body_and_persona(
+    db, monkeypatch
+):
+    from app.models.team import Team
+
+    team = Team(name="Eng", is_active=True, persona="an engineer's voice")
+    db.add(team)
+    await db.flush()
+    poster = await _user(db)
+    fan = await _user(db)
+    fan.team_id = team.id
+    await db.flush()
+    c = await _campaign(db, ctype="distribute", seed_content="seed text")
+
+    captured: dict = {}
+
+    async def fake_variations(seed, n, **kw):
+        return ["HERO POST BODY"]
+
+    async def fake_interactions(target_text, items, **kw):
+        captured["target_text"] = target_text
+        captured["items"] = items
+        return ["a thoughtful comment"]
+
+    monkeypatch.setattr(campaign_service, "generate_variations", fake_variations)
+    monkeypatch.setattr(campaign_service, "generate_interactions", fake_interactions)
+
+    rows = await campaign_service.build_plan(
+        db,
+        c.id,
+        [
+            Assignment(user_id=poster.id, action="post"),
+            Assignment(user_id=fan.id, action="comment", target_post_index=0),
+        ],
+        generate=True,
+    )
+
+    # The comment is generated from the hero post's body, not the seed text,
+    # and carries the commenter's team persona.
+    assert captured["target_text"] == "HERO POST BODY"
+    assert captured["items"][0]["persona"] == "an engineer's voice"
+    comment_row = next(r for r in rows if r.action == "comment")
+    assert comment_row.body == "a thoughtful comment"
+
+
 async def test_build_plan_sets_unique_idempotency_keys(db):
     u = await _user(db)
     c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:9")

@@ -21,6 +21,12 @@ ALLOWED_IMAGE_TYPES = {
     "image/gif",
     "image/webp",
 }
+# Short-clip video for campaign media. Kept narrow to what LinkedIn accepts and
+# what we can safely store; no streaming or exotic containers.
+ALLOWED_VIDEO_TYPES = {
+    "video/mp4",
+    "video/quicktime",
+}
 
 
 class UnsafeURLError(Exception):
@@ -31,6 +37,18 @@ def is_allowed_image_type(content_type: str | None) -> bool:
     if not content_type:
         return False
     return content_type.split(";")[0].strip().lower() in ALLOWED_IMAGE_TYPES
+
+
+def media_kind(content_type: str | None) -> str | None:
+    """Return "image", "video", or None for a content type we accept as media."""
+    if not content_type:
+        return None
+    normalized = content_type.split(";")[0].strip().lower()
+    if normalized in ALLOWED_IMAGE_TYPES:
+        return "image"
+    if normalized in ALLOWED_VIDEO_TYPES:
+        return "video"
+    return None
 
 
 async def _assert_public_host(host: str) -> None:

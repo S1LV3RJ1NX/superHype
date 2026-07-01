@@ -5,6 +5,7 @@ and self-defers when an interaction's target post is not yet live, so the stagge
 window and human-paced approvals sequence correctly without a rigid phase lock.
 """
 
+import random
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -12,7 +13,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.core.safe_fetch import fetch_image
+from app.core.safe_fetch import fetch_image, media_kind
 from app.db.session import async_session_factory
 from app.logger import get_logger
 from app.models.campaign import Campaign
@@ -71,8 +72,6 @@ async def generate_drafts(
 
 
 async def launch_campaign(ctx: dict, campaign_id: str) -> None:
-    import random
-
     cid = uuid.UUID(campaign_id)
     async with async_session_factory() as db:
         campaign = await campaign_repo.get(db, cid)
@@ -111,20 +110,30 @@ async def _resolve_target_urn(db: AsyncSession, post: Post) -> str | None:
     return post.target_external_id
 
 
-async def _ensure_image_urn(db: AsyncSession, post: Post, acct: SocialAccount) -> None:
-    """Upload the post image under its own author once; skip on retry."""
+async def _ensure_media_urn(db: AsyncSession, post: Post, acct: SocialAccount) -> None:
+    """Upload the post's media (image or video) under its own author once.
+
+    The media URN must be minted with the post author's token, so this runs per
+    post and is skipped on retry (image_asset_urn already set). Uploaded video
+    assets go through the Videos API; images and external URLs use the image
+    upload path.
+    """
     if post.image_asset_urn is not None:
         return
     if post.image_asset_id is None and not post.image_url:
         return
 
     if post.image_asset_id is not None:
-        data, _ = await db_asset_store.get(db, post.image_asset_id)
+        data, content_type = await db_asset_store.get(db, post.image_asset_id)
     else:
         # External URL is user-controlled: fetch behind the SSRF/size/type guard.
-        data, _ = await fetch_image(post.image_url or "")
+        # Only images are fetched from a URL; video must be an uploaded asset.
+        data, content_type = await fetch_image(post.image_url or "")
 
-    urn = await _provider().upload_image(acct, data, alt=post.image_alt)
+    if media_kind(content_type) == "video":
+        urn = await _provider().upload_video(acct, data)
+    else:
+        urn = await _provider().upload_image(acct, data, alt=post.image_alt)
     post.image_asset_urn = urn
     await db.flush()
 
@@ -155,6 +164,76 @@ async def _dispatch(
     if post.action == "repost_comment":
         return await provider.reshare(acct, target_urn, post.body or "")
     raise ValueError(f"Unknown action: {post.action}")
+
+
+async def _schedule_self_comment(ctx: dict, post: Post) -> None:
+    """Enqueue the author's self-comment on their own post after a random delay.
+
+    The self-comment ("link in the comments") reuses first_comment_external_id as
+    its idempotency marker, so it is skipped when a link-in-first-comment already
+    claimed that slot. The delay makes it read like a natural follow-up.
+    """
+    if post.action != "post" or not post.first_comment:
+        return
+    if post.first_comment_external_id is not None:
+        return
+    delay = random.uniform(
+        settings.SELF_COMMENT_MIN_SECONDS, settings.SELF_COMMENT_MAX_SECONDS
+    )
+    await ctx["redis"].enqueue_job("place_self_comment", str(post.id), _defer_by=delay)
+
+
+async def place_self_comment(ctx: dict, post_id: str) -> None:
+    """Place the author's own follow-up comment on their published post.
+
+    Idempotent: no-op once first_comment_external_id is set. A stale token marks
+    the account stale (the follow-up is best-effort and never rolls back the post);
+    a rate limit reschedules; other errors are logged and dropped.
+    """
+    pid = uuid.UUID(post_id)
+    async with async_session_factory() as db:
+        post = await post_repo.get(db, pid)
+        if post is None or post.action != "post":
+            return
+        if not post.first_comment or post.first_comment_external_id is not None:
+            return
+        if post.external_id is None or post.social_account_id is None:
+            return
+        acct = await social_account_repo.get(db, post.social_account_id)
+        if acct is None:
+            return
+        try:
+            fc_urn = await _provider().comment(
+                acct, post.external_id, post.first_comment
+            )
+        except LinkedInAuthError:
+            await social_account_repo.mark_stale(db, post.social_account_id)
+            await db.commit()
+            await ctx["redis"].enqueue_job(
+                "request_reconnect", str(post.social_account_id)
+            )
+            return
+        except LinkedInRateLimitError as exc:
+            await ctx["redis"].enqueue_job(
+                "place_self_comment", post_id, _defer_by=exc.retry_after or 60
+            )
+            return
+        except Exception as exc:
+            log.warning(
+                "place_self_comment.failed",
+                post_id=post_id,
+                error=str(exc),
+                error_type=type(exc).__name__,
+            )
+            return
+        post.first_comment_external_id = fc_urn
+        await audit_repo.record(
+            db,
+            action="self_comment_placed",
+            campaign_id=post.campaign_id,
+            post_id=post.id,
+        )
+        await db.commit()
 
 
 async def _guardrail_defer(db: AsyncSession, account_id: uuid.UUID) -> float | None:
@@ -313,6 +392,11 @@ async def publish_post(ctx: dict, post_id: str) -> None:
         if post.external_id is not None and (
             not needs_fc or post.first_comment_external_id is not None
         ):
+            # Resume-safe: if the body committed but the self-comment enqueue was
+            # lost (crash between commit and enqueue), any later publish_post run
+            # re-schedules it. _schedule_self_comment is a no-op once it is placed
+            # or when a link already claimed the first-comment slot.
+            await _schedule_self_comment(ctx, post)
             return
 
         # Authenticity guardrails: only gate the outbound action itself (when the
@@ -329,7 +413,7 @@ async def publish_post(ctx: dict, post_id: str) -> None:
             # Phase 1: publish the body. external_id is committed before we touch
             # the first comment, so a later failure can never re-publish it.
             if post.external_id is None:
-                await _ensure_image_urn(db, post, acct)
+                await _ensure_media_urn(db, post, acct)
                 external_id = await _dispatch(db, post, acct, campaign, target_urn)
                 post.external_id = external_id
                 post.published_at = datetime.now(UTC)
@@ -344,6 +428,7 @@ async def publish_post(ctx: dict, post_id: str) -> None:
                 )
                 await db.commit()
                 if not needs_fc:
+                    await _schedule_self_comment(ctx, post)
                     await campaign_service.check_completion(db, post.campaign_id)
                     await db.commit()
                     return

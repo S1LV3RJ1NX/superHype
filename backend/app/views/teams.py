@@ -41,7 +41,9 @@ async def create_team(
     db: AsyncSession = Depends(get_db),
     actor: User = Depends(require_role("admin")),
 ) -> TeamOut:
-    return await team_controller.create_team(db, name=body.name, actor=actor)
+    return await team_controller.create_team(
+        db, name=body.name, persona=body.persona, actor=actor
+    )
 
 
 @router.patch("/{team_id}", response_model=TeamOut)
