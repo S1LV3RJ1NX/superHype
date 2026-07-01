@@ -4,25 +4,51 @@ import pytest
 
 pytestmark = pytest.mark.asyncio
 
+# Amplify needs both a target URL and the post text (it acts on a specific post
+# and writes comments from that text), so every amplify payload carries both.
+_SEED_URL = "https://www.linkedin.com/feed/update/urn:li:activity:7123456789012345678/"
+
+
+def amplify(title: str = "A") -> dict:
+    return {
+        "title": title,
+        "type": "amplify",
+        "seed_url": _SEED_URL,
+        "seed_content": "x",
+    }
+
 
 async def test_viewer_can_create_amplify(client, as_role):
     async with as_role("viewer"):
-        resp = await client.post(
-            "/v1/campaigns",
-            json={
-                "title": "Amplify launch",
-                "type": "amplify",
-                "seed_url": (
-                    "https://www.linkedin.com/feed/update/"
-                    "urn:li:activity:7123456789012345678/"
-                ),
-            },
-        )
+        resp = await client.post("/v1/campaigns", json=amplify("Amplify launch"))
     assert resp.status_code == 201
     body = resp.json()
     assert body["type"] == "amplify"
     assert body["seed_urn"] == "urn:li:activity:7123456789012345678"
     assert body["status"] == "draft"
+
+
+async def test_create_amplify_requires_url_and_text(client, as_role):
+    async with as_role("viewer"):
+        no_url = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_content": "x"},
+        )
+        no_text = await client.post(
+            "/v1/campaigns",
+            json={"title": "A", "type": "amplify", "seed_url": _SEED_URL},
+        )
+    assert no_url.status_code == 422
+    assert no_text.status_code == 422
+
+
+async def test_create_distribute_requires_seed_text(client, as_role):
+    async with as_role("editor"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json={"title": "D", "type": "distribute"},
+        )
+    assert resp.status_code == 422
 
 
 async def test_viewer_cannot_create_distribute(client, as_role):
@@ -48,7 +74,7 @@ async def test_get_campaign_includes_counts(client, as_role):
     async with as_role("viewer") as user:
         created = await client.post(
             "/v1/campaigns",
-            json={"title": "A", "type": "amplify", "seed_content": "x"},
+            json=amplify(),
         )
         cid = created.json()["id"]
         # Plan two interactions on the seed.
@@ -70,10 +96,7 @@ async def test_get_campaign_includes_counts(client, as_role):
 
 async def test_generate_enqueues_and_sets_generating(client, as_role, enqueued):
     async with as_role("viewer") as user:
-        created = await client.post(
-            "/v1/campaigns",
-            json={"title": "A", "type": "amplify", "seed_content": "x"},
-        )
+        created = await client.post("/v1/campaigns", json=amplify())
         cid = created.json()["id"]
         resp = await client.post(
             f"/v1/campaigns/{cid}/generate",
@@ -90,10 +113,7 @@ async def test_generate_enqueues_and_sets_generating(client, as_role, enqueued):
 
 async def test_launch_requires_review_and_enqueues(client, as_role, enqueued):
     async with as_role("viewer") as user:
-        created = await client.post(
-            "/v1/campaigns",
-            json={"title": "A", "type": "amplify", "seed_content": "x"},
-        )
+        created = await client.post("/v1/campaigns", json=amplify())
         cid = created.json()["id"]
         # Cannot launch from draft.
         early = await client.post(f"/v1/campaigns/{cid}/launch")
@@ -111,10 +131,7 @@ async def test_launch_requires_review_and_enqueues(client, as_role, enqueued):
 
 async def test_patch_campaign_non_creator_forbidden(client, as_role):
     async with as_role("editor"):
-        created = await client.post(
-            "/v1/campaigns",
-            json={"title": "A", "type": "amplify", "seed_content": "x"},
-        )
+        created = await client.post("/v1/campaigns", json=amplify())
         cid = created.json()["id"]
     async with as_role("editor", email="other@test.local"):
         resp = await client.patch(f"/v1/campaigns/{cid}", json={"title": "Hijack"})
@@ -123,10 +140,7 @@ async def test_patch_campaign_non_creator_forbidden(client, as_role):
 
 async def test_patch_campaign_creator_updates_and_reparses_seed(client, as_role):
     async with as_role("viewer"):
-        created = await client.post(
-            "/v1/campaigns",
-            json={"title": "A", "type": "amplify", "seed_content": "x"},
-        )
+        created = await client.post("/v1/campaigns", json=amplify())
         cid = created.json()["id"]
         resp = await client.patch(
             f"/v1/campaigns/{cid}",
@@ -148,10 +162,7 @@ async def test_patch_campaign_blocked_after_launch(client, as_role, db):
     from app.models.campaign import Campaign
 
     async with as_role("viewer"):
-        created = await client.post(
-            "/v1/campaigns",
-            json={"title": "A", "type": "amplify", "seed_content": "x"},
-        )
+        created = await client.post("/v1/campaigns", json=amplify())
         cid = created.json()["id"]
 
         import uuid as _uuid
@@ -166,10 +177,7 @@ async def test_patch_campaign_blocked_after_launch(client, as_role, db):
 
 async def test_plan_requires_creator_or_admin(client, as_role):
     async with as_role("editor") as owner:
-        created = await client.post(
-            "/v1/campaigns",
-            json={"title": "A", "type": "amplify", "seed_content": "x"},
-        )
+        created = await client.post("/v1/campaigns", json=amplify())
         cid = created.json()["id"]
     async with as_role("viewer", email="intruder@test.local"):
         resp = await client.post(
@@ -203,10 +211,7 @@ async def test_delete_campaign_removes_posts_and_audits(client, as_role, db):
     from app.models.post import Post
 
     async with as_role("editor") as user:
-        created = await client.post(
-            "/v1/campaigns",
-            json={"title": "A", "type": "amplify", "seed_content": "x"},
-        )
+        created = await client.post("/v1/campaigns", json=amplify())
         cid = created.json()["id"]
         await client.post(
             f"/v1/campaigns/{cid}/plan",
@@ -241,10 +246,7 @@ async def test_delete_campaign_removes_posts_and_audits(client, as_role, db):
 
 async def test_delete_campaign_non_owner_forbidden(client, as_role):
     async with as_role("editor"):
-        created = await client.post(
-            "/v1/campaigns",
-            json={"title": "A", "type": "amplify", "seed_content": "x"},
-        )
+        created = await client.post("/v1/campaigns", json=amplify())
         cid = created.json()["id"]
     async with as_role("editor", email="intruder@test.local"):
         resp = await client.delete(f"/v1/campaigns/{cid}")
@@ -258,10 +260,7 @@ async def test_delete_campaign_blocked_after_launch(client, as_role, db, monkeyp
     # Production protects launched campaigns from deletion.
     monkeypatch.setattr(settings, "ENV", "production")
     async with as_role("editor"):
-        created = await client.post(
-            "/v1/campaigns",
-            json={"title": "A", "type": "amplify", "seed_content": "x"},
-        )
+        created = await client.post("/v1/campaigns", json=amplify())
         cid = created.json()["id"]
 
         import uuid as _uuid
@@ -283,10 +282,7 @@ async def test_delete_campaign_after_launch_allowed_in_local(
     # Local/dev relaxes the rule so test campaigns in any state can be cleaned up.
     monkeypatch.setattr(settings, "ENV", "local")
     async with as_role("editor"):
-        created = await client.post(
-            "/v1/campaigns",
-            json={"title": "A", "type": "amplify", "seed_content": "x"},
-        )
+        created = await client.post("/v1/campaigns", json=amplify())
         cid = created.json()["id"]
 
         import uuid as _uuid
@@ -301,10 +297,7 @@ async def test_delete_campaign_after_launch_allowed_in_local(
 
 async def test_list_only_shows_own_campaigns(client, as_role):
     async with as_role("editor"):
-        await client.post(
-            "/v1/campaigns",
-            json={"title": "mine", "type": "amplify", "seed_content": "x"},
-        )
+        await client.post("/v1/campaigns", json=amplify("mine"))
     async with as_role("viewer", email="other@test.local"):
         page = await client.get("/v1/campaigns")
     assert page.status_code == 200

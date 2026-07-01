@@ -60,6 +60,22 @@ export function CampaignWizard({
       setError("Title is required.");
       return;
     }
+    // Automation-first: a campaign is generated, so it needs source material.
+    if (fields.type === "amplify") {
+      if (!fields.seedUrl.trim()) {
+        setError("Add the URL of the post to amplify.");
+        return;
+      }
+      if (!fields.seedContent.trim()) {
+        setError(
+          "Paste the post text so the AI can write comments and reshares.",
+        );
+        return;
+      }
+    } else if (!fields.seedContent.trim()) {
+      setError("Add seed text so the AI can generate the posts.");
+      return;
+    }
     setSubmitting(true);
     try {
       if (isEdit) {

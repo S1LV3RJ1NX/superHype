@@ -63,7 +63,9 @@ export function campaignFieldsToPayload(v: CampaignFieldsValue) {
   return {
     title: v.title,
     type: v.type,
-    seed_url: v.seedUrl || null,
+    // Distribute generates its own posts and never reads a URL, so a seed URL is
+    // only meaningful for amplify.
+    seed_url: v.type === "amplify" ? v.seedUrl || null : null,
     seed_content: v.seedContent || null,
     tone: v.tones.join(", ") || null,
     length: v.length || null,
@@ -115,7 +117,7 @@ export function CampaignFields({
       )}
 
       <div className={cn("grid gap-3", !lockType && "mt-4")}>
-        <Field label="Title">
+        <Field label="Title" required>
           <input
             value={value.title}
             onChange={(e) => onChange({ title: e.target.value })}
@@ -123,24 +125,23 @@ export function CampaignFields({
             className="input"
           />
         </Field>
-        <Field
-          label={
-            type === "amplify" ? "Post URL to amplify" : "Seed post URL (optional)"
-          }
-        >
-          <input
-            value={value.seedUrl}
-            onChange={(e) => onChange({ seedUrl: e.target.value })}
-            placeholder="https://www.linkedin.com/feed/update/urn:li:activity:..."
-            className="input"
-          />
-        </Field>
+        {type === "amplify" && (
+          <Field label="Post URL to amplify" required>
+            <input
+              value={value.seedUrl}
+              onChange={(e) => onChange({ seedUrl: e.target.value })}
+              placeholder="https://www.linkedin.com/feed/update/urn:li:activity:..."
+              className="input"
+            />
+          </Field>
+        )}
         <Field
           label={
             type === "amplify"
               ? "Paste the post text (powers AI comments)"
-              : "Seed / reference text (optional)"
+              : "Seed text (turned into each member's post)"
           }
+          required
         >
           <textarea
             value={value.seedContent}
@@ -259,6 +260,9 @@ function MediaUpload({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [kind, setKind] = useState<"image" | "video">("image");
   const [busy, setBusy] = useState(false);
+  // True while the preview for an already-attached asset (edit mode) is loading,
+  // so we show a spinner instead of flashing the empty "upload" state.
+  const [hydrating, setHydrating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -276,6 +280,7 @@ function MediaUpload({
   useEffect(() => {
     let cancelled = false;
     if (assetId && !objectUrlRef.current) {
+      setHydrating(true);
       fetchAssetObjectUrl(assetId)
         .then(({ url, contentType }) => {
           if (cancelled) {
@@ -287,6 +292,9 @@ function MediaUpload({
         })
         .catch(() => {
           /* preview is best-effort */
+        })
+        .finally(() => {
+          if (!cancelled) setHydrating(false);
         });
     }
     return () => {
@@ -340,7 +348,11 @@ function MediaUpload({
           if (file) void handleFile(file);
         }}
       />
-      {previewUrl ? (
+      {!previewUrl && hydrating ? (
+        <div className="flex h-28 w-28 items-center justify-center rounded-md border border-border bg-sand/40">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-ink" />
+        </div>
+      ) : previewUrl ? (
         <div className="flex items-start gap-3">
           {kind === "video" ? (
             <video
@@ -438,11 +450,20 @@ export function Hint({ children }: { children: ReactNode }) {
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({
+  label,
+  required = false,
+  children,
+}: {
+  label: string;
+  required?: boolean;
+  children: ReactNode;
+}) {
   return (
     <label className="block">
       <span className="mb-1 block text-xs font-medium text-muted-ink">
         {label}
+        {required && <span className="ml-0.5 text-fail">*</span>}
       </span>
       {children}
     </label>

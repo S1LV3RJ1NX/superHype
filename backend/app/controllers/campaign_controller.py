@@ -48,6 +48,33 @@ def _require_type_permission(campaign_type: str, user: User) -> None:
         raise HTTPException(403, "Distribute campaigns require the editor role.")
 
 
+def _require_source_material(
+    campaign_type: str, *, seed_url: str | None, seed_content: str | None
+) -> None:
+    """Every campaign is generated, so it cannot exist without source material.
+
+    Amplify acts on one specific post, so it needs both the post URL (the target
+    of the likes, comments, and reshares) and the post text (what the AI writes
+    those comments and reshares from, since we cannot read the text from the URL).
+    Distribute turns the seed text into per-member posts, so that text is
+    required; its URL is only an optional reference.
+    """
+    has_url = bool(seed_url and seed_url.strip())
+    has_text = bool(seed_content and seed_content.strip())
+    if campaign_type == "amplify":
+        if not has_url:
+            raise HTTPException(422, "The post URL to amplify is required.")
+        if not has_text:
+            raise HTTPException(
+                422,
+                "Paste the post text: the AI writes comments and reshares from it.",
+            )
+    elif not has_text:
+        raise HTTPException(
+            422, "Seed text is required so the AI can generate the posts."
+        )
+
+
 async def _load_or_404(db: AsyncSession, campaign_id: uuid.UUID) -> Campaign:
     campaign = await campaign_repo.get(db, campaign_id)
     if campaign is None:
@@ -78,6 +105,9 @@ async def create_campaign(
     db: AsyncSession, body: CampaignCreate, actor: User
 ) -> CampaignOut:
     _require_type_permission(body.type, actor)
+    _require_source_material(
+        body.type, seed_url=body.seed_url, seed_content=body.seed_content
+    )
     campaign = await campaign_repo.create(
         db,
         title=body.title,
@@ -172,6 +202,13 @@ async def update_campaign(
     updates = body.model_dump(exclude_unset=True)
     if "seed_url" in updates:
         updates["seed_urn"] = parse_post_urn(updates["seed_url"])
+    # The type is locked on edit; validate the effective (merged) source material
+    # so a campaign can never be saved into a state that cannot generate anything.
+    _require_source_material(
+        campaign.type,
+        seed_url=updates.get("seed_url", campaign.seed_url),
+        seed_content=updates.get("seed_content", campaign.seed_content),
+    )
     if updates:
         await campaign_repo.update(db, campaign, **updates)
         await audit_repo.record(

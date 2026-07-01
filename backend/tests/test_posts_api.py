@@ -32,7 +32,15 @@ async def _connect(db, user_id, *, status="active", expires_in_days=60):
 async def _amplify_with_post(client, user, *, action="comment"):
     created = await client.post(
         "/v1/campaigns",
-        json={"title": "A", "type": "amplify", "seed_content": "x"},
+        json={
+            "title": "A",
+            "type": "amplify",
+            "seed_url": (
+                "https://www.linkedin.com/feed/update/"
+                "urn:li:activity:7123456789012345678/"
+            ),
+            "seed_content": "x",
+        },
     )
     cid = created.json()["id"]
     await client.post(

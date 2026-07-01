@@ -14,6 +14,8 @@ interface UserRecord {
   role: string;
   is_active: boolean;
   created_at: string;
+  team_id: string | null;
+  team_name: string | null;
   linkedin_status: string | null;
 }
 
@@ -123,6 +125,7 @@ export function Users() {
             <thead>
               <tr className="border-b border-border bg-sand/50 text-left text-xs font-medium uppercase tracking-wider text-muted-ink">
                 <th className="px-4 py-3">User</th>
+                <th className="px-4 py-3">Team</th>
                 <th className="px-4 py-3">LinkedIn</th>
                 <th className="px-4 py-3">Role</th>
               </tr>
@@ -131,7 +134,7 @@ export function Users() {
               {users.length === 0 && !loading && (
                 <tr>
                   <td
-                    colSpan={3}
+                    colSpan={4}
                     className="px-4 py-8 text-center text-sm text-muted-ink"
                   >
                     No users match your search.
@@ -167,6 +170,15 @@ export function Users() {
                           )}
                         </div>
                       </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      {u.team_name ? (
+                        <span className="inline-flex items-center rounded-full bg-sand px-2.5 py-0.5 text-xs font-medium text-ink ring-1 ring-border">
+                          {u.team_name}
+                        </span>
+                      ) : (
+                        <span className="text-sm text-muted-ink">No team</span>
+                      )}
                     </td>
                     <td className="px-4 py-3">
                       {u.linkedin_status === "active" ? (
