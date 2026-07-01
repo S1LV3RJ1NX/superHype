@@ -4,7 +4,7 @@ The super-hype API and worker. FastAPI (async) for the REST API and OAuth
 callbacks, an ARQ worker for slow and external work, Postgres for state, and
 Redis for the queue and OAuth state. Managed with [`uv`](https://docs.astral.sh/uv/).
 
-See [`../BACKEND.md`](../BACKEND.md) for the authoritative spec and
+See [`../docs/BACKEND.md`](../docs/BACKEND.md) for the authoritative spec and
 [`AGENTS.md`](AGENTS.md) for the operating manual.
 
 ## Requirements
@@ -21,8 +21,8 @@ cp .env.example .env     # then fill in the values below
 uv sync                  # create the venv and install deps
 ```
 
-Set at least these in `.env` (see [`../SETUP.md`](../SETUP.md) for how to obtain
-each secret):
+Set at least these in `.env` (see [`../docs/SETUP.md`](../docs/SETUP.md) for how
+to obtain each secret):
 
 | Key | What it is |
 | --- | --- |

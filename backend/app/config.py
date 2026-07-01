@@ -80,6 +80,10 @@ class Settings(BaseSettings):
     MAX_ACTIONS_PER_ACCOUNT_PER_DAY: int = 10
     MIN_SECONDS_BETWEEN_ACCOUNT_ACTIONS: int = 90
 
+    # Leaderboard: a direct post whose text mentions one of these keywords earns
+    # the brand bonus (case-insensitive substring match). Comma-separated.
+    BRAND_KEYWORDS: str = "TrueFoundry,TFY,true foundry"
+
     # Slack.
     SLACK_BOT_TOKEN: str | None = None
     SLACK_SIGNING_SECRET: str | None = None
@@ -103,6 +107,12 @@ class Settings(BaseSettings):
     def cors_origins(self) -> list[str]:
         return [
             origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()
+        ]
+
+    @property
+    def brand_keywords(self) -> list[str]:
+        return [
+            kw.strip().lower() for kw in self.BRAND_KEYWORDS.split(",") if kw.strip()
         ]
 
 

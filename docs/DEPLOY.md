@@ -6,12 +6,12 @@ This covers the application workloads only. It assumes you already have a TrueFo
 
 super-hype is one backend image run as three workloads, plus a static frontend:
 
-| Workload | TrueFoundry type | Port | Command |
-| --- | --- | --- | --- |
-| api | Service | 8000 | `uvicorn app.main:app --host 0.0.0.0 --port 8000` |
-| worker | Service (no port) | none | `arq app.workers.arq_app.WorkerSettings` |
-| migrate | Job (manual trigger) | none | `sh -c "alembic upgrade head && python -m app.seed"` |
-| web | Service | 8080 | nginx serving the built `dist/` |
+| Workload | TrueFoundry type     | Port | Command                                              |
+| -------- | -------------------- | ---- | ---------------------------------------------------- |
+| api      | Service              | 8000 | `uvicorn app.main:app --host 0.0.0.0 --port 8000`    |
+| worker   | Service (no port)    | none | `arq app.workers.arq_app.WorkerSettings`             |
+| migrate  | Job (manual trigger) | none | `sh -c "alembic upgrade head && python -m app.seed"` |
+| web      | Service              | 8080 | nginx serving the built `dist/`                      |
 
 api, worker, and migrate run the same backend image and differ only by command, so build that image once and reference it from all three. web is a separate image.
 
@@ -59,15 +59,15 @@ WORKSPACE = "<your-workspace-fqn>"
 
 # shared env for api + worker
 env = {
-    "DATABASE_URL": "tfy-secret://<tenant>:superhype:DATABASE_URL",
-    "REDIS_URL": "tfy-secret://<tenant>:superhype:REDIS_URL",
-    "SECRET_KEY": "tfy-secret://<tenant>:superhype:SECRET_KEY",
-    "FERNET_KEY": "tfy-secret://<tenant>:superhype:FERNET_KEY",
-    "GOOGLE_CLIENT_SECRET": "tfy-secret://<tenant>:superhype:GOOGLE_CLIENT_SECRET",
-    "LINKEDIN_CLIENT_SECRET": "tfy-secret://<tenant>:superhype:LINKEDIN_CLIENT_SECRET",
-    "SLACK_SIGNING_SECRET": "tfy-secret://<tenant>:superhype:SLACK_SIGNING_SECRET",
-    "SLACK_BOT_TOKEN": "tfy-secret://<tenant>:superhype:SLACK_BOT_TOKEN",
-    "LLM_API_KEY": "tfy-secret://<tenant>:superhype:LLM_API_KEY",
+    "DATABASE_URL": "tfy-secret://<tenant>:superhype:DATABASE-URL",
+    "REDIS_URL": "tfy-secret://<tenant>:superhype:REDIS-URL",
+    "SECRET_KEY": "tfy-secret://<tenant>:superhype:SECRET-KEY",
+    "FERNET_KEY": "tfy-secret://<tenant>:superhype:FERNET-KEY",
+    "GOOGLE_CLIENT_SECRET": "tfy-secret://<tenant>:superhype:GOOGLE-CLIENT-SECRET",
+    "LINKEDIN_CLIENT_SECRET": "tfy-secret://<tenant>:superhype:LINKEDIN-CLIENT-SECRET",
+    "SLACK_SIGNING_SECRET": "tfy-secret://<tenant>:superhype:SLACK-SIGNING-SECRET",
+    "SLACK_BOT_TOKEN": "tfy-secret://<tenant>:superhype:SLACK-BOT-TOKEN",
+    "LLM_API_KEY": "tfy-secret://<tenant>:superhype:LLM-API-KEY",
     "GOOGLE_CLIENT_ID": "<id>",
     "LINKEDIN_CLIENT_ID": "<id>",
     "COMPANY_EMAIL_DOMAIN": "truefoundry.com",
@@ -138,6 +138,7 @@ After it deploys it sits idle until triggered. Trigger it from the dashboard (Ru
 Build the SPA with `pnpm build` and serve the static `dist/` from a small nginx image, deployed as a normal Service on port 8080 with `expose=True` and a host.
 
 The one catch is the API URL. Vite inlines `VITE_API_BASE_URL` at build time, so either:
+
 - serve web and api under one domain (web at `/`, api proxied at `/api`), which is cleanest because it removes the build-time URL problem and CORS entirely; or
 - build the frontend with `VITE_API_BASE_URL` set to the api host, which means you must know the api host before building and rebuild if it changes.
 

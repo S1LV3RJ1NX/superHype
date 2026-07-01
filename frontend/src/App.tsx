@@ -6,6 +6,7 @@ import { AuthCallback } from "@/pages/AuthCallback";
 import { Connections } from "@/pages/Connections";
 import { Dashboard } from "@/pages/Dashboard";
 import { Landing } from "@/pages/Landing";
+import { Leaderboard } from "@/pages/Leaderboard";
 import { LinkedInCallback } from "@/pages/LinkedInCallback";
 import { CampaignDetail } from "@/pages/CampaignDetail";
 import { CampaignEditor } from "@/pages/CampaignEditor";
@@ -106,6 +107,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <Teams />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app/leaderboard"
+          element={
+            <ProtectedRoute>
+              <Leaderboard />
             </ProtectedRoute>
           }
         />

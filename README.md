@@ -83,8 +83,8 @@ A monorepo with two deployables and remote managed datastores.
 The backend follows strict layering: `view -> controller -> service -> repository
 -> model`. Everything is async, every list endpoint is paginated, slow and
 external work runs in the ARQ worker, and every externally triggered mutation
-writes an `audit_log` row. See [`DESIGN.md`](DESIGN.md) and
-[`BACKEND.md`](BACKEND.md) for the authoritative specs.
+writes an `audit_log` row. See [`docs/DESIGN.md`](docs/DESIGN.md) and
+[`docs/BACKEND.md`](docs/BACKEND.md) for the authoritative specs.
 
 ## Quickstart
 
@@ -116,13 +116,13 @@ ARQ jobs, so drafts and published posts only appear once it is running.
 The API serves `GET /healthz`. Interactive docs live at `/docs` and `/redoc` in
 local/dev (disabled when `ENV` is production). Detailed setup, including external
 app registration, is in [`backend/README.md`](backend/README.md),
-[`frontend/README.md`](frontend/README.md), and [`SETUP.md`](SETUP.md). For
-enabling comments and likes (LinkedIn's vetted Community Management API), see
-[`LINKEDIN_COMMUNITY_MANAGEMENT.md`](LINKEDIN_COMMUNITY_MANAGEMENT.md).
+[`frontend/README.md`](frontend/README.md), and [`docs/SETUP.md`](docs/SETUP.md).
+For enabling comments and likes (LinkedIn's vetted Community Management API), see
+[`docs/LINKEDIN_COMMUNITY_MANAGEMENT.md`](docs/LINKEDIN_COMMUNITY_MANAGEMENT.md).
 
 ## Project status
 
-See [`CHECKLIST.md`](CHECKLIST.md) for the full breakdown.
+See [`docs/CHECKLIST.md`](docs/CHECKLIST.md) for the full breakdown.
 
 - [x] Scaffold, full data model, migrations, seed, reference API, themed UI shell, landing page
 - [x] Google auth and users

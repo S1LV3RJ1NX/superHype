@@ -3,6 +3,7 @@ import {
   Link2,
   LogOut,
   Megaphone,
+  Trophy,
   UsersRound,
   Users,
 } from "lucide-react";
@@ -17,6 +18,7 @@ const NAV = [
   { label: "Dashboard", icon: LayoutDashboard, href: "/app" },
   { label: "Campaigns", icon: Megaphone, href: "/app/campaigns" },
   { label: "Connectors", icon: Link2, href: "/app/connections" },
+  { label: "Leaderboard", icon: Trophy, href: "/app/leaderboard" },
   { label: "Teams", icon: UsersRound, href: "/app/teams", adminOnly: true },
   { label: "Users", icon: Users, href: "/app/users", adminOnly: true },
 ];

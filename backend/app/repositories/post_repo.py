@@ -2,8 +2,9 @@
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.post import Post
@@ -140,6 +141,89 @@ class PostRepository(BaseRepository[Post]):
             if ts >= since:
                 out.append(ts)
         return out
+
+    def _in_window(
+        self, stmt: Any, start: datetime | None, end: datetime | None
+    ) -> Any:
+        """Filter on when the action settled: published_at, else acknowledged_at."""
+        completed_at = func.coalesce(Post.published_at, Post.acknowledged_at)
+        if start is not None:
+            stmt = stmt.where(completed_at >= start)
+        if end is not None:
+            stmt = stmt.where(completed_at < end)
+        return stmt
+
+    async def aggregate_action_counts(
+        self,
+        db: AsyncSession,
+        *,
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[tuple[uuid.UUID, str, int]]:
+        """Return (user_id, action, count) for completed actions in the window.
+
+        Reposts and posts only count when published; likes and comments also count
+        when acknowledged (assisted-manual). Grouped so scoring stays in the
+        service, and bounded to one row per (user, action).
+        """
+        published_only = Post.action.in_(("repost_comment", "post"))
+        status_ok = or_(
+            Post.status == "published",
+            (Post.status == "acknowledged") & (~published_only),
+        )
+        stmt = (
+            select(Post.user_id, Post.action, func.count())
+            .where(status_ok)
+            .group_by(Post.user_id, Post.action)
+        )
+        stmt = self._in_window(stmt, start, end)
+        rows = await db.execute(stmt)
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    async def aggregate_direct_posts(
+        self,
+        db: AsyncSession,
+        *,
+        brand_keywords: list[str],
+        start: datetime | None = None,
+        end: datetime | None = None,
+    ) -> list[tuple[uuid.UUID, int, int]]:
+        """Return (user_id, brand_text_posts, brand_media_posts) per user.
+
+        A published direct post counts toward the brand bonus when its body or
+        native body mentions a brand keyword. It counts as a media post when an
+        image is attached (our proxy for the text+video tier), otherwise as a
+        text post. Non-brand posts are excluded entirely.
+        """
+        if not brand_keywords:
+            return []
+
+        # Join with a space so a keyword can never be matched across the seam
+        # between the two bodies (for example body ending "TF" + native "Y").
+        text = func.lower(
+            func.coalesce(Post.body, "") + " " + func.coalesce(Post.body_native, "")
+        )
+        brand_match = or_(*[text.contains(kw) for kw in brand_keywords])
+        has_media = or_(
+            Post.image_asset_id.is_not(None),
+            Post.image_url.is_not(None),
+            Post.image_asset_urn.is_not(None),
+        )
+        media_count = func.sum(case((has_media, 1), else_=0))
+        text_count = func.sum(case((has_media, 0), else_=1))
+
+        stmt = (
+            select(Post.user_id, text_count, media_count)
+            .where(
+                Post.action == "post",
+                Post.status == "published",
+                brand_match,
+            )
+            .group_by(Post.user_id)
+        )
+        stmt = self._in_window(stmt, start, end)
+        rows = await db.execute(stmt)
+        return [(r[0], int(r[1] or 0), int(r[2] or 0)) for r in rows]
 
     async def all_terminal(self, db: AsyncSession, campaign_id: uuid.UUID) -> bool:
         """True if the campaign has posts and every one is settled (see _TERMINAL)."""

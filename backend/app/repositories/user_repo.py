@@ -1,5 +1,7 @@
 """User repository: all database access for the users aggregate."""
 
+import uuid
+
 from sqlalchemy import func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -55,6 +57,12 @@ class UserRepository(BaseRepository[User]):
         stmt = select(User).where(func.lower(User.email) == email.lower())
         result = await db.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def list_by_ids(self, db: AsyncSession, ids: list[uuid.UUID]) -> list[User]:
+        if not ids:
+            return []
+        stmt = select(User).where(User.id.in_(ids))
+        return list((await db.execute(stmt)).scalars().all())
 
     async def get_by_google_sub(self, db: AsyncSession, google_sub: str) -> User | None:
         stmt = select(User).where(User.google_sub == google_sub)
