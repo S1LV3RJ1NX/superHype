@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.deps import ROLE_HIERARCHY
-from app.core.linkedin_urn import parse_post_urn
+from app.core.linkedin_urn import resolve_post_urn
 from app.models.campaign import Campaign
 from app.models.user import User
 from app.repositories import audit_repo
@@ -114,7 +114,7 @@ async def create_campaign(
         type=body.type,
         raw_brief=body.raw_brief,
         seed_url=body.seed_url,
-        seed_urn=parse_post_urn(body.seed_url),
+        seed_urn=await resolve_post_urn(body.seed_url),
         seed_content=body.seed_content,
         tone=body.tone,
         length=body.length,
@@ -201,7 +201,7 @@ async def update_campaign(
 
     updates = body.model_dump(exclude_unset=True)
     if "seed_url" in updates:
-        updates["seed_urn"] = parse_post_urn(updates["seed_url"])
+        updates["seed_urn"] = await resolve_post_urn(updates["seed_url"])
     # The type is locked on edit; validate the effective (merged) source material
     # so a campaign can never be saved into a state that cannot generate anything.
     _require_source_material(
@@ -211,12 +211,20 @@ async def update_campaign(
     )
     if updates:
         await campaign_repo.update(db, campaign, **updates)
+        # JSON-safe detail for the audit_log JSONB: model_dump(mode="json")
+        # renders UUIDs (e.g. image_asset_id) and datetimes as strings, which the
+        # raw `updates` dict does not. seed_content is dropped (bulky, not useful
+        # in the log); the seed_urn we derived above is already a string.
+        detail = body.model_dump(exclude_unset=True, mode="json")
+        detail.pop("seed_content", None)
+        if "seed_urn" in updates:
+            detail["seed_urn"] = updates["seed_urn"]
         await audit_repo.record(
             db,
             actor_id=actor.id,
             action="campaign_updated",
             campaign_id=campaign_id,
-            detail={k: v for k, v in updates.items() if k != "seed_content"},
+            detail=detail,
         )
         await db.commit()
         await db.refresh(campaign)
@@ -244,13 +252,16 @@ async def delete_campaign(
 async def build_plan(
     db: AsyncSession, campaign_id: uuid.UUID, body: PlanRequest, actor: User
 ) -> list[PostOut]:
-    """Create posts from a manual assignment plan (no LLM)."""
+    """Create posts from the participant list (no LLM)."""
     campaign = await _load_or_404(db, campaign_id)
     _require_type_permission(campaign.type, actor)
     if not (_is_admin(actor) or campaign.created_by == actor.id):
         raise HTTPException(403, "Only the creator or an admin can plan a campaign.")
+    assignments = await campaign_service.expand_participants(
+        db, campaign, body.participant_ids
+    )
     rows = await campaign_service.build_plan(
-        db, campaign_id, body.assignments, generate=False, actor_id=actor.id
+        db, campaign_id, assignments, generate=False, actor_id=actor.id
     )
     await db.commit()
     return [PostOut.model_validate(r) for r in rows]
@@ -259,11 +270,14 @@ async def build_plan(
 async def generate(
     db: AsyncSession, campaign_id: uuid.UUID, body: PlanRequest, actor: User
 ) -> CampaignOut:
-    """Enqueue LLM generation for the assignment plan; returns the campaign."""
+    """Enqueue LLM generation for the participant plan; returns the campaign."""
     campaign = await _load_or_404(db, campaign_id)
     _require_type_permission(campaign.type, actor)
     if not (_is_admin(actor) or campaign.created_by == actor.id):
         raise HTTPException(403, "Only the creator or an admin can generate.")
+    assignments = await campaign_service.expand_participants(
+        db, campaign, body.participant_ids
+    )
     try:
         await campaign_service.transition(db, campaign, "generating", actor_id=actor.id)
     except TransitionError as exc:
@@ -273,7 +287,7 @@ async def generate(
     await queue.enqueue_job(
         "generate_drafts",
         str(campaign_id),
-        [a.model_dump(mode="json") for a in body.assignments],
+        [a.model_dump(mode="json") for a in assignments],
     )
     await db.refresh(campaign)
     return CampaignOut.model_validate(campaign)

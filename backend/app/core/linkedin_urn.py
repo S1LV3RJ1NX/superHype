@@ -16,6 +16,9 @@ APIs all accept any of these URN types as the target.
 """
 
 import re
+from urllib.parse import urlparse
+
+import httpx
 
 # An id tagged with a known entity label, in either the urn (colon) or the
 # /posts/ slug (hyphen) form. The label is preserved in the returned URN.
@@ -40,6 +43,81 @@ def parse_post_urn(url: str | None) -> str | None:
     bare = _BARE_ID_RE.search(url)
     if bare is not None:
         return f"urn:li:activity:{bare.group(0)}"
+    return None
+
+
+# LinkedIn's own URL shortener. A shortened post link hides the URN, so we
+# follow the redirect to recover the canonical /posts/... URL, which carries the
+# reshareable share/ugcPost id.
+_SHORTLINK_HOSTS = {"lnkd.in"}
+# Every redirect hop must land on one of these public LinkedIn hosts. lnkd.in is
+# a general-purpose shortener whose target we do not control, so we must not let
+# it (or any hop) redirect us to an arbitrary or internal address. Validating
+# every hop against this fixed allowlist is what keeps the expansion free of SSRF.
+_MAX_REDIRECTS = 5
+
+
+def _host_allowed(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    host = hostname.lower()
+    return (
+        host in _SHORTLINK_HOSTS
+        or host == "linkedin.com"
+        or host.endswith(".linkedin.com")
+    )
+
+
+async def resolve_post_urn(
+    url: str | None,
+    *,
+    timeout: float = 5.0,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> str | None:
+    """Like parse_post_urn, but first expands a lnkd.in short link.
+
+    Reshares require a share or ugcPost URN. The /posts/... URL and the lnkd.in
+    short link both lead to one; only the /feed/update/ URL is stuck as an
+    activity URN (which reshare rejects). We parse directly when we can, and only
+    hit the network to expand a short link, falling back to None on any error so
+    a network blip never blocks campaign creation.
+
+    Redirects are followed manually and every hop is checked against a fixed
+    LinkedIn host allowlist (``_host_allowed``): a short link that tries to bounce
+    us to an internal or arbitrary address is refused rather than fetched, so this
+    cannot be turned into an SSRF. ``transport`` is injected in tests to stub the
+    redirects.
+    """
+    if not url:
+        return None
+    direct = parse_post_urn(url)
+    if direct is not None:
+        return direct
+    current = url.strip()
+    if urlparse(current).hostname not in _SHORTLINK_HOSTS:
+        return None
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout),
+            follow_redirects=False,
+            transport=transport,
+        ) as client:
+            for _ in range(_MAX_REDIRECTS):
+                if not _host_allowed(urlparse(current).hostname):
+                    return None
+                # HEAD would be lighter, but LinkedIn's shortener answers redirects
+                # on GET; the body is never read, so nothing large is downloaded.
+                resp = await client.request("GET", current)
+                if resp.is_redirect and resp.next_request is not None:
+                    current = str(resp.next_request.url)
+                    continue
+                # Not a redirect: validate the host we actually landed on, then
+                # parse the final URL.
+                if not _host_allowed(urlparse(str(resp.url)).hostname):
+                    return None
+                return parse_post_urn(str(resp.url))
+    except httpx.HTTPError:
+        return None
     return None
 
 

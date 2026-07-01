@@ -4,7 +4,6 @@ import { AuthProvider } from "@/auth/AuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { AuthCallback } from "@/pages/AuthCallback";
 import { Connections } from "@/pages/Connections";
-import { Dashboard } from "@/pages/Dashboard";
 import { Landing } from "@/pages/Landing";
 import { Leaderboard } from "@/pages/Leaderboard";
 import { LinkedInCallback } from "@/pages/LinkedInCallback";
@@ -22,14 +21,7 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Landing />} />
         <Route path="/v1/google/callback" element={<AuthCallback />} />
-        <Route
-          path="/app"
-          element={
-            <ProtectedRoute>
-              <Dashboard />
-            </ProtectedRoute>
-          }
-        />
+        <Route path="/app" element={<Navigate to="/app/campaigns" replace />} />
         <Route
           path="/app/campaigns"
           element={

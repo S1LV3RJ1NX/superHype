@@ -67,14 +67,23 @@ def variations_system(
     length: str | None = None,
     language: str | None = None,
     extra: str | None = None,
+    persona: str | None = None,
 ) -> str:
     """System prompt for generating N distinct post variations from a seed."""
     hints = _hint_block(tone=tone, length=length, language=language)
+    persona_clean = " ".join((persona or "").split())
+    persona_line = (
+        "Write every variation in this author's team voice and point of view, "
+        f"while still following every rule below: {persona_clean}\n\n"
+        if persona_clean
+        else ""
+    )
     return (
         "You write LinkedIn posts for an employee-advocacy campaign. Given a seed "
         f"post, produce exactly {n} distinct variations that say the same thing in "
         "genuinely different voices and structures, so they do not look "
         "coordinated.\n\n"
+        f"{persona_line}"
         "Craft rules:\n"
         "- Hook first: the opening line must earn the click. Lead with a claim, a "
         "number, a tension, or a contrarian point, never pleasantries or setup.\n"

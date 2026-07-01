@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Info, Loader2, Upload, X } from "lucide-react";
+import { AlertTriangle, Info, Loader2, Upload, X } from "lucide-react";
 
 import { ApiError, fetchAssetObjectUrl, uploadAsset } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -76,6 +76,19 @@ export function campaignFieldsToPayload(v: CampaignFieldsValue) {
   };
 }
 
+// Mirrors the backend parse_post_urn: a LinkedIn feed link resolves to an
+// "activity" URN, but a reshare (which amplify always does) needs the original
+// "share" or "ugcPost". Returns true when the pasted URL would reshare-fail so
+// we can warn before launch instead of at publish.
+function seedUrlLooksLikeActivity(raw: string): boolean {
+  const url = raw.trim();
+  if (!url) return false;
+  const labeled = url.match(/(activity|share|ugcpost)[:-](\d{6,})/i);
+  if (labeled) return labeled[1].toLowerCase() === "activity";
+  // A bare post id with no namespace is treated as an activity URN.
+  return /\d{6,}/.test(url);
+}
+
 export function CampaignFields({
   value,
   onChange,
@@ -130,9 +143,20 @@ export function CampaignFields({
             <input
               value={value.seedUrl}
               onChange={(e) => onChange({ seedUrl: e.target.value })}
-              placeholder="https://www.linkedin.com/feed/update/urn:li:activity:..."
+              placeholder="https://www.linkedin.com/feed/update/urn:li:share:..."
               className="input"
             />
+            {seedUrlLooksLikeActivity(value.seedUrl) && (
+              <div className="mt-2 flex items-start gap-2 rounded-md border border-pending/30 bg-pending/5 px-3 py-2 text-xs font-medium text-pending">
+                <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span>
+                  This looks like a feed activity link. Likes and comments work,
+                  but LinkedIn will not reshare an activity URN, so the repost step
+                  will fail. Open the post, use its share or ugcPost link (the
+                  direct post URL), and paste that instead.
+                </span>
+              </div>
+            )}
           </Field>
         )}
         <Field

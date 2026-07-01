@@ -77,21 +77,16 @@ async def test_get_campaign_includes_counts(client, as_role):
             json=amplify(),
         )
         cid = created.json()["id"]
-        # Plan two interactions on the seed.
+        # One amplify participant expands to like + comment + repost on the seed.
         await client.post(
             f"/v1/campaigns/{cid}/plan",
-            json={
-                "assignments": [
-                    {"user_id": str(user.id), "action": "like"},
-                    {"user_id": str(user.id), "action": "comment", "body": "nice"},
-                ]
-            },
+            json={"participant_ids": [str(user.id)]},
         )
         detail = await client.get(f"/v1/campaigns/{cid}")
     assert detail.status_code == 200
     body = detail.json()
-    assert body["post_count"] == 2
-    assert body["counts"].get("pending") == 2
+    assert body["post_count"] == 3
+    assert body["counts"].get("pending") == 3
 
 
 async def test_generate_enqueues_and_sets_generating(client, as_role, enqueued):
@@ -100,11 +95,7 @@ async def test_generate_enqueues_and_sets_generating(client, as_role, enqueued):
         cid = created.json()["id"]
         resp = await client.post(
             f"/v1/campaigns/{cid}/generate",
-            json={
-                "assignments": [
-                    {"user_id": str(user.id), "action": "comment", "angle": "support"}
-                ]
-            },
+            json={"participant_ids": [str(user.id)]},
         )
     assert resp.status_code == 200
     assert resp.json()["status"] == "generating"
@@ -121,7 +112,7 @@ async def test_launch_requires_review_and_enqueues(client, as_role, enqueued):
 
         await client.post(
             f"/v1/campaigns/{cid}/plan",
-            json={"assignments": [{"user_id": str(user.id), "action": "like"}]},
+            json={"participant_ids": [str(user.id)]},
         )
         launched = await client.post(f"/v1/campaigns/{cid}/launch")
     assert launched.status_code == 200
@@ -158,6 +149,25 @@ async def test_patch_campaign_creator_updates_and_reparses_seed(client, as_role)
     assert body["seed_urn"] == "urn:li:activity:7000000000000000001"
 
 
+async def test_patch_campaign_with_media_writes_json_safe_audit(client, as_role, db):
+    # image_asset_id is a UUID; the audit detail is JSONB, so the update must not
+    # try to json-encode a raw UUID (regression: 500 on save).
+    from app.models.asset import Asset
+
+    async with as_role("editor") as user:  # noqa: F841
+        created = await client.post("/v1/campaigns", json=amplify())
+        cid = created.json()["id"]
+        asset = Asset(content_type="image/png", size_bytes=3, data=b"abc")
+        db.add(asset)
+        await db.commit()
+        resp = await client.patch(
+            f"/v1/campaigns/{cid}",
+            json={"image_asset_id": str(asset.id)},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["image_asset_id"] == str(asset.id)
+
+
 async def test_patch_campaign_blocked_after_launch(client, as_role, db):
     from app.models.campaign import Campaign
 
@@ -182,7 +192,7 @@ async def test_plan_requires_creator_or_admin(client, as_role):
     async with as_role("viewer", email="intruder@test.local"):
         resp = await client.post(
             f"/v1/campaigns/{cid}/plan",
-            json={"assignments": [{"user_id": str(owner.id), "action": "like"}]},
+            json={"participant_ids": [str(owner.id)]},
         )
     assert resp.status_code == 403
 
@@ -198,7 +208,7 @@ async def test_viewer_cannot_plan_distribute(client, as_role):
     async with as_role("viewer", email="v@test.local") as viewer:
         resp = await client.post(
             f"/v1/campaigns/{cid}/plan",
-            json={"assignments": [{"user_id": str(viewer.id), "action": "post"}]},
+            json={"participant_ids": [str(viewer.id)]},
         )
     # Either type-gate or creator-gate denies; both are 403.
     assert resp.status_code == 403
@@ -215,7 +225,7 @@ async def test_delete_campaign_removes_posts_and_audits(client, as_role, db):
         cid = created.json()["id"]
         await client.post(
             f"/v1/campaigns/{cid}/plan",
-            json={"assignments": [{"user_id": str(user.id), "action": "like"}]},
+            json={"participant_ids": [str(user.id)]},
         )
         resp = await client.delete(f"/v1/campaigns/{cid}")
         assert resp.status_code == 204

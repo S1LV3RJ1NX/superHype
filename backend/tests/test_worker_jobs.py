@@ -531,6 +531,49 @@ async def test_publish_comment_403_fails_fast_with_scope_message(db, env, cm_ena
         assert "Community Management" in (rp.error or "")
 
 
+async def test_publish_reshare_422_activity_parent_fails_fast(db, env):
+    # Resharing a feed "activity" URN is rejected by LinkedIn (reshareContext
+    # parent must be a share/ugcPost). It never succeeds on retry, so fail fast
+    # with an actionable message instead of leaving the card stuck "processing".
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="repost_comment",
+        body="my take",
+        status="approved",
+        target_external_id="urn:li:activity:7477947018389319681",
+        idempotency_key="k422",
+    )
+    db.add(p)
+    await db.commit()
+
+    async def _bad_parent(*a, **k):
+        raise LinkedInAPIError(
+            422,
+            '{"message":"ERROR :: /reshareContext/parent :: parent value '
+            "urn:li:activity:7477947018389319681 is of type activity. Allowed URN "
+            'types are groupPost, share, ugcPost"}',
+        )
+
+    env["provider"].reshare = _bad_parent
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    # No retry scheduled; it fails immediately with a reshare-specific message.
+    assert not [j for j in env["redis"].jobs if j[0] == "publish_post"]
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "failed"
+        assert rp.retries == 0
+        assert "reshare" in (rp.error or "").lower()
+
+
 async def test_publish_auth_error_marks_stale_and_reconnect(
     db, env, monkeypatch, cm_enabled
 ):
@@ -844,87 +887,112 @@ async def test_publish_post_with_image_asset_uploads_image(db, env):
     assert pub[2].get("image_urn") == "urn:li:image:1"
 
 
-async def test_self_comment_scheduled_then_placed(db, env):
+async def test_self_comment_assisted_when_cm_disabled(db, env):
+    # Flag off (default): the author's self-comment is a guided human action on
+    # their own post, not an API call. Once the post is live, the worker resolves
+    # the own-post target, sets action_required + engagement_url, and never calls
+    # the provider. It is a tracked row, so it settles the campaign.
     user = await _user(db)
     acct = await _account(db, user)
     c = Campaign(title="C", type="distribute", status="publishing")
     db.add(c)
     await db.flush()
-    p = Post(
+    post = Post(
         campaign_id=c.id,
         user_id=user.id,
         social_account_id=acct.id,
         action="post",
         body="hello",
-        first_comment="Link in comments: https://ex.com",
+        status="published",
+        external_id="urn:li:share:LIVE",
+        idempotency_key="kpost",
+    )
+    post.published_at = datetime.now(UTC)
+    db.add(post)
+    await db.flush()
+    sc = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="self_comment",
+        body="For more details: https://ex.com",
         status="approved",
+        target_post_id=post.id,
         idempotency_key="kself",
     )
-    db.add(p)
+    db.add(sc)
     await db.commit()
 
-    await jobs_mod.publish_post(env["ctx"], str(p.id))
+    await jobs_mod.publish_post(env["ctx"], str(sc.id))
 
-    # Body published; a deferred self-comment job was scheduled (not placed yet).
-    scheduled = [j for j in env["redis"].jobs if j[0] == "place_self_comment"]
-    assert len(scheduled) == 1
-    assert scheduled[0][1][0] == str(p.id)
     assert not any(ci[0] == "comment" for ci in env["provider"].calls)
+    assert not [j for j in env["redis"].jobs if j[0] == "publish_post"]
     async with env["maker"]() as s:
-        rp = await s.get(Post, p.id)
-        assert rp.status == "published"
-        assert rp.first_comment_external_id is None
+        rp = await s.get(Post, sc.id)
+        assert rp.status == "action_required"
+        assert (
+            rp.engagement_url
+            == "https://www.linkedin.com/feed/update/urn:li:share:LIVE/"
+        )
 
-    # Run the deferred job: the author's own comment lands, idempotency marker set.
-    await jobs_mod.place_self_comment(env["ctx"], str(p.id))
-    com = next(ci for ci in env["provider"].calls if ci[0] == "comment")
-    assert com[1] == "urn:li:share:new"
-    assert com[2] == "Link in comments: https://ex.com"
-    async with env["maker"]() as s:
-        rp = await s.get(Post, p.id)
-        assert rp.first_comment_external_id == "urn:li:comment:new"
-
-    # Re-running is a no-op once the marker is set.
-    before = len([ci for ci in env["provider"].calls if ci[0] == "comment"])
-    await jobs_mod.place_self_comment(env["ctx"], str(p.id))
-    after = len([ci for ci in env["provider"].calls if ci[0] == "comment"])
-    assert before == after
+    # Re-running is a no-op: an already-raised ask is not re-raised.
+    await jobs_mod.publish_post(env["ctx"], str(sc.id))
+    assert not any(ci[0] == "comment" for ci in env["provider"].calls)
 
 
-async def test_self_comment_reschedules_after_lost_enqueue(db, env):
-    """A crash between the body commit and the schedule enqueue must not lose the
-    self-comment: a later publish_post run re-schedules it."""
+async def test_self_comment_defers_until_own_post_live_then_comments(
+    db, env, cm_enabled
+):
+    # With the socialActions API enabled, the self-comment publishes via the API,
+    # but only after the author's own post is live: it defers until then.
     user = await _user(db)
     acct = await _account(db, user)
     c = Campaign(title="C", type="distribute", status="publishing")
     db.add(c)
     await db.flush()
-    # Body already live (external_id committed) but the deferred job was never
-    # enqueued, mirroring a worker crash right after the body commit.
-    p = Post(
+    post = Post(
         campaign_id=c.id,
         user_id=user.id,
         social_account_id=acct.id,
         action="post",
-        body="hello",
-        first_comment="Link in comments: https://ex.com",
-        status="published",
-        external_id="urn:li:share:live",
-        first_comment_external_id=None,
-        idempotency_key="kresume",
+        status="approved",
+        idempotency_key="kpost",
     )
-    p.published_at = datetime.now(UTC)
-    db.add(p)
+    db.add(post)
+    await db.flush()
+    sc = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="self_comment",
+        body="For more details: https://ex.com",
+        status="approved",
+        target_post_id=post.id,
+        idempotency_key="kself",
+    )
+    db.add(sc)
     await db.commit()
 
-    # Re-invoking publish_post hits the idempotent early-return and re-schedules.
-    await jobs_mod.publish_post(env["ctx"], str(p.id))
+    # Own post not yet published -> self-comment defers, does not comment.
+    await jobs_mod.publish_post(env["ctx"], str(sc.id))
+    assert not any(ci[0] == "comment" for ci in env["provider"].calls)
+    assert any(
+        j[0] == "publish_post" and j[1][0] == str(sc.id) for j in env["redis"].jobs
+    )
 
-    scheduled = [j for j in env["redis"].jobs if j[0] == "place_self_comment"]
-    assert len(scheduled) == 1
-    assert scheduled[0][1][0] == str(p.id)
-    # The body was not re-published.
-    assert not any(ci[0] == "publish" for ci in env["provider"].calls)
+    # Publish the own post, then retry: the self-comment lands on it via the API.
+    async with env["maker"]() as s:
+        t = await s.get(Post, post.id)
+        t.external_id = "urn:li:share:MINE"
+        t.status = "published"
+        await s.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(sc.id))
+    assert (
+        "comment",
+        "urn:li:share:MINE",
+        "For more details: https://ex.com",
+    ) in env["provider"].calls
 
 
 async def test_publish_defers_on_min_gap(db, env, cm_enabled):

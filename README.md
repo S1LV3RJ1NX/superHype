@@ -41,11 +41,13 @@ turns a single internal announcement into genuine, varied advocacy from the
 people who actually built the thing, without the spam.
 
 - **Two real workflows.** Amplify points a roster of people at one existing post
-  (like, comment, reshare). Distribute turns a seed into M variations your
-  teammates publish, then runs interactions across all of them.
-- **Genuine variety.** When the model helps, it drafts distinct variations and
-  varied interaction text from lightweight tone and length hints, not one post
-  reworded six ways. People can also hand-write everything.
+  (each does a like, a comment, and a reshare). Distribute turns a seed into a
+  distinct on-voice post for every participant, then has everyone like and
+  comment on everyone else's post, with an optional author self-comment ("link
+  in the comments").
+- **Genuine variety.** The model drafts distinct variations and varied
+  interaction text, tuned to each participant's team voice (persona), not one
+  post reworded six ways. People still approve, edit, or skip their own.
 - **Real approval.** Each person approves, edits, or skips their own post in one
   tap from the web app (Slack coming next). Nothing publishes without them.
 - **Official API only.** No scraping and no credential capture. Posts and
@@ -60,11 +62,12 @@ people who actually built the thing, without the spam.
 
 ## How it works
 
-1. **Choose a workflow.** Amplify an existing post by pasting its URL, or
-   distribute a seed (URL and/or pasted text) into variations.
-2. **Plan and generate.** Assign people and actions (post, comment, like,
-   reshare). Optionally let the model draft variations and interaction text, or
-   write them yourself.
+1. **Choose a workflow.** Amplify an existing post by pasting its URL (plus the
+   post text), or distribute a seed idea (pasted text, optional link and image).
+2. **Pick participants and generate.** Choose the people or teams; the backend
+   expands each into the concrete actions for that workflow (no manual row
+   assignment) and the model drafts the on-voice variations and interaction
+   text. Every draft stays editable.
 3. **Approve and publish on a stagger.** Each person approves, edits, or skips
    their own post; approved work goes out through LinkedIn's official
    `/rest/posts` API on a randomized schedule.
@@ -83,8 +86,9 @@ A monorepo with two deployables and remote managed datastores.
 The backend follows strict layering: `view -> controller -> service -> repository
 -> model`. Everything is async, every list endpoint is paginated, slow and
 external work runs in the ARQ worker, and every externally triggered mutation
-writes an `audit_log` row. See [`docs/DESIGN.md`](docs/DESIGN.md) and
-[`docs/BACKEND.md`](docs/BACKEND.md) for the authoritative specs.
+writes an `audit_log` row. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for
+the authoritative reference on topology, data model, auth, and the publishing
+pipeline.
 
 ## Quickstart
 
@@ -97,7 +101,7 @@ cd backend
 cp .env.example .env          # fill in DATABASE_URL, REDIS_URL, etc.
 uv sync
 uv run alembic upgrade head            # create the schema
-uv run python -m scripts.seed          # insert the default writing skill
+uv run python -m app.seed              # bootstrap admin users + default teams
 uv run uvicorn app.main:app --reload   # API on http://localhost:8000
 
 # Worker (in a second shell): runs generation and publishing
@@ -122,15 +126,17 @@ For enabling comments and likes (LinkedIn's vetted Community Management API), se
 
 ## Project status
 
-See [`docs/CHECKLIST.md`](docs/CHECKLIST.md) for the full breakdown.
+Development is essentially complete; Slack approval is the remaining workflow.
 
 - [x] Scaffold, full data model, migrations, seed, reference API, themed UI shell, landing page
-- [x] Google auth and users
-- [x] LinkedIn connection and provider
-- [x] Generation (post variations and interaction text)
+- [x] Google auth, onboarding, users, teams and personas
+- [x] LinkedIn connection and provider (posts, reshares, images, video)
+- [x] Generation (per-persona post variations and interaction text)
 - [x] Campaign lifecycle and worker (amplify + distribute, ARQ jobs)
+- [x] Self-comment ("link in the comments") as a tracked, assisted step
+- [x] Assisted-manual comments and likes (until Community Management API access lands)
+- [x] Leaderboard
 - [ ] Slack approval
-- [ ] Dashboard and polish
 
 ## License
 

@@ -92,7 +92,16 @@ class Settings(BaseSettings):
 
     # Leaderboard: a direct post whose text mentions one of these keywords earns
     # the brand bonus (case-insensitive substring match). Comma-separated.
-    BRAND_KEYWORDS: str = "TrueFoundry,TFY,true foundry"
+    BRAND_KEYWORDS: str
+
+    # Distribute cross-engagement: each member likes and comments on at most this
+    # many other members' posts, so a large campaign cannot fan out quadratically.
+    # Posts authored by a founder team (below) are chosen first.
+    DISTRIBUTE_MAX_ENGAGEMENT_TARGETS: int = 10
+
+    # Team names whose members count as founders for engagement prioritization.
+    # Comma-separated, matched case-insensitively against the team name.
+    FOUNDER_TEAM_NAMES: str = "Founders"
 
     # Slack.
     SLACK_BOT_TOKEN: str | None = None
@@ -124,6 +133,14 @@ class Settings(BaseSettings):
         return [
             kw.strip().lower() for kw in self.BRAND_KEYWORDS.split(",") if kw.strip()
         ]
+
+    @property
+    def founder_team_names(self) -> set[str]:
+        return {
+            name.strip().lower()
+            for name in self.FOUNDER_TEAM_NAMES.split(",")
+            if name.strip()
+        }
 
 
 @lru_cache

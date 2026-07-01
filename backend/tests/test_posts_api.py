@@ -29,28 +29,29 @@ async def _connect(db, user_id, *, status="active", expires_in_days=60):
     return acct
 
 
+def _amplify_payload() -> dict:
+    return {
+        "title": "A",
+        "type": "amplify",
+        "seed_url": (
+            "https://www.linkedin.com/feed/update/urn:li:activity:7123456789012345678/"
+        ),
+        "seed_content": "x",
+    }
+
+
 async def _amplify_with_post(client, user, *, action="comment"):
-    created = await client.post(
-        "/v1/campaigns",
-        json={
-            "title": "A",
-            "type": "amplify",
-            "seed_url": (
-                "https://www.linkedin.com/feed/update/"
-                "urn:li:activity:7123456789012345678/"
-            ),
-            "seed_content": "x",
-        },
-    )
+    created = await client.post("/v1/campaigns", json=_amplify_payload())
     cid = created.json()["id"]
+    # One amplify participant expands to like + comment + repost on the seed; the
+    # caller picks which of those actions it wants to exercise.
     await client.post(
         f"/v1/campaigns/{cid}/plan",
-        json={
-            "assignments": [{"user_id": str(user.id), "action": action, "body": "hi"}]
-        },
+        json={"participant_ids": [str(user.id)]},
     )
     posts = await client.get(f"/v1/campaigns/{cid}/posts")
-    return cid, posts.json()["items"][0]
+    post = next(p for p in posts.json()["items"] if p["action"] == action)
+    return cid, post
 
 
 async def _launch(client, cid):
@@ -276,7 +277,8 @@ async def test_readiness_requires_connect_when_no_account(client, as_role):
     assert body["requires_linkedin"] is True
     assert body["connected"] is False
     assert body["needs_reconnect"] is True
-    assert body["pending_count"] == 1
+    # One amplify participant expands to like + comment + repost.
+    assert body["pending_count"] == 3
 
 
 async def test_readiness_clear_with_healthy_account(client, as_role, db):
@@ -299,11 +301,27 @@ async def test_readiness_stale_account_needs_reconnect(client, as_role, db):
     assert resp.json()["needs_reconnect"] is True
 
 
-async def test_readiness_assisted_only_needs_no_linkedin(client, as_role):
+async def test_readiness_assisted_only_needs_no_linkedin(client, as_role, db):
     # Assisted-manual comments and likes are done by hand, so they need no token
-    # and never trigger a reconnect prompt even without an account.
+    # and never trigger a reconnect prompt even without an account. The auto plan
+    # always adds a non-assisted repost, so build the assisted-only case directly.
+    import uuid as _uuid
+
+    from app.models.post import Post
+
     async with as_role("editor") as user:
-        cid, _ = await _amplify_with_post(client, user, action="comment")
+        created = await client.post("/v1/campaigns", json=_amplify_payload())
+        cid = created.json()["id"]
+        db.add(
+            Post(
+                campaign_id=_uuid.UUID(cid),
+                user_id=user.id,
+                action="comment",
+                status="pending",
+                idempotency_key="assisted-only",
+            )
+        )
+        await db.commit()
         resp = await client.get(f"/v1/campaigns/{cid}/approval-readiness")
     body = resp.json()
     assert body["requires_linkedin"] is False

@@ -1,5 +1,4 @@
 import {
-  LayoutDashboard,
   Link2,
   LogOut,
   Megaphone,
@@ -15,7 +14,6 @@ import { Wordmark } from "@/components/Wordmark";
 import { cn } from "@/lib/utils";
 
 const NAV = [
-  { label: "Dashboard", icon: LayoutDashboard, href: "/app" },
   { label: "Campaigns", icon: Megaphone, href: "/app/campaigns" },
   { label: "Connectors", icon: Link2, href: "/app/connections" },
   { label: "Leaderboard", icon: Trophy, href: "/app/leaderboard" },

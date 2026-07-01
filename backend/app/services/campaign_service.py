@@ -9,6 +9,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.logger import get_logger
 from app.models.campaign import Campaign
 from app.models.post import Post
@@ -183,6 +184,66 @@ async def _resolve_interaction_texts(
     return texts
 
 
+async def _founder_flags(
+    db: AsyncSession, user_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, bool]:
+    """Map each user to whether their team is a founder team (for engagement order)."""
+    users = await user_repo.list_by_ids(db, list(set(user_ids)))
+    team_ids = [u.team_id for u in users if u.team_id is not None]
+    names = await team_repo.names_for(db, team_ids)
+    founders = settings.founder_team_names
+    result: dict[uuid.UUID, bool] = {}
+    for u in users:
+        name = names.get(u.team_id) if u.team_id is not None else None
+        result[u.id] = bool(name and name.lower() in founders)
+    return result
+
+
+async def expand_participants(
+    db: AsyncSession, campaign: Campaign, participant_ids: list[uuid.UUID]
+) -> list[Assignment]:
+    """Turn a participant list into concrete actions from the campaign type.
+
+    Amplify: every member likes, comments, and reposts the seed post. Distribute:
+    every member authors their own post (its slot is their position in the list),
+    then likes and comments on up to DISTRIBUTE_MAX_ENGAGEMENT_TARGETS other
+    members' posts, founder-authored posts first, so a big campaign cannot fan out
+    quadratically.
+    """
+    # Dedupe while preserving order so poster slots are stable and predictable.
+    seen: set[uuid.UUID] = set()
+    ordered: list[uuid.UUID] = []
+    for uid in participant_ids:
+        if uid not in seen:
+            seen.add(uid)
+            ordered.append(uid)
+    if not ordered:
+        return []
+
+    out: list[Assignment] = []
+    if campaign.type == "amplify":
+        for uid in ordered:
+            out.append(Assignment(user_id=uid, action="like"))
+            out.append(Assignment(user_id=uid, action="comment"))
+            out.append(Assignment(user_id=uid, action="repost_comment"))
+        return out
+
+    # Distribute: one authored post per member, in list order (slot = index).
+    for uid in ordered:
+        out.append(Assignment(user_id=uid, action="post"))
+
+    is_founder = await _founder_flags(db, ordered)
+    cap = max(0, settings.DISTRIBUTE_MAX_ENGAGEMENT_TARGETS)
+    for i, uid in enumerate(ordered):
+        others = [j for j in range(len(ordered)) if j != i]
+        # Stable sort keeps list order within each group, founders first.
+        others.sort(key=lambda j: 0 if is_founder.get(ordered[j], False) else 1)
+        for j in others[:cap]:
+            out.append(Assignment(user_id=uid, action="like", target_post_index=j))
+            out.append(Assignment(user_id=uid, action="comment", target_post_index=j))
+    return out
+
+
 async def build_plan(
     db: AsyncSession,
     campaign_id: uuid.UUID,
@@ -228,14 +289,25 @@ async def build_plan(
     elif not generate:
         variation_bodies = [a.body or "" for a in post_assignments]
     else:
-        variation_bodies = await generate_variations(
-            campaign.seed_content or campaign.raw_brief or campaign.title,
-            len(post_assignments),
-            tone=campaign.tone,
-            length=campaign.length,
-            language=campaign.language,
-            extra=campaign.extra_instructions,
-        )
+        seed = campaign.seed_content or campaign.raw_brief or campaign.title
+        variation_bodies = ["" for _ in post_assignments]
+        # Group posters by their team persona so each author's post is written in
+        # that team's voice, batching one gateway call per distinct persona.
+        by_persona: dict[str, list[int]] = {}
+        for idx, a in enumerate(post_assignments):
+            by_persona.setdefault(persona_by_user.get(a.user_id, ""), []).append(idx)
+        for persona, idxs in by_persona.items():
+            bodies = await generate_variations(
+                seed,
+                len(idxs),
+                tone=campaign.tone,
+                length=campaign.length,
+                language=campaign.language,
+                extra=campaign.extra_instructions,
+                persona=persona or None,
+            )
+            for pos, idx in enumerate(idxs):
+                variation_bodies[idx] = bodies[pos] if pos < len(bodies) else ""
 
     rows: list[Post] = []
 
@@ -260,7 +332,6 @@ async def build_plan(
             image_url=campaign.image_url,
             image_asset_id=campaign.image_asset_id,
             image_alt=campaign.image_alt,
-            first_comment=campaign.self_comment,
             status="pending",
             idempotency_key=f"{campaign_id}:post:{a.user_id}:{row_id}",
         )
@@ -295,6 +366,31 @@ async def build_plan(
             idempotency_key=f"{campaign_id}:{a.action}:{a.user_id}:{row_id}",
         )
         rows.append(row)
+
+    # Self-comment ("link in the comments"): the author's own follow-up comment
+    # on their own post, a short while after it publishes. Modeled as its own
+    # tracked row (targeting the poster row) so it is visible in the plan and,
+    # when the socialActions API is unavailable, falls back to the same
+    # assisted-manual step as likes and comments instead of failing silently.
+    if campaign.self_comment:
+        for poster in poster_rows:
+            sc_id = uuid.uuid4()
+            rows.append(
+                Post(
+                    id=sc_id,
+                    campaign_id=campaign_id,
+                    user_id=poster.user_id,
+                    social_account_id=poster.social_account_id,
+                    action="self_comment",
+                    body=campaign.self_comment,
+                    lang=campaign.language,
+                    target_post_id=poster.id,
+                    status="pending",
+                    idempotency_key=(
+                        f"{campaign_id}:self_comment:{poster.user_id}:{sc_id}"
+                    ),
+                )
+            )
 
     await post_repo.bulk_create(db, rows)
 

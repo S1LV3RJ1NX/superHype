@@ -183,15 +183,25 @@ export function CampaignDetail() {
 
   // While the campaign is doing background work (generating drafts, or
   // publishing after launch), poll so new or published items appear without a
-  // manual refresh. Polling stops as soon as the status settles.
+  // manual refresh. Also poll while any single post is mid-flight ("approved"
+  // is transient: the worker turns it into published or an assisted ask), so an
+  // approved item resolves on screen without a manual refresh. Polling stops as
+  // soon as everything settles.
+  const hasInFlightPost = posts.some(
+    (p) => p.status === "approved" || p.status === "scheduled",
+  );
+  // Launch is async: the controller stamps launched_at, then a worker flips
+  // review -> publishing. Treat that gap as busy so the status settles on screen.
+  const launching = campaign?.status === "review" && !!campaign?.launched_at;
   useEffect(() => {
     const status = campaign?.status;
-    if (status !== "generating" && status !== "publishing") return;
+    const busyCampaign = status === "generating" || status === "publishing";
+    if (!busyCampaign && !hasInFlightPost && !launching) return;
     const timer = setInterval(() => {
       load();
-    }, 6000);
+    }, 3000);
     return () => clearInterval(timer);
-  }, [campaign?.status, load]);
+  }, [campaign?.status, hasInFlightPost, launching, load]);
 
   // Campaign-level action (Launch): blocks the header while it runs.
   const run = async (fn: () => Promise<unknown>) => {
@@ -292,6 +302,20 @@ export function CampaignDetail() {
     (campaign.counts.skipped ?? 0);
   const total = campaign.post_count;
 
+  // Show each authored post before the rows that depend on it (its self-comment,
+  // and distribute interactions targeting it) so the plan reads top-down and a
+  // follow-up never appears above the post it belongs to.
+  const indexById = new Map(posts.map((p, i) => [p.id, i]));
+  const orderKey = (p: Post): number => {
+    const own = indexById.get(p.id) ?? 0;
+    const parentIdx =
+      p.target_post_id !== null ? indexById.get(p.target_post_id) : undefined;
+    return parentIdx !== undefined
+      ? parentIdx * 1000 + 1 + own / 1e6
+      : own * 1000;
+  };
+  const orderedPosts = [...posts].sort((a, b) => orderKey(a) - orderKey(b));
+
   return (
     <AppShell>
       <div className="mx-auto max-w-5xl">
@@ -350,7 +374,7 @@ export function CampaignDetail() {
                 Delete
               </button>
             )}
-            {campaign.status === "review" && (
+            {campaign.status === "review" && !campaign.launched_at && (
               <button
                 onClick={() =>
                   run(() =>
@@ -363,6 +387,15 @@ export function CampaignDetail() {
                 <Rocket className="h-4 w-4" />
                 Launch
               </button>
+            )}
+            {/* Launched, but the worker has not flipped the status to publishing
+                yet. Show progress instead of a second Launch button (which would
+                409 with "must be in review to launch"). */}
+            {campaign.status === "review" && campaign.launched_at && (
+              <span className="inline-flex items-center gap-2 rounded-md bg-clay/10 px-4 py-2 text-sm font-medium text-clay">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Launching...
+              </span>
             )}
           </div>
         </div>
@@ -469,7 +502,7 @@ export function CampaignDetail() {
                     : "No posts yet."}
                 </p>
               )}
-              {posts.map((post) => (
+              {orderedPosts.map((post) => (
                 <PostCard
                   key={post.id}
                   post={post}
@@ -545,6 +578,12 @@ function PostCard({
 }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(post.body ?? "");
+  // Which action is mid-flight, so only the clicked button spins (busy is shared
+  // across this card's buttons). Cleared once the action settles.
+  const [acting, setActing] = useState<string | null>(null);
+  useEffect(() => {
+    if (!busy) setActing(null);
+  }, [busy]);
   const owner = roster.find((u) => u.id === post.user_id);
   const isOwner = post.user_id === meId;
   const canAct = isAdmin || isOwner;
@@ -585,6 +624,16 @@ function PostCard({
         </div>
       )}
 
+      {/* "approved" is a transient state: the worker is either publishing this
+          item or about to raise the assisted comment/like ask. Show a spinner so
+          the person does not read the brief "Approved" badge as fully done. */}
+      {post.status === "approved" && (
+        <div className="mt-3 flex items-center gap-2 rounded-md border border-ok/20 bg-ok/5 px-3 py-2 text-xs text-muted-ink">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-ok" />
+          Processing your approval...
+        </div>
+      )}
+
       {actionRequired && (
         <EngagementAsk
           post={post}
@@ -618,19 +667,33 @@ function PostCard({
           {launched && (
             <>
               <button
-                onClick={onApprove}
+                onClick={() => {
+                  setActing("approve");
+                  onApprove();
+                }}
                 disabled={busy}
                 className="inline-flex items-center gap-1.5 rounded-md bg-ok/10 px-3 py-1.5 text-xs font-medium text-ok hover:bg-ok/20 disabled:opacity-50"
               >
-                <Check className="h-3.5 w-3.5" />
+                {busy && acting === "approve" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
                 Approve
               </button>
               <button
-                onClick={onSkip}
+                onClick={() => {
+                  setActing("skip");
+                  onSkip();
+                }}
                 disabled={busy}
                 className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
               >
-                <SkipForward className="h-3.5 w-3.5" />
+                {busy && acting === "skip" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <SkipForward className="h-3.5 w-3.5" />
+                )}
                 Skip
               </button>
             </>
@@ -644,11 +707,14 @@ function PostCard({
         <div className="mt-3 flex flex-wrap gap-2">
           {isOwner && (
             <button
-              onClick={onApprove}
+              onClick={() => {
+                setActing("approve");
+                onApprove();
+              }}
               disabled={busy}
               className="inline-flex items-center gap-1.5 rounded-md bg-clay px-3 py-1.5 text-xs font-medium text-paper hover:bg-clay-press disabled:opacity-50"
             >
-              {busy ? (
+              {busy && acting === "approve" ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
                 <RotateCcw className="h-3.5 w-3.5" />
@@ -657,11 +723,18 @@ function PostCard({
             </button>
           )}
           <button
-            onClick={onSkip}
+            onClick={() => {
+              setActing("skip");
+              onSkip();
+            }}
             disabled={busy}
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
           >
-            <SkipForward className="h-3.5 w-3.5" />
+            {busy && acting === "skip" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <SkipForward className="h-3.5 w-3.5" />
+            )}
             Skip
           </button>
         </div>
@@ -687,7 +760,12 @@ function EngagementAsk({
   onSkip?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
-  const isComment = post.action === "comment";
+  const [acting, setActing] = useState<string | null>(null);
+  useEffect(() => {
+    if (!busy) setActing(null);
+  }, [busy]);
+  const isSelfComment = post.action === "self_comment";
+  const hasText = post.action === "comment" || isSelfComment;
 
   const copyText = async () => {
     if (!post.body) return;
@@ -703,9 +781,11 @@ function EngagementAsk({
   return (
     <div className="mt-3 rounded-md border border-pending/30 bg-pending/5 p-3">
       <p className="text-xs text-muted-ink">
-        {isComment
-          ? "Open the post, paste your comment, then mark it done."
-          : "Open the post, like it, then mark it done."}
+        {isSelfComment
+          ? "Open your post, paste your self-comment, then mark it done."
+          : hasText
+            ? "Open the post, paste your comment, then mark it done."
+            : "Open the post, like it, then mark it done."}
       </p>
       <div className="mt-2 flex flex-wrap gap-2">
         {post.engagement_url && (
@@ -716,10 +796,10 @@ function EngagementAsk({
             className="inline-flex items-center gap-1.5 rounded-md bg-clay px-3 py-1.5 text-xs font-medium text-paper hover:bg-clay-press"
           >
             <ExternalLink className="h-3.5 w-3.5" />
-            Open on LinkedIn
+            {isSelfComment ? "Open your post" : "Open on LinkedIn"}
           </a>
         )}
-        {isComment && post.body && (
+        {hasText && post.body && (
           <button
             onClick={copyText}
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-ink hover:bg-sand"
@@ -730,21 +810,35 @@ function EngagementAsk({
         )}
         {isOwner && (
           <button
-            onClick={onAck}
+            onClick={() => {
+              setActing("ack");
+              onAck();
+            }}
             disabled={busy}
             className="inline-flex items-center gap-1.5 rounded-md bg-ok/10 px-3 py-1.5 text-xs font-medium text-ok hover:bg-ok/20 disabled:opacity-50"
           >
-            <Check className="h-3.5 w-3.5" />
+            {busy && acting === "ack" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Check className="h-3.5 w-3.5" />
+            )}
             Mark done
           </button>
         )}
         {onSkip && (
           <button
-            onClick={onSkip}
+            onClick={() => {
+              setActing("skip");
+              onSkip();
+            }}
             disabled={busy}
             className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
           >
-            <SkipForward className="h-3.5 w-3.5" />
+            {busy && acting === "skip" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <SkipForward className="h-3.5 w-3.5" />
+            )}
             Skip
           </button>
         )}
@@ -758,6 +852,7 @@ const ACTION_LABEL: Record<string, string> = {
   comment: "comment",
   repost_comment: "repost thought",
   post: "post",
+  self_comment: "self comment",
 };
 
 const CAMPAIGN_STATUS_STYLES: Record<string, string> = {

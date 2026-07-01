@@ -7,7 +7,7 @@ Step-by-step setup for local development and the three external apps you must re
 ## 1. Prerequisites
 
 - Python 3.12+ and **uv** (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
-- Node 20+ and **pnpm** (`corepack enable && corepack prepare pnpm@latest --activate`).
+- Node 20+ and **npm** (ships with Node).
 - Docker and docker-compose (for Postgres and Redis, or run them natively).
 - A LinkedIn Company Page you administer (required to create the LinkedIn app, even though v1 posts to personal profiles only).
 - A Google Workspace for your company domain (so login can be restricted to it).
@@ -99,7 +99,7 @@ Slack is optional. The web app exposes the same approve, edit, and skip actions,
 
 ## 5. Environment
 
-Generation runs through the OpenAI SDK pointed at your LLM gateway, so there is no separate provider account to create: set `LLM_GATEWAY_URL` to the gateway's OpenAI-compatible base URL, `LLM_API_KEY` to its key, and `LLM_MODEL_NAME` to the model the gateway should route to. A writing skill may override the model per style, but most inherit `LLM_MODEL_NAME`.
+Generation runs through the OpenAI SDK pointed at your LLM gateway, so there is no separate provider account to create: set `LLM_GATEWAY_URL` to the gateway's OpenAI-compatible base URL, `LLM_API_KEY` to its key, and `LLM_MODEL_NAME` to the model the gateway should route to.
 
 Copy `backend/.env.example` to `backend/.env` and fill it in:
 ```
@@ -147,35 +147,36 @@ docker compose up -d postgres redis
 cd backend
 uv sync
 uv run alembic upgrade head
-uv run python -m scripts.seed          # inserts the default writing skill
+uv run python -m app.seed              # bootstrap admin users + default teams
 uv run uvicorn app.main:app --reload   # API on :8000
 # in a second terminal:
 uv run arq app.workers.arq_app.WorkerSettings   # the worker
 
 # Frontend
 cd ../frontend
-pnpm install
-pnpm dev                                # SPA on :5173
+npm install
+npm run dev                             # SPA on :5173
 ```
 
-Or bring the whole stack up with `docker compose up` once the Dockerfiles are in place.
+The `backend/Makefile` wraps the common commands (`make server`, `make worker`,
+`make seed`, `make migrate`, `make test`, `make flush`, `make reset`).
 
 ---
 
 ## 7. First run
 
 1. Open the frontend and choose **Continue with Google**. Sign in with an email listed in `BOOTSTRAP_ADMIN_EMAILS`; you are created as an admin.
-2. Have teammates sign in once with their company Google accounts; each is created as a viewer.
-3. As an admin, open **Users** and raise the people who will run campaigns to editor.
-4. Every participant opens **Connections** and connects their LinkedIn (the one-time consent). After that they only reconnect if a token goes stale between campaigns.
-5. An editor creates a campaign, picks a writing skill, generates drafts, and an admin (or the editor, for their own campaign) launches it. Approvals go out over Slack and the web app.
+2. Have teammates sign in once with their company Google accounts. First sign-in runs a short onboarding (agree to participate, pick a team); each person is created as a viewer, though members of certain teams (for example Founders, GTM) are auto-granted the editor role.
+3. As an admin, open **Users** and raise anyone else who will run campaigns to editor (search, then change their role). Roles are cumulative: viewer, editor, admin.
+4. Every participant opens **Connectors** and connects their LinkedIn (the one-time consent). After that they only reconnect if a token goes stale between campaigns.
+5. An editor creates a campaign, picks the participants (people or whole teams), generates drafts, and an admin (or the editor, for their own campaign) launches it. Each person then approves, edits, or skips their own post in the web app (Slack approval is the next phase).
 
 ---
 
 ## 8. Production notes
 
-- Run four processes: the API (uvicorn workers), the ARQ worker, Postgres, and Redis, with Caddy in front for TLS.
+- Run four processes: the API (uvicorn workers), the ARQ worker, Postgres, and Redis, with a reverse proxy in front for TLS.
 - `OAUTHLIB_INSECURE_TRANSPORT` must be unset or false in production; the code refuses insecure OAuth there regardless.
 - Set the real `APP_URL` and `FRONTEND_URL`, and update the Google, LinkedIn, and Slack redirect and request URLs to the production domain.
-- Run `uv run alembic upgrade head` on deploy before the API starts. Build the frontend with `pnpm build` and serve the static assets behind Caddy.
-- For deploying on TrueFoundry specifically (the api and worker as Services, migrations as a Job, secrets via `tfy-secret://`, reusing an existing in-cluster Postgres and Redis), see DEPLOY.md.
+- Run `uv run alembic upgrade head` on deploy before the API starts. Build the frontend with `npm run build` and serve the static assets behind the proxy.
+- The API and worker are the two deployables; run migrations as a one-off job before the API starts, and supply all secrets (`JWT_SECRET`, `TOKEN_ENCRYPTION_KEY`, OAuth and LLM keys) through your platform's secret store rather than committing them.

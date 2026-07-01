@@ -1,8 +1,16 @@
 """Tests for parsing a LinkedIn post URL into the URN used to act on the post."""
 
-from app.core.linkedin_urn import parse_post_urn
+import httpx
+import pytest
+
+from app.core.linkedin_urn import parse_post_urn, resolve_post_urn
 
 _ACTIVITY = "urn:li:activity:7123456789012345678"
+_POSTS_SHARE = (
+    "https://www.linkedin.com/posts/sarafpr_reinforcementlearning-"
+    "bellmanequation-machinelearning-share-7477947017680543745-UWiY/"
+    "?utm_source=share&utm_medium=member_desktop"
+)
 
 
 def test_feed_update_url():
@@ -62,3 +70,74 @@ def test_junk_returns_none():
     assert parse_post_urn("https://example.com/not-a-post") is None
     assert parse_post_urn("") is None
     assert parse_post_urn(None) is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_expands_short_link_to_share_urn():
+    # A lnkd.in short link hides the URN; following the redirect recovers the
+    # /posts/...-share-... URL, which carries the reshareable share URN.
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "lnkd.in":
+            return httpx.Response(302, headers={"location": _POSTS_SHARE})
+        return httpx.Response(200, text="ok")
+
+    urn = await resolve_post_urn(
+        "https://lnkd.in/p/dZ4eMaKV",
+        transport=httpx.MockTransport(handler),
+    )
+    assert urn == "urn:li:share:7477947017680543745"
+
+
+@pytest.mark.asyncio
+async def test_resolve_parses_directly_without_network():
+    # A URL that already carries a URN never hits the network: a transport that
+    # would blow up proves we short-circuit on the direct parse.
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("should not perform a network call")
+
+    urn = await resolve_post_urn(_POSTS_SHARE, transport=httpx.MockTransport(boom))
+    assert urn == "urn:li:share:7477947017680543745"
+
+
+@pytest.mark.asyncio
+async def test_resolve_ignores_non_shortlink_hosts():
+    # Only lnkd.in is expanded; an unknown host with no URN returns None and does
+    # not get fetched (no SSRF via arbitrary redirects).
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("should not fetch a non-allowlisted host")
+
+    urn = await resolve_post_urn(
+        "https://example.com/some/post",
+        transport=httpx.MockTransport(boom),
+    )
+    assert urn is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_refuses_redirect_to_internal_host():
+    # A crafted lnkd.in link that bounces to an internal address must be refused,
+    # not followed: the internal host is never fetched (no SSRF).
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "lnkd.in":
+            return httpx.Response(
+                302, headers={"location": "http://169.254.169.254/latest/meta-data/"}
+            )
+        raise AssertionError("must not fetch a non-LinkedIn host")
+
+    urn = await resolve_post_urn(
+        "https://lnkd.in/p/evil",
+        transport=httpx.MockTransport(handler),
+    )
+    assert urn is None
+
+
+@pytest.mark.asyncio
+async def test_resolve_network_error_falls_back_to_none():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("boom")
+
+    urn = await resolve_post_urn(
+        "https://lnkd.in/p/dZ4eMaKV",
+        transport=httpx.MockTransport(handler),
+    )
+    assert urn is None

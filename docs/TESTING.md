@@ -26,9 +26,13 @@ running. Keep the worker terminal visible: every job logs there.
 ## A. Single-user testing (local)
 
 With one connected account you can drive almost every workflow, because LinkedIn
-lets you like, comment on, and reshare your own posts. The plan builder picks
-participants from your team roster, which with one user is just you, so you assign
-all the actions to yourself.
+lets you like, comment on, and reshare your own posts. The plan builder is a
+participant picker: you choose people or whole teams and the backend expands each
+into the concrete actions. With one user that participant is just you, so every
+action is assigned to you automatically. Cross-person engagement (liking and
+commenting on other people's posts) only appears once there is more than one
+participant, so solo testing covers your own post, reshare, and self-comment but
+not the cross-engagement mesh (see section B for that).
 
 ### A.0 Make actions fire fast
 
@@ -43,37 +47,66 @@ MAX_ACTIONS_PER_ACCOUNT_PER_DAY=100
 
 Restore them to `90` and `10` when you are done.
 
+Comments, likes, and self-comments run assisted-manual by default (the Community
+Management API scope is not self-serve). When the target post is live the card
+turns into an "open your post, paste this, mark done" step with a deep link; do
+the action in your own browser, then press **Mark done**. Posts and reshares are
+fully automated. To automate comments and likes through the API instead, set
+`COMMUNITY_MANAGEMENT_ENABLED=true` (only works once your app holds
+`w_member_social_feed`).
+
 ### A.1 Amplify an existing post (the cleanest full test)
 
-1. Connect your LinkedIn on the Connections page if you have not.
+1. Connect your LinkedIn on the Connectors page if you have not.
 2. Copy the link of any post (the LinkedIn "Copy link to post" button works; the
-   share, embed, and feed URL forms all parse).
-3. New campaign, choose Amplify, paste the link into "Post URL to amplify", give
-   it a title, Create.
-4. In the Plan panel add rows, all assigned to you: `+ like`, `+ comment`,
-   `+ repost comment`. For comment and repost, type text, or as an editor leave it
-   blank and press Generate.
-5. Save plan, then Launch.
-6. Watch the worker publish the like, comment, and reshare. Refresh LinkedIn to
-   see the real interactions and the campaign progress bar fill.
+   share, embed, feed, and lnkd.in short-link forms all resolve). For a reshare
+   the URL must resolve to a share or ugcPost URN, not an activity URN; the form
+   warns you if it looks like an activity URN.
+3. New campaign, choose Amplify, paste the link into "Post URL to amplify", paste
+   the post's text (used to write relevant comments), give it a title, Create.
+4. Step 2 is the participant picker: select yourself (or your team). The backend
+   plans a like, a comment, and a reshare for each participant. Press Generate to
+   draft the comment and reshare text; edit any card if you want.
+5. Save, then Launch.
+6. Approve each card. Watch the worker publish the reshare; the like and comment
+   turn into assisted "mark done" steps once the target is live. Refresh LinkedIn
+   to see the interactions and the campaign progress bar fill.
 
-Exercises: campaign create, plan, LLM generation, per-post approval, worker
-publish, the stagger, the guardrails, and the audit log.
+Exercises: URL parsing, participant expansion, LLM generation, per-post approval,
+worker publish, the assisted-manual flow, the stagger, guardrails, and audit log.
 
-### A.2 Distribute (variations)
+### A.2 Distribute (variations and self-comment)
 
-1. New campaign, choose Distribute (needs the editor role). Optionally add seed
-   text, tone, a Link, and a default image URL.
-2. In the Plan panel press `+ Variation` (assigned to you), then add `+ comment`
-   or `+ repost comment` rows that target "Variation #1", also assigned to you.
-3. Press Generate to draft the variation and the interaction text. Edit if you
-   want, then Approve the variation post first.
-4. The worker publishes a new post from your account. The interactions are
-   dependency-aware: they wait until that post is live, then fire on it. If you set
-   a Link, confirm it lands as the first comment.
+1. New campaign, choose Distribute (needs the editor role). Add seed text
+   (required), optionally tone, a Link, an image, and a **Self-comment** (for
+   example "For more details: <link>").
+2. Step 2 is the participant picker: select yourself (or your team). Each
+   participant is planned a post of their own (in their team voice), and, with more
+   than one participant, a like and a comment on every other participant's post. A
+   self-comment, if set, is planned as its own tracked card per authored post.
+3. Press Generate to draft each variation, then Save and Launch. Approve your post
+   card.
+4. The worker publishes your post. The self-comment waits until that post is live,
+   then becomes an assisted "mark done" step (you cannot comment on a post that
+   does not exist yet). If you set a Link, confirm it lands as the first comment on
+   the post.
 
-Exercises: variation generation, publishing a new post, dependency ordering, and
-link-in-first-comment placement.
+Exercises: per-persona variation generation, publishing a new post, dependency
+ordering (self-comment after its parent), and link-in-first-comment placement.
+
+### A.2.1 Re-run a campaign locally
+
+Instead of creating a new campaign each time, reset an existing one back to review
+so you can launch it again:
+
+```bash
+cd backend
+make reset                       # lists recent campaigns and their ids
+make reset CAMPAIGN=<id>         # rewind that campaign and its posts to review/pending
+make reset CAMPAIGN=<id> REGEN=1 # also rebuild the plan (re-runs generation)
+```
+
+Use `make flush` to clear the worker queue if a stuck job keeps re-firing.
 
 ### A.3 Per-post controls
 
@@ -103,10 +136,10 @@ toggle and editor-only generation are blocked.
   dummy users so they appear in the roster and you can plan and skip against them,
   but their posts fail at publish with "No connected LinkedIn account" because they
   have no token. Real multi-account behavior needs section B.
-- Likes and comments on other people's posts may return `403` if your LinkedIn app
-  only holds `w_member_social`. The like and comment social actions map to
-  `w_member_social_feed` (the Community Management API). Your own-post publishing
-  and reshares work with `w_member_social`. See section B for the scope note.
+- Automated likes and comments through the API. By default these run
+  assisted-manual, so you can test the full flow with `w_member_social` alone.
+  Only if you set `COMMUNITY_MANAGEMENT_ENABLED=true` without holding
+  `w_member_social_feed` will they `403`. See section B for the scope note.
 
 ---
 
@@ -117,10 +150,10 @@ coordinated push with per-person consent.
 
 ### B.0 Prerequisites
 
-- Deploy the API, worker, and web app, and run the migrate job. See `DEPLOY.md`.
-- Complete the post-deploy steps in `DEPLOY.md` ("After the first deploy"): set
-  `APP_URL` and `FRONTEND_URL`, and register the real Google and LinkedIn redirect
-  URLs.
+- Deploy the API, worker, and web app, and run the migrate job. See the production
+  notes in [`SETUP.md`](SETUP.md).
+- Complete the post-deploy steps: set `APP_URL` and `FRONTEND_URL`, and register
+  the real Google and LinkedIn redirect URLs for the production domain.
 - `COMPANY_EMAIL_DOMAIN` is set to your company domain (only those emails can sign
   in), and your own email plus any co-admins are in `BOOTSTRAP_ADMIN_EMAILS`.
 - LinkedIn app scopes: `w_member_social openid profile` cover login, own-post
@@ -132,8 +165,9 @@ coordinated push with per-person consent.
 ### B.1 Onboard the pilot group
 
 1. Each of the 3 to 5 people signs in with their company Google account. The first
-   sign-in creates their user as a viewer (or admin if bootstrapped).
-2. Each person opens Connections and connects their own LinkedIn (consenting with
+   sign-in runs onboarding (agree to participate, pick a team) and creates their
+   user as a viewer (or admin if bootstrapped; some teams auto-grant editor).
+2. Each person opens Connectors and connects their own LinkedIn (consenting with
    their own account). Nothing can publish on their behalf until they do.
 3. As an admin, open the Users page and confirm each person shows a green
    "Connected" dot. Promote one or two people to editor if they will create
@@ -142,22 +176,26 @@ coordinated push with per-person consent.
 ### B.2 Run an amplify campaign across the group
 
 1. One person publishes a real seed post on LinkedIn (or pick an existing one).
-2. An editor or admin creates an Amplify campaign with that post's link.
-3. In the Plan, add one row per pilot participant: a mix of like, comment, and
-   repost comment. Generate or hand-write the comment and reshare text.
-4. Save plan and Launch.
-5. Each participant approves their own post (in the portal for now; Slack approval
-   comes later). Confirm a person can only act on their own row.
-6. Watch the interactions land on LinkedIn over the stagger window, not all at
-   once.
+2. An editor or admin creates an Amplify campaign with that post's link and text.
+3. In the participant picker, select the pilot people (or their teams). Every
+   participant is planned a like, a comment, and a reshare. Generate the text.
+4. Save and Launch.
+5. Each participant approves their own cards (in the portal for now; Slack approval
+   comes later). Confirm a person can only act on their own posts.
+6. Watch the reshares publish and the likes and comments settle (automated if you
+   hold `w_member_social_feed`, otherwise assisted "mark done") over the stagger
+   window, not all at once.
 
 ### B.3 Run a distribute campaign
 
 1. An editor creates a Distribute campaign from one seed idea, optionally with a
-   Link.
-2. Add a Variation per author and interaction rows that target each variation.
-3. Generate, let authors edit and approve their variations, then watch each
-   person's post publish and the cross-interactions follow once each post is live.
+   Link, an image, and a self-comment.
+2. In the participant picker, select the authors (or their teams). Each is planned
+   a post of their own, plus a like and comment on everyone else's post, plus a
+   self-comment on their own post if the campaign has one.
+3. Generate, let authors edit and approve their own posts, then watch each person's
+   post publish and the cross-interactions and self-comments follow once each post
+   is live.
 
 ### B.4 What to verify during the pilot
 

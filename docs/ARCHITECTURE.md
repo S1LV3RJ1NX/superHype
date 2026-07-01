@@ -7,8 +7,8 @@ pipeline (including the link-in-first-comment sequence and the authenticity
 guardrails). It is meant to be a single, accurate reference for onboarding and
 for building future presentations.
 
-`DESIGN.md` is the original system overview and `BACKEND.md` is the backend spec.
-Where this document and those disagree, this one reflects the code as written.
+This is the single authoritative reference for the system. It reflects the code
+as written; where a comment or older note disagrees, this document wins.
 
 ## 1. Overview
 
@@ -16,10 +16,17 @@ super-hype is an internal employee-advocacy tool. Employees connect their own
 LinkedIn account, then a small GTM team runs coordinated, consented pushes around
 a post. There are two campaign types:
 
-- Amplify (1 x N): run interactions (like, comment, reshare) from N people on one
-  existing LinkedIn post.
-- Distribute (M x N): take one seed, produce M on-voice variations that M people
-  publish, then layer interactions from N people across all of them.
+- Amplify (1 x N): run interactions on one existing LinkedIn post. Every chosen
+  participant does all three actions: like, comment, and reshare.
+- Distribute (N x N): take one seed and give every participant a distinct on-voice
+  post to publish, then have everyone like and comment on everyone else's post
+  (no reshares), with an optional author self-comment. Cross-engagement is capped
+  per member (`DISTRIBUTE_MAX_ENGAGEMENT_TARGETS`) and prioritizes founder-team
+  posts so a large campaign does not fan out quadratically.
+
+The plan is not assembled by hand. The portal collects participants (people or
+whole teams) and the backend's `expand_participants` turns them into the concrete
+per-person actions for the campaign type.
 
 Everything slow or external (LLM generation, publishing, fan-out) runs in an ARQ
 worker. The API only validates, persists, and enqueues.
@@ -97,7 +104,7 @@ app/
     crypto.py        Fernet encrypt/decrypt for tokens
     redis.py         Redis + ARQ redis settings
     safe_fetch.py    SSRF-guarded image fetch
-    linkedin_urn.py  parse a pasted LinkedIn URL into a post URN (keeps the activity/share/ugcPost namespace)
+    linkedin_urn.py  parse a pasted LinkedIn URL into a post URN (keeps the activity/share/ugcPost namespace); expands lnkd.in short links by following redirects, validating every hop against a LinkedIn host allowlist (no SSRF)
   db/
     base.py          DeclarativeBase, mixins, naming convention
     session.py       async engine, session factory, get_db
@@ -154,10 +161,11 @@ sequenceDiagram
 
 ## 5. Data model
 
-Six core tables. All timestamps are `timestamptz` and the code works in UTC.
+All timestamps are `timestamptz` and the code works in UTC.
 
 ```mermaid
 erDiagram
+    teams ||--o{ users : "member of"
     users ||--o{ social_accounts : owns
     users ||--o{ campaigns : creates
     users ||--o{ posts : "acts as"
@@ -169,11 +177,18 @@ erDiagram
     posts ||--o{ audit_log : logs
     users ||--o{ audit_log : actor
 
+    teams {
+        uuid id PK
+        text name UK
+        text persona "voice guidance for generation"
+        bool is_active
+    }
     users {
         uuid id PK
         text email UK
         text google_sub UK
         string role "viewer|editor|admin"
+        uuid team_id FK
         bool is_active
     }
     social_accounts {
@@ -193,20 +208,25 @@ erDiagram
         text seed_content
         text link
         string link_placement "first_comment|body"
+        text self_comment "optional author follow-up"
+        uuid image_asset_id FK
+        text image_url
         string status
         int stagger_min_seconds
         int stagger_max_seconds
         uuid created_by FK
+        timestamptz launched_at
     }
     posts {
         uuid id PK
         uuid campaign_id FK
         uuid user_id FK
         uuid social_account_id FK
-        string action "post|comment|like|repost_comment"
+        string action "post|comment|like|repost_comment|self_comment"
         text target_external_id
         uuid target_post_id FK
         text body
+        uuid image_asset_id FK
         string status
         text idempotency_key UK
         text external_id
@@ -234,6 +254,17 @@ erDiagram
 
 Notable points:
 
+- `teams` carries a `persona` (voice guidance). A user's team persona is injected
+  into the generation prompts so a distribute campaign reads in each participant's
+  team voice rather than one uniform tone. Teams are seeded (see `app/seed.py`) and
+  membership on `users.team_id` also drives onboarding (some teams auto-grant the
+  editor role) and the founder-first ordering of distribute cross-engagement.
+- `posts.action` is one of `post`, `comment`, `like`, `repost_comment`, or
+  `self_comment`. A `self_comment` is the author's own follow-up ("link in the
+  comments") on their own post: it is a tracked row targeting the poster row (via
+  `target_post_id`), so it is visible in the plan and, when the socialActions API
+  is unavailable, falls back to the same assisted-manual step as comments and likes
+  instead of failing silently.
 - `social_accounts` holds Fernet-encrypted `access_token_enc` and
   `refresh_token_enc`, plus `expires_at` and a `status` of `active` or `stale`.
   Unique on `(user_id, platform)`. See
@@ -341,13 +372,22 @@ stateDiagram-v2
 
 - `transition` validates the move against the `TRANSITIONS` table and writes an
   audit row.
-- `build_plan` turns an assignment list into post rows. For amplify it creates
+- `expand_participants` turns the chosen participant ids into the concrete
+  assignment set for the campaign type: for amplify, every participant gets a like,
+  a comment, and a reshare against the seed post; for distribute, every participant
+  gets a post plus a like and a comment on every other participant's post (capped
+  and founder-first), and an author self-comment if the campaign has one. There is
+  no manual per-row assignment; the portal only picks people or teams.
+- `build_plan` turns that assignment set into post rows. For amplify it creates
   interaction rows against the seed URN. For distribute it creates `post`
-  (variation) rows and interaction rows linked by `target_post_id`. Each row gets
-  a unique idempotency key. A rebuild replaces only `pending` rows, so approved
-  work awaiting publish (`scheduled`), published, failed, or skipped posts survive
-  editing the plan. The portal edits a plan through the two-step campaign wizard
-  (`/app/campaigns/:id/edit`); the read-only campaign view does not show it.
+  (variation) rows, interaction rows linked by `target_post_id`, and one
+  `self_comment` row per authored post when `campaign.self_comment` is set. Posters
+  are grouped by team persona so the model drafts variations in the right voice.
+  Each row gets a unique idempotency key. A rebuild replaces only `pending` rows,
+  so approved work awaiting publish (`scheduled`), published, failed, or skipped
+  posts survive editing the plan. The portal edits a plan through the two-step
+  campaign wizard (`/app/campaigns/:id/edit`); the read-only campaign view does not
+  show it.
 - `check_completion` moves a `publishing` campaign to `completed` once every post
   is terminal.
 - `delete_campaign` removes an un-launched campaign (`draft`, `review`, or
@@ -384,6 +424,10 @@ SDK, and never a hardcoded model name.
   regenerates once, then raises `GenerationError`. This keeps a coordinated push
   from reading as a bot pod.
 - `like` items never call the LLM (a like has no text).
+- Persona: each poster's team `persona` is passed into `variations_system` so a
+  distribute campaign's variations read in that team's voice. Free-form persona
+  text is whitespace-collapsed before it is embedded so it cannot break prompt
+  parsing.
 - Tone and length hints govern distribute variation bodies and reshare commentary
   (`repost_comment`) only. Comments are written from the pasted post content and
   ignore the tone/length presets, so they read as genuine reactions.
@@ -409,18 +453,21 @@ Before launch only plan edits are allowed; nothing reaches the publish queue. Th
 portal hides the per-post Approve and Skip buttons until launch and surfaces a
 hint, and renders the `publishing` status as "Active".
 
-Assisted-manual engagement: comments and likes need the `w_member_social_feed`
-scope (Community Management API), which is not self-serve. While
-`COMMUNITY_MANAGEMENT_ENABLED` is false (the default), `publish_post` does not
-call the API for a `comment` or `like`. Once the target is live it resolves the
-post permalink (`build_post_permalink`), sets the post to `action_required`, and
-stores `engagement_url`. The owner opens the post, comments or likes by hand, and
-calls `POST /v1/posts/{id}/ack` (owner-only) to move it to `acknowledged`
+Assisted-manual engagement: comments, likes, and author self-comments need the
+`w_member_social_feed` scope (Community Management API), which is not self-serve.
+While `COMMUNITY_MANAGEMENT_ENABLED` is false (the default), `publish_post` does
+not call the API for a `comment`, `like`, or `self_comment`. Once the target is
+live it resolves the post permalink (`build_post_permalink`), sets the post to
+`action_required`, and stores `engagement_url` (plus the suggested text for a
+comment or self-comment). The owner opens the post, acts by hand, and calls
+`POST /v1/posts/{id}/ack` (owner-only) to move it to `acknowledged`
 (`acknowledged_at` set). Both `action_required` and `acknowledged` count as
 settled for campaign completion, so a campaign does not hang waiting on a human.
-The ask payload is factored into `services/engagement_service.py` so a Slack card
-can reuse it later. Posts and reshares stay fully automated; flip the flag to
-true to dispatch comments and likes through the API with no code change.
+A self-comment additionally waits until its parent post is live before it becomes
+actionable, since you cannot comment on a post that does not exist yet. The ask
+payload is factored into `services/engagement_service.py` so a Slack card can
+reuse it later. Posts and reshares stay fully automated; flip the flag to true to
+dispatch comments, likes, and self-comments through the API with no code change.
 
 ### publish_post
 
@@ -492,7 +539,10 @@ image upload, `delete_post`, and `refresh`.
   `core/crypto.py`. Tokens are never logged.
 - SSRF protection: external image URLs are fetched through
   `[backend/app/core/safe_fetch.py](backend/app/core/safe_fetch.py)`, which blocks
-  non-public hosts, caps the byte size, and validates the content type.
+  non-public hosts, caps the byte size, and validates the content type. The
+  lnkd.in short-link expansion in `core/linkedin_urn.py` follows redirects
+  manually and checks every hop against a fixed LinkedIn host allowlist, so a
+  crafted short link cannot be used to reach an internal or arbitrary address.
 - RBAC: coarse `require_role` in views plus fine ownership in controllers.
 - Audit logging: every externally triggered mutation appends to `audit_log`.
 - Asset serving hardening: `GET /v1/assets/{id}` sets `X-Content-Type-Options:
@@ -503,6 +553,11 @@ image upload, `delete_post`, and `refresh`.
   summaries.
 - Startup safety: the API refuses to start in production with a default JWT secret
   and verifies Postgres and Redis reachability before serving.
+- Leaderboard: `services/leaderboard_service.py` ranks members by a weighted score
+  of the actions super-hype actually recorded (like 1, comment 3, repost 5) plus a
+  brand-mention bonus for direct posts (10 for text, 30 with media), over an
+  optional date window. There is no member-post metrics API on LinkedIn, so the
+  impressions term stays 0 and is kept only as a seam for a future analytics source.
 
 ## 11. Known gaps and future work
 

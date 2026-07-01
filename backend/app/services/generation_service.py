@@ -118,10 +118,14 @@ async def generate_variations(
     length: str | None = None,
     language: str | None = None,
     extra: str | None = None,
+    persona: str | None = None,
 ) -> list[str]:
-    """Produce N distinct, natural variations of the seed post."""
+    """Produce N distinct, natural variations of the seed post.
+
+    When `persona` is set, every variation is written in that author's team voice.
+    """
     system = variations_system(
-        n, tone=tone, length=length, language=language, extra=extra
+        n, tone=tone, length=length, language=language, extra=extra, persona=persona
     )
 
     data = await _complete_json(

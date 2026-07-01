@@ -9,11 +9,7 @@ import {
   emptyCampaignFields,
 } from "@/components/CampaignFields";
 import { CampaignWizard } from "@/components/CampaignWizard";
-import {
-  type AssignmentDraft,
-  type LockedPost,
-  type RosterUser,
-} from "@/components/PlanBuilder";
+import { type LockedPost, type RosterUser } from "@/components/PlanBuilder";
 import { apiFetch } from "@/lib/api";
 import { fetchAllRoster } from "@/lib/roster";
 
@@ -62,21 +58,14 @@ function fieldsFromCampaign(c: Campaign): CampaignFieldsValue {
   };
 }
 
-function rowsFromPosts(posts: Post[]): AssignmentDraft[] {
-  const posterPosts = posts.filter((p) => p.action === "post");
-  return posts
-    .filter((p) => p.status === "pending")
-    .map((p) => ({
-      user_id: p.user_id,
-      action: p.action,
-      body: p.body ?? undefined,
-      target_post_index: p.target_post_id
-        ? Math.max(
-            0,
-            posterPosts.findIndex((pp) => pp.id === p.target_post_id),
-          )
-        : undefined,
-    }));
+function participantIdsFromPosts(posts: Post[]): string[] {
+  // Distinct users who still have pending (re-plannable) posts; actions are
+  // re-derived from the campaign type when the plan is rebuilt.
+  const ids = new Set<string>();
+  for (const p of posts) {
+    if (p.status === "pending") ids.add(p.user_id);
+  }
+  return Array.from(ids);
 }
 
 export function CampaignEditor() {
@@ -93,7 +82,9 @@ export function CampaignEditor() {
   const [initialFields, setInitialFields] = useState<CampaignFieldsValue>(
     emptyCampaignFields(),
   );
-  const [initialRows, setInitialRows] = useState<AssignmentDraft[]>([]);
+  const [initialParticipantIds, setInitialParticipantIds] = useState<string[]>(
+    [],
+  );
   const [lockedPosts, setLockedPosts] = useState<LockedPost[]>([]);
 
   const load = useCallback(async () => {
@@ -109,7 +100,7 @@ export function CampaignEditor() {
       setCampaign(c);
       setRoster(r);
       setInitialFields(fieldsFromCampaign(c));
-      setInitialRows(rowsFromPosts(p.items));
+      setInitialParticipantIds(participantIdsFromPosts(p.items));
       setLockedPosts(
         p.items
           .filter((post) => post.status !== "pending")
@@ -197,7 +188,7 @@ export function CampaignEditor() {
               campaignType={campaign.type}
               initialFields={initialFields}
               roster={roster}
-              initialRows={initialRows}
+              initialParticipantIds={initialParticipantIds}
               lockedPosts={lockedPosts}
               onDone={(cid) => navigate(`/app/campaigns/${cid}`)}
               onCancel={() => navigate(backTo)}

@@ -4,8 +4,8 @@ The super-hype API and worker. FastAPI (async) for the REST API and OAuth
 callbacks, an ARQ worker for slow and external work, Postgres for state, and
 Redis for the queue and OAuth state. Managed with [`uv`](https://docs.astral.sh/uv/).
 
-See [`../docs/BACKEND.md`](../docs/BACKEND.md) for the authoritative spec and
-[`AGENTS.md`](AGENTS.md) for the operating manual.
+See [`../docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for the authoritative
+reference and [`../agents.md`](../agents.md) for the operating manual.
 
 ## Requirements
 
@@ -44,7 +44,7 @@ uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_
 
 ```bash
 uv run alembic upgrade head             # apply migrations
-uv run python -m app.seed               # bootstrap admin users
+uv run python -m app.seed               # bootstrap admin users + default teams
 ```
 
 To create a new migration after changing models:

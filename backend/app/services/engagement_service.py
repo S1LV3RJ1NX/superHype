@@ -17,15 +17,20 @@ from app.models.post import Post
 def is_assisted(action: str) -> bool:
     """True when a comment or like is a guided human action, not an API call.
 
-    Comments and likes go through the socialActions API, which needs the
-    w_member_social_feed scope (part of the Community Management API, not
-    self-serve). Until that access lands they run assisted-manual: we resolve
-    the target, deep-link the person to it, and they act in their own browser,
-    so no LinkedIn token is needed and the reconnect gate does not apply. Posts
-    and reshares are always automated through w_member_social. This is the single
-    source of truth shared by the worker, the approve gate, and readiness checks.
+    Comments (including the author's own self-comment) and likes go through the
+    socialActions API, which needs the w_member_social_feed scope (part of the
+    Community Management API, not self-serve). Until that access lands they run
+    assisted-manual: we resolve the target, deep-link the person to it, and they
+    act in their own browser, so no LinkedIn token is needed and the reconnect
+    gate does not apply. Posts and reshares are always automated through
+    w_member_social. This is the single source of truth shared by the worker,
+    the approve gate, and readiness checks.
     """
-    return not settings.COMMUNITY_MANAGEMENT_ENABLED and action in ("comment", "like")
+    return not settings.COMMUNITY_MANAGEMENT_ENABLED and action in (
+        "comment",
+        "like",
+        "self_comment",
+    )
 
 
 @dataclass(frozen=True)
@@ -40,10 +45,14 @@ class EngagementAsk:
 def engagement_ask(post: Post, target_urn: str) -> EngagementAsk:
     """Build the assisted-manual ask for a comment or like on a target post.
 
-    A like carries no text; a comment hands over the generated body to paste.
+    A like carries no text; a comment (or the author's own self-comment) hands
+    over the generated body to paste. For a self-comment the target is the
+    author's own post, so the deep link points them back to it.
     """
     return EngagementAsk(
         action=post.action,
         target_url=build_post_permalink(target_urn) or "",
-        suggested_text=post.body if post.action == "comment" else None,
+        suggested_text=(
+            post.body if post.action in ("comment", "self_comment") else None
+        ),
     )

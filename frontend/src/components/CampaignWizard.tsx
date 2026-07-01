@@ -8,7 +8,6 @@ import {
   emptyCampaignFields,
 } from "@/components/CampaignFields";
 import {
-  type AssignmentDraft,
   type LockedPost,
   PlanBuilder,
   type RosterUser,
@@ -25,7 +24,7 @@ export function CampaignWizard({
   campaignType,
   initialFields,
   roster: initialRoster,
-  initialRows,
+  initialParticipantIds,
   lockedPosts,
 }: {
   mode: "create" | "edit";
@@ -36,7 +35,7 @@ export function CampaignWizard({
   campaignType?: string;
   initialFields?: CampaignFieldsValue;
   roster?: RosterUser[];
-  initialRows?: AssignmentDraft[];
+  initialParticipantIds?: string[];
   lockedPosts?: LockedPost[];
 }) {
   const isEdit = mode === "edit";
@@ -115,14 +114,17 @@ export function CampaignWizard({
     }
   };
 
-  const savePlan = async (assignments: AssignmentDraft[], generate: boolean) => {
+  const savePlan = async (participantIds: string[], generate: boolean) => {
     if (!created) return;
     setError(null);
     setSubmitting(true);
     try {
       await apiFetch(
         `/v1/campaigns/${created.id}/${generate ? "generate" : "plan"}`,
-        { method: "POST", body: JSON.stringify({ assignments }) },
+        {
+          method: "POST",
+          body: JSON.stringify({ participant_ids: participantIds }),
+        },
       );
       onDone(created.id);
     } catch (err) {
@@ -175,8 +177,7 @@ export function CampaignWizard({
       ) : (
         <div className="mt-3">
           <p className="mb-3 text-sm text-muted-ink">
-            Assign who likes, comments, or reshares
-            {type === "distribute" ? ", and add post variations" : ""}.
+            Pick who takes part. Actions are automatic based on the campaign type.
           </p>
 
           <PlanBuilder
@@ -185,7 +186,7 @@ export function CampaignWizard({
             isEditor={isEditor}
             busy={submitting}
             onPlan={savePlan}
-            initialRows={initialRows}
+            initialParticipantIds={initialParticipantIds}
             lockedPosts={lockedPosts}
           />
 

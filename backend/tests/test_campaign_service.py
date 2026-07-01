@@ -4,8 +4,10 @@ import uuid
 
 import pytest
 
+from app.config import settings
 from app.models.campaign import Campaign
 from app.models.post import Post
+from app.models.team import Team
 from app.models.user import User
 from app.repositories.post_repo import post_repo
 from app.schemas.post import Assignment
@@ -106,7 +108,13 @@ async def test_build_plan_copies_media_and_self_comment(db):
     )
     post_row = next(r for r in rows if r.action == "post")
     assert post_row.image_asset_id == asset.id
-    assert post_row.first_comment == "link in the comments"
+    # The self-comment is a tracked row targeting the author's own post, not a
+    # field on the poster row, so it is visible in the plan and can fall back to
+    # an assisted-manual step when the socialActions API is unavailable.
+    self_comment_row = next(r for r in rows if r.action == "self_comment")
+    assert self_comment_row.body == "link in the comments"
+    assert self_comment_row.user_id == poster.id
+    assert self_comment_row.target_post_id == post_row.id
 
 
 async def test_build_plan_distribute_comment_uses_target_body_and_persona(
@@ -259,3 +267,73 @@ async def test_check_completion_noop_when_pending(db):
 
     await campaign_service.check_completion(db, c.id)
     assert c.status == "publishing"
+
+
+async def test_expand_amplify_gives_each_member_all_three(db):
+    u1 = await _user(db)
+    u2 = await _user(db)
+    c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:1")
+
+    out = await campaign_service.expand_participants(db, c, [u1.id, u2.id])
+
+    assert len(out) == 6
+    assert all(a.target_post_index is None for a in out)
+    for uid in (u1.id, u2.id):
+        assert {a.action for a in out if a.user_id == uid} == {
+            "like",
+            "comment",
+            "repost_comment",
+        }
+
+
+async def test_expand_distribute_posts_and_mesh_no_reposts(db):
+    users = [await _user(db) for _ in range(3)]
+    ids = [u.id for u in users]
+    c = await _campaign(db, ctype="distribute", seed_content="s")
+
+    out = await campaign_service.expand_participants(db, c, ids)
+
+    # One post per member, in list order; no reposts in distribute.
+    assert [a.user_id for a in out if a.action == "post"] == ids
+    assert not any(a.action == "repost_comment" for a in out)
+    # Each member likes and comments on every other member's post, never their own.
+    for i, u in enumerate(users):
+        expected = [j for j in range(3) if j != i]
+        for action in ("like", "comment"):
+            targets = sorted(
+                a.target_post_index
+                for a in out
+                if a.user_id == u.id and a.action == action
+            )
+            assert targets == expected
+
+
+async def test_expand_distribute_caps_engagement_targets(db, monkeypatch):
+    monkeypatch.setattr(settings, "DISTRIBUTE_MAX_ENGAGEMENT_TARGETS", 2)
+    users = [await _user(db) for _ in range(5)]
+    c = await _campaign(db, ctype="distribute", seed_content="s")
+
+    out = await campaign_service.expand_participants(db, c, [u.id for u in users])
+
+    for u in users:
+        likes = [a for a in out if a.user_id == u.id and a.action == "like"]
+        assert len(likes) == 2
+
+
+async def test_expand_distribute_prefers_founder_posts(db, monkeypatch):
+    monkeypatch.setattr(settings, "DISTRIBUTE_MAX_ENGAGEMENT_TARGETS", 1)
+    founders = Team(name="Founders", is_active=True)
+    db.add(founders)
+    await db.flush()
+    founder = await _user(db)
+    founder.team_id = founders.id
+    a = await _user(db)
+    b = await _user(db)
+    await db.flush()
+    c = await _campaign(db, ctype="distribute", seed_content="s")
+
+    # Founder is slot 0; with a cap of 1 the others must pick the founder's post.
+    out = await campaign_service.expand_participants(db, c, [founder.id, a.id, b.id])
+    for uid in (a.id, b.id):
+        comments = [x for x in out if x.user_id == uid and x.action == "comment"]
+        assert [x.target_post_index for x in comments] == [0]

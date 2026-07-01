@@ -156,7 +156,7 @@ async def _dispatch(
         )
     if target_urn is None:
         raise ValueError("Interaction has no resolvable target URN.")
-    if post.action == "comment":
+    if post.action in ("comment", "self_comment"):
         return await provider.comment(acct, target_urn, post.body or "")
     if post.action == "like":
         await provider.like(acct, target_urn)
@@ -164,76 +164,6 @@ async def _dispatch(
     if post.action == "repost_comment":
         return await provider.reshare(acct, target_urn, post.body or "")
     raise ValueError(f"Unknown action: {post.action}")
-
-
-async def _schedule_self_comment(ctx: dict, post: Post) -> None:
-    """Enqueue the author's self-comment on their own post after a random delay.
-
-    The self-comment ("link in the comments") reuses first_comment_external_id as
-    its idempotency marker, so it is skipped when a link-in-first-comment already
-    claimed that slot. The delay makes it read like a natural follow-up.
-    """
-    if post.action != "post" or not post.first_comment:
-        return
-    if post.first_comment_external_id is not None:
-        return
-    delay = random.uniform(
-        settings.SELF_COMMENT_MIN_SECONDS, settings.SELF_COMMENT_MAX_SECONDS
-    )
-    await ctx["redis"].enqueue_job("place_self_comment", str(post.id), _defer_by=delay)
-
-
-async def place_self_comment(ctx: dict, post_id: str) -> None:
-    """Place the author's own follow-up comment on their published post.
-
-    Idempotent: no-op once first_comment_external_id is set. A stale token marks
-    the account stale (the follow-up is best-effort and never rolls back the post);
-    a rate limit reschedules; other errors are logged and dropped.
-    """
-    pid = uuid.UUID(post_id)
-    async with async_session_factory() as db:
-        post = await post_repo.get(db, pid)
-        if post is None or post.action != "post":
-            return
-        if not post.first_comment or post.first_comment_external_id is not None:
-            return
-        if post.external_id is None or post.social_account_id is None:
-            return
-        acct = await social_account_repo.get(db, post.social_account_id)
-        if acct is None:
-            return
-        try:
-            fc_urn = await _provider().comment(
-                acct, post.external_id, post.first_comment
-            )
-        except LinkedInAuthError:
-            await social_account_repo.mark_stale(db, post.social_account_id)
-            await db.commit()
-            await ctx["redis"].enqueue_job(
-                "request_reconnect", str(post.social_account_id)
-            )
-            return
-        except LinkedInRateLimitError as exc:
-            await ctx["redis"].enqueue_job(
-                "place_self_comment", post_id, _defer_by=exc.retry_after or 60
-            )
-            return
-        except Exception as exc:
-            log.warning(
-                "place_self_comment.failed",
-                post_id=post_id,
-                error=str(exc),
-                error_type=type(exc).__name__,
-            )
-            return
-        post.first_comment_external_id = fc_urn
-        await audit_repo.record(
-            db,
-            action="self_comment_placed",
-            campaign_id=post.campaign_id,
-            post_id=post.id,
-        )
-        await db.commit()
 
 
 async def _guardrail_defer(db: AsyncSession, account_id: uuid.UUID) -> float | None:
@@ -305,6 +235,44 @@ def _forbidden_message(action: str, exc: LinkedInAPIError) -> str:
             "Management API access to enable them."
         )
     return f"Failed: LinkedIn denied this action (403). {exc}"[:1000]
+
+
+def _nonretryable(exc: Exception) -> bool:
+    """A LinkedIn 4xx is the client's fault (bad URN, missing scope, malformed
+    body) and never succeeds on retry, so we fail it immediately. 401 and 429 are
+    caught earlier (reconnect and rate-limit backoff); 5xx and network blips fall
+    through to the bounded retry."""
+    return isinstance(exc, LinkedInAPIError) and 400 <= exc.status_code < 500
+
+
+def _publish_failure_message(action: str, exc: Exception, *, rolled_back: bool) -> str:
+    """Actionable failure text for the post row, so the UI shows why and the
+    owner can fix it and retry."""
+    if isinstance(exc, LinkedInAPIError) and exc.status_code == 403:
+        if rolled_back:
+            return (
+                "Failed: the post was rolled back because the link could not be "
+                "placed in the first comment. Comments require the "
+                "w_member_social_feed scope (Community Management API), which this "
+                "app does not have. Use body link placement or request the scope."
+            )
+        return _forbidden_message(action, exc)
+    # Resharing a feed "activity" URN is rejected: reshareContext.parent must be
+    # the original share or ugcPost. This is the usual cause when a campaign was
+    # seeded from a /feed/update/urn:li:activity:... URL.
+    if (
+        isinstance(exc, LinkedInAPIError)
+        and exc.status_code == 422
+        and "reshareContext" in str(exc)
+    ):
+        return (
+            "Failed: LinkedIn will not reshare this post. The seed link resolved to "
+            "a feed activity, but a reshare must target the original share or "
+            "ugcPost. Open the post on LinkedIn, use its direct post link (or the "
+            "lnkd.in short link), and reseed the campaign with that instead of the "
+            "/feed/update/...activity URL."
+        )
+    return f"Failed: {exc}"[:1000]
 
 
 async def publish_post(ctx: dict, post_id: str) -> None:
@@ -392,11 +360,6 @@ async def publish_post(ctx: dict, post_id: str) -> None:
         if post.external_id is not None and (
             not needs_fc or post.first_comment_external_id is not None
         ):
-            # Resume-safe: if the body committed but the self-comment enqueue was
-            # lost (crash between commit and enqueue), any later publish_post run
-            # re-schedules it. _schedule_self_comment is a no-op once it is placed
-            # or when a link already claimed the first-comment slot.
-            await _schedule_self_comment(ctx, post)
             return
 
         # Authenticity guardrails: only gate the outbound action itself (when the
@@ -428,7 +391,6 @@ async def publish_post(ctx: dict, post_id: str) -> None:
                 )
                 await db.commit()
                 if not needs_fc:
-                    await _schedule_self_comment(ctx, post)
                     await campaign_service.check_completion(db, post.campaign_id)
                     await db.commit()
                     return
@@ -481,44 +443,22 @@ async def publish_post(ctx: dict, post_id: str) -> None:
             post = await post_repo.get(db, pid)
             if post is None:
                 return
-            # A 403 is a permissions problem (typically a missing scope, e.g.
-            # comments/likes need w_member_social_feed). Retrying never helps, so
-            # fail immediately with an actionable message.
-            if isinstance(exc, LinkedInAPIError) and exc.status_code == 403:
-                # If the body is already live and only the link-in-first-comment
-                # failed (the first comment also needs w_member_social_feed), roll
-                # the post back so we honor all-or-nothing instead of leaving a
-                # live post recorded as failed.
-                if post.external_id is not None and (
-                    needs_fc and post.first_comment_external_id is None
-                ):
-                    acct = (
-                        await social_account_repo.get(db, post.social_account_id)
-                        if post.social_account_id is not None
-                        else None
-                    )
-                    if acct is not None:
-                        await _rollback_published_post(db, acct, post)
-                    msg = (
-                        "Failed: the post was rolled back because the link could not "
-                        "be placed in the first comment. Comments require the "
-                        "w_member_social_feed scope (Community Management API), which "
-                        "this app does not have. Use body link placement or request "
-                        "the scope."
-                    )
-                else:
-                    msg = _forbidden_message(post.action, exc)
-                await post_repo.mark_failed(db, post, msg)
-                await campaign_service.check_completion(db, post.campaign_id)
-                await db.commit()
-                return
-            post.retries += 1
-            if post.retries >= MAX_RETRIES:
+            # A 4xx is the client's fault and never succeeds on retry (a 403 scope
+            # gap, a 422 bad reshare parent, etc.), so fail it now instead of
+            # silently retrying, which leaves the card stuck "processing" for the
+            # whole backoff window. 5xx and network blips still get the retry.
+            nonretryable = _nonretryable(exc)
+            if not nonretryable:
+                post.retries += 1
+            if nonretryable or post.retries >= MAX_RETRIES:
                 # Body live but first comment never landed: roll back for
                 # all-or-nothing before marking the post failed.
-                if post.external_id is not None and (
-                    needs_fc and post.first_comment_external_id is None
-                ):
+                rolled_back = (
+                    post.external_id is not None
+                    and needs_fc
+                    and post.first_comment_external_id is None
+                )
+                if rolled_back:
                     acct = (
                         await social_account_repo.get(db, post.social_account_id)
                         if post.social_account_id is not None
@@ -526,7 +466,11 @@ async def publish_post(ctx: dict, post_id: str) -> None:
                     )
                     if acct is not None:
                         await _rollback_published_post(db, acct, post)
-                await post_repo.mark_failed(db, post, f"Failed: {exc}"[:1000])
+                await post_repo.mark_failed(
+                    db,
+                    post,
+                    _publish_failure_message(post.action, exc, rolled_back=rolled_back),
+                )
                 await campaign_service.check_completion(db, post.campaign_id)
                 await db.commit()
             else:

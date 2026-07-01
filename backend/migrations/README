@@ -1,4 +1,4 @@
-Async Alembic migrations for super-hype. See ../../docs/BACKEND.md section 6.
+Async Alembic migrations for super-hype. See ../../docs/ARCHITECTURE.md section 5.
 
 Commands (always via uv):
   uv run alembic revision --autogenerate -m "message"

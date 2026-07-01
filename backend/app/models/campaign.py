@@ -58,8 +58,9 @@ class Campaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         default="first_comment",
         server_default="first_comment",
     )
-    # Author self-comment ("link in the comments"), copied to each post's
-    # first_comment and placed by the author on their own post after a delay.
+    # Author self-comment ("link in the comments"): expanded into a tracked
+    # self_comment post row per authored post, placed by the author on their own
+    # post after it publishes (assisted-manual until the socialActions API lands).
     self_comment: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="draft", server_default="draft"

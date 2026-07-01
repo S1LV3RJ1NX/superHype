@@ -62,4 +62,7 @@ class Assignment(BaseModel):
 
 
 class PlanRequest(BaseModel):
-    assignments: list[Assignment]
+    """Participants for a campaign; the backend expands each into concrete actions
+    based on the campaign type (see campaign_service.expand_participants)."""
+
+    participant_ids: list[uuid.UUID]
