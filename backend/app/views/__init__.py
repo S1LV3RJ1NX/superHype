@@ -9,6 +9,7 @@ from app.views import (
     connections,
     leaderboard,
     posts,
+    slack,
     teams,
     users,
 )
@@ -20,5 +21,6 @@ api_router.include_router(campaigns.router)
 api_router.include_router(connections.router)
 api_router.include_router(leaderboard.router)
 api_router.include_router(posts.router)
+api_router.include_router(slack.router)
 api_router.include_router(teams.router)
 api_router.include_router(users.router)

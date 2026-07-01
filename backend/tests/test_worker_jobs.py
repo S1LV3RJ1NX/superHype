@@ -175,7 +175,8 @@ async def test_generate_drafts_failure_marks_failed(db, env, monkeypatch):
 
 
 async def test_launch_campaign_stagger_and_enqueue(db, env):
-    user = await _user(db)
+    user_a = await _user(db)
+    user_b = await _user(db)
     c = Campaign(
         title="C",
         type="amplify",
@@ -186,16 +187,19 @@ async def test_launch_campaign_stagger_and_enqueue(db, env):
     )
     db.add(c)
     await db.flush()
-    for _ in range(3):
-        db.add(
-            Post(
-                campaign_id=c.id,
-                user_id=user.id,
-                action="like",
-                status="pending",
-                idempotency_key=uuid.uuid4().hex,
+    # user_a owns two posts, user_b one: fan-out is per participant, so we expect
+    # one notify_participant job each (not one per post).
+    for owner, count in ((user_a, 2), (user_b, 1)):
+        for _ in range(count):
+            db.add(
+                Post(
+                    campaign_id=c.id,
+                    user_id=owner.id,
+                    action="like",
+                    status="pending",
+                    idempotency_key=uuid.uuid4().hex,
+                )
             )
-        )
     await db.commit()
 
     await jobs_mod.launch_campaign(env["ctx"], str(c.id))
@@ -203,11 +207,50 @@ async def test_launch_campaign_stagger_and_enqueue(db, env):
     async with env["maker"]() as s:
         refreshed = await s.get(Campaign, c.id)
         assert refreshed.status == "publishing"
-    notify = [j for j in env["redis"].jobs if j[0] == "notify_person"]
-    assert len(notify) == 3
-    for _, _, kwargs in notify:
+    notify = [j for j in env["redis"].jobs if j[0] == "notify_participant"]
+    assert len(notify) == 2
+    notified_users = {args[1] for _, args, _ in notify}
+    assert notified_users == {str(user_a.id), str(user_b.id)}
+    for _, args, kwargs in notify:
+        assert args[0] == str(c.id)
         assert 10 <= kwargs["_defer_by"] <= 20
     assert any(j[0] == "send_reminders" for j in env["redis"].jobs)
+
+
+async def test_launch_campaign_stagger_env_override(db, env, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "STAGGER_OVERRIDE_MIN_SECONDS", 1)
+    monkeypatch.setattr(settings, "STAGGER_OVERRIDE_MAX_SECONDS", 3)
+
+    user = await _user(db)
+    c = Campaign(
+        title="C",
+        type="amplify",
+        status="review",
+        seed_urn="urn:li:activity:1",
+        stagger_min_seconds=600,
+        stagger_max_seconds=1800,
+    )
+    db.add(c)
+    await db.flush()
+    db.add(
+        Post(
+            campaign_id=c.id,
+            user_id=user.id,
+            action="like",
+            status="pending",
+            idempotency_key=uuid.uuid4().hex,
+        )
+    )
+    await db.commit()
+
+    await jobs_mod.launch_campaign(env["ctx"], str(c.id))
+
+    notify = [j for j in env["redis"].jobs if j[0] == "notify_participant"]
+    assert len(notify) == 1
+    # The env override wins over the campaign's 600-1800 window.
+    assert 1 <= notify[0][2]["_defer_by"] <= 3
 
 
 async def test_publish_idempotent_noop(db, env):
@@ -296,6 +339,13 @@ async def test_publish_comment_assisted_when_cm_disabled(db, env):
             == "https://www.linkedin.com/feed/update/urn:li:activity:1/"
         )
         assert rc.status == "completed"
+
+    # Raising the ask enqueues a per-person, deduped engagement nudge for Slack.
+    engage = [j for j in env["redis"].jobs if j[0] == "notify_engagements"]
+    assert len(engage) == 1
+    assert engage[0][1] == (str(c.id), str(user.id))
+    assert engage[0][2]["_job_id"] == f"engage:{c.id}:{user.id}"
+    assert engage[0][2]["_defer_by"] >= 0
 
     # Re-running is a no-op: an already-raised ask is not re-raised.
     await jobs_mod.publish_post(env["ctx"], str(p.id))
@@ -572,6 +622,50 @@ async def test_publish_reshare_422_activity_parent_fails_fast(db, env):
         assert rp.status == "failed"
         assert rp.retries == 0
         assert "reshare" in (rp.error or "").lower()
+
+
+async def test_publish_reshare_duplicate_adopts_existing_urn(db, env):
+    # After a reset and relaunch, resharing identical content is refused by
+    # LinkedIn with a 422 duplicate that names the live URN. We adopt it and mark
+    # the post published (idempotent recovery), never retry, never fail.
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="repost_comment",
+        body="my take",
+        status="approved",
+        target_external_id="urn:li:share:123",
+        idempotency_key="kdup",
+    )
+    db.add(p)
+    await db.commit()
+
+    async def _dupe(*a, **k):
+        raise LinkedInAPIError(
+            422,
+            '{"message":"Content is a duplicate of '
+            'urn:li:share:7478151033798680577","errorDetails":{"inputErrors":'
+            '[{"code":"DUPLICATE_POST"}]}}',
+        )
+
+    env["provider"].reshare = _dupe
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    assert not [j for j in env["redis"].jobs if j[0] == "publish_post"]
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        rc = await s.get(Campaign, c.id)
+        assert rp.status == "published"
+        assert rp.external_id == "urn:li:share:7478151033798680577"
+        assert rp.error is None
+        assert rc.status == "completed"
 
 
 async def test_publish_auth_error_marks_stale_and_reconnect(
@@ -1037,6 +1131,145 @@ async def test_publish_defers_on_min_gap(db, env, cm_enabled):
     async with env["maker"]() as s:
         rp = await s.get(Post, p.id)
         assert rp.status == "approved"
+
+
+class _FakeSlackClient:
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+async def test_send_reminders_re_dms_only_outstanding(db, env, monkeypatch):
+    import app.services.slack_service as slack_mod
+
+    fake = _FakeSlackClient()
+    monkeypatch.setattr(jobs_mod, "build_slack_client", lambda: fake)
+    notify_participant = AsyncMock()
+    notify_engagements = AsyncMock()
+    # jobs.py calls through the slack_service module, so patching its attrs here
+    # is what the job sees (jobs_mod.slack_service is this same module object).
+    monkeypatch.setattr(slack_mod, "notify_participant", notify_participant)
+    monkeypatch.setattr(slack_mod, "notify_engagements", notify_engagements)
+
+    approver = await _user(db)
+    engager = await _user(db)
+    settled = await _user(db)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    # approver still owes an approval, engager still owes an engagement, and
+    # settled has only terminal posts (nothing to remind).
+    db.add_all(
+        [
+            Post(
+                campaign_id=c.id,
+                user_id=approver.id,
+                action="post",
+                status="scheduled",
+                idempotency_key=uuid.uuid4().hex,
+            ),
+            Post(
+                campaign_id=c.id,
+                user_id=engager.id,
+                action="comment",
+                status="action_required",
+                idempotency_key=uuid.uuid4().hex,
+            ),
+            Post(
+                campaign_id=c.id,
+                user_id=settled.id,
+                action="like",
+                status="acknowledged",
+                idempotency_key=uuid.uuid4().hex,
+            ),
+        ]
+    )
+    await db.commit()
+
+    await jobs_mod.send_reminders(env["ctx"], str(c.id))
+
+    assert notify_participant.await_count == 1
+    assert notify_engagements.await_count == 1
+    reminded_approval = {
+        str(call.args[3].id) for call in notify_participant.await_args_list
+    }
+    assert reminded_approval == {str(approver.id)}
+    reminded_engage = {
+        str(call.args[3].id) for call in notify_engagements.await_args_list
+    }
+    assert reminded_engage == {str(engager.id)}
+    assert fake.closed
+
+
+async def test_notify_participant_schedules_and_dms(db, env, monkeypatch):
+    import app.services.slack_service as slack_mod
+
+    fake = _FakeSlackClient()
+    monkeypatch.setattr(jobs_mod, "build_slack_client", lambda: fake)
+    notify_participant = AsyncMock()
+    monkeypatch.setattr(slack_mod, "notify_participant", notify_participant)
+
+    user = await _user(db)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    for _ in range(2):
+        db.add(
+            Post(
+                campaign_id=c.id,
+                user_id=user.id,
+                action="like",
+                status="pending",
+                idempotency_key=uuid.uuid4().hex,
+            )
+        )
+    await db.commit()
+
+    await jobs_mod.notify_participant(env["ctx"], str(c.id), str(user.id))
+
+    # The person's pending posts are moved to scheduled with or without Slack.
+    async with env["maker"]() as s:
+        rows = (await s.execute(select(Post))).scalars().all()
+        assert {r.status for r in rows} == {"scheduled"}
+    assert notify_participant.await_count == 1
+    assert len(notify_participant.await_args.args[4]) == 2  # the two posts
+
+
+async def test_handle_slack_interaction_job_delegates(db, env, monkeypatch):
+    import app.services.slack_service as slack_mod
+
+    fake = _FakeSlackClient()
+    monkeypatch.setattr(jobs_mod, "build_slack_client", lambda: fake)
+    handle = AsyncMock()
+    monkeypatch.setattr(slack_mod, "handle_interaction", handle)
+
+    payload = {"type": "block_actions", "actions": [{"action_id": "x"}]}
+    await jobs_mod.handle_slack_interaction(env["ctx"], payload)
+
+    assert handle.await_count == 1
+    assert handle.await_args.args[2] == payload
+    assert fake.closed
+
+
+async def test_request_reconnect_dms_account_owner(db, env, monkeypatch):
+    import app.services.slack_service as slack_mod
+
+    fake = _FakeSlackClient()
+    monkeypatch.setattr(jobs_mod, "build_slack_client", lambda: fake)
+    notify_reconnect = AsyncMock()
+    monkeypatch.setattr(slack_mod, "notify_reconnect", notify_reconnect)
+
+    user = await _user(db)
+    acct = await _account(db, user)
+    await db.commit()
+
+    await jobs_mod.request_reconnect(env["ctx"], str(acct.id))
+
+    assert notify_reconnect.await_count == 1
+    assert str(notify_reconnect.await_args.args[2].id) == str(user.id)
+    assert fake.closed
 
 
 async def test_publish_defers_on_daily_cap(db, env, cm_enabled):

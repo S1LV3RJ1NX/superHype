@@ -1,27 +1,33 @@
 """Post controller: per-post listing, editing, and the approve/skip actions.
 
-Enforces the fine-grained rule that a participant acts only on their own post
-(admins may act on any). Approval pushes the publish to the worker.
+The approve/ack/skip logic lives in ``services.approval_service`` (shared with the
+Slack controller). This layer stays thin: it enforces access on reads/edits and
+translates the service's transport-agnostic ``ApprovalError`` into HTTP responses.
 """
 
 import uuid
-from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
-from app.core.engagement import is_assisted as _is_assisted
 from app.models.post import Post
 from app.models.user import User
 from app.repositories import audit_repo
 from app.repositories.campaign_repo import campaign_repo
 from app.repositories.post_repo import post_repo
-from app.repositories.social_account_repo import social_account_repo
 from app.schemas.common import Page, PageParams
 from app.schemas.post import PostOut, PostUpdate
-from app.services import campaign_service
-from app.workers import queue
+from app.services import approval_service
+from app.services.approval_service import (
+    ApprovalError,
+    CampaignNotFoundError,
+    LaunchRequiredError,
+    MixedCampaignError,
+    NotOwnerError,
+    NotOwnerOrAdminError,
+    PostNotFoundError,
+    ReconnectRequiredError,
+)
 
 
 def _is_admin(user: User) -> bool:
@@ -40,12 +46,30 @@ def _require_owner_or_admin(post: Post, user: User) -> None:
         raise HTTPException(403, "You can only act on your own posts.")
 
 
-def _require_owner(post: Post, user: User) -> None:
-    # Approval publishes under the owner's own LinkedIn token, and only the owner
-    # can re-consent a stale token, so no one (not even an admin) approves on
-    # another person's behalf. Admin override stays on skip/edit for cleanup.
-    if post.user_id != user.id:
-        raise HTTPException(403, "Only the post owner can approve this post.")
+def _to_http(exc: ApprovalError) -> HTTPException:
+    """Map a domain approval error to the HTTP response the API contract expects."""
+    if isinstance(exc, PostNotFoundError):
+        return HTTPException(404, "Post not found.")
+    if isinstance(exc, CampaignNotFoundError):
+        return HTTPException(404, "Campaign not found.")
+    if isinstance(exc, NotOwnerError):
+        return HTTPException(403, "Only the post owner can approve this post.")
+    if isinstance(exc, NotOwnerOrAdminError):
+        return HTTPException(403, "You can only act on your own posts.")
+    if isinstance(exc, LaunchRequiredError):
+        return HTTPException(409, "Launch the campaign before approving posts.")
+    if isinstance(exc, ReconnectRequiredError):
+        return HTTPException(
+            409,
+            detail={
+                "code": "linkedin_reconnect_required",
+                "post_id": str(exc.post_id),
+            },
+        )
+    if isinstance(exc, MixedCampaignError):
+        return HTTPException(400, "All posts must belong to the same campaign.")
+    # InvalidStateError and any future ApprovalError default to a 409 conflict.
+    return HTTPException(409, str(exc))
 
 
 async def list_posts(
@@ -89,118 +113,12 @@ async def update_post(
     return PostOut.model_validate(post)
 
 
-async def _apply_approve(db: AsyncSession, post: Post, actor: User) -> bool:
-    """Validate and mutate one post to `approved` in place. No commit or enqueue.
-
-    Returns whether this was a retry (a failed post being re-approved). Shared by
-    the single-post and batch approve paths so the guards and gates stay in one
-    place. The caller commits once and enqueues `publish_post` for each post.
-    """
-    _require_owner(post, actor)
-    # "failed" is allowed so the owner can retry after fixing the cause (e.g. a
-    # stale token that they have since reconnected). Retry reuses this whole path
-    # including the reconnect gate; publish_post is idempotent so a retry never
-    # double-posts.
-    is_retry = post.status == "failed"
-    if post.status not in ("pending", "scheduled", "failed"):
-        raise HTTPException(409, "Only pending or failed posts can be approved.")
-
-    # Launch is compulsory: nothing publishes until the campaign is launched.
-    # Before launch only edits to the plan are allowed. launched_at is set
-    # synchronously by the launch controller, so this gate has no race with the
-    # async transition to "publishing".
-    campaign = await campaign_repo.get(db, post.campaign_id)
-    if campaign is None:
-        raise HTTPException(404, "Campaign not found.")
-    if campaign.launched_at is None:
-        raise HTTPException(409, "Launch the campaign before approving posts.")
-
-    # Assisted-manual comments and likes are done by the person in their own
-    # browser, not through our token, so they skip the account and reconnect
-    # gate entirely. Posts and reshares (and every action once Community
-    # Management API is enabled) still publish under the owner's token.
-    if not _is_assisted(post.action):
-        # Pre-check the publishing account so we never approve against a dying
-        # token. The actor is always the owner here, so they can re-consent
-        # through the proactive reconnect-then-act gate.
-        account = await social_account_repo.get_by_user(db, post.user_id)
-        if account is None or account.requires_reconnect(
-            now=datetime.now(UTC),
-            buffer_hours=settings.LINKEDIN_RECONNECT_BUFFER_HOURS,
-        ):
-            raise HTTPException(
-                409,
-                detail={
-                    "code": "linkedin_reconnect_required",
-                    "post_id": str(post.id),
-                },
-            )
-
-        # Backfill the publishing account if the post was planned before the
-        # owner connected, so the worker can resolve a live token.
-        if post.social_account_id is None and account is not None:
-            post.social_account_id = account.id
-
-    post.status = "approved"
-    # Clear the prior failure so the card reads cleanly while it republishes.
-    post.error = None
-    # A retry reopens a campaign that already settled as completed, so the worker
-    # can run again and check_completion can re-settle it.
-    if is_retry and campaign.status == "completed":
-        await campaign_service.transition(db, campaign, "publishing", actor_id=actor.id)
-    await audit_repo.record(
-        db,
-        actor_id=actor.id,
-        action="post_retried" if is_retry else "post_approved",
-        campaign_id=post.campaign_id,
-        post_id=post.id,
-    )
-    return is_retry
-
-
-async def _apply_ack(db: AsyncSession, post: Post, actor: User) -> None:
-    """Validate and mutate one assisted post to `acknowledged`. No commit."""
-    _require_owner(post, actor)
-    if post.status != "action_required":
-        raise HTTPException(409, "Only posts awaiting your action can be marked done.")
-    post.status = "acknowledged"
-    post.acknowledged_at = datetime.now(UTC)
-    await audit_repo.record(
-        db,
-        actor_id=actor.id,
-        action="engagement_acknowledged",
-        campaign_id=post.campaign_id,
-        post_id=post.id,
-    )
-
-
-async def _apply_skip(db: AsyncSession, post: Post, actor: User) -> None:
-    """Validate and mutate one post to `skipped`. No commit."""
-    _require_owner_or_admin(post, actor)
-    # Assisted engagement asks (action_required) are skippable too: the person
-    # may decide not to comment or like, and that should settle the post. A
-    # failed post is skippable so the owner can drop it instead of retrying.
-    if post.status not in ("pending", "scheduled", "action_required", "failed"):
-        raise HTTPException(409, "Only pending or failed posts can be skipped.")
-    post.status = "skipped"
-    await audit_repo.record(
-        db,
-        actor_id=actor.id,
-        action="post_skipped",
-        campaign_id=post.campaign_id,
-        post_id=post.id,
-    )
-
-
 async def approve_post(db: AsyncSession, post_id: uuid.UUID, actor: User) -> PostOut:
-    post = await _load_or_404(db, post_id)
-    await _apply_approve(db, post, actor)
-    await db.commit()
-    await queue.enqueue_job("publish_post", str(post.id))
-    # No db.refresh: the session keeps attributes after commit
-    # (expire_on_commit=False), so we serialize the in-memory object and save a
-    # round trip to the database.
-    return PostOut.model_validate(post)
+    try:
+        posts = await approval_service.approve(db, [post_id], actor)
+    except ApprovalError as exc:
+        raise _to_http(exc) from exc
+    return PostOut.model_validate(posts[0])
 
 
 async def acknowledge_post(
@@ -211,19 +129,19 @@ async def acknowledge_post(
     Only the person who was asked can acknowledge it: an admin cannot mark
     someone else's engagement done because only that person can actually act.
     """
-    post = await _load_or_404(db, post_id)
-    await _apply_ack(db, post, actor)
-    await campaign_service.check_completion(db, post.campaign_id)
-    await db.commit()
-    return PostOut.model_validate(post)
+    try:
+        posts = await approval_service.acknowledge(db, [post_id], actor)
+    except ApprovalError as exc:
+        raise _to_http(exc) from exc
+    return PostOut.model_validate(posts[0])
 
 
 async def skip_post(db: AsyncSession, post_id: uuid.UUID, actor: User) -> PostOut:
-    post = await _load_or_404(db, post_id)
-    await _apply_skip(db, post, actor)
-    await campaign_service.check_completion(db, post.campaign_id)
-    await db.commit()
-    return PostOut.model_validate(post)
+    try:
+        posts = await approval_service.skip(db, [post_id], actor)
+    except ApprovalError as exc:
+        raise _to_http(exc) from exc
+    return PostOut.model_validate(posts[0])
 
 
 async def batch_action(
@@ -238,38 +156,10 @@ async def batch_action(
     Backs the combined assisted like+comment card: one click settles both rows.
     Every post must belong to the same campaign; the same per-row guards and
     state checks as the single-post handlers apply, so a bad row rejects the
-    whole batch before anything commits. Generalizes to the "approve all my
-    actions" flow once the Community Management API is enabled.
+    whole batch before anything commits.
     """
-    # Dedupe while preserving order so a repeated id does not double-process.
-    seen: set[uuid.UUID] = set()
-    ordered_ids: list[uuid.UUID] = []
-    for pid in post_ids:
-        if pid not in seen:
-            seen.add(pid)
-            ordered_ids.append(pid)
-
-    posts = [await _load_or_404(db, pid) for pid in ordered_ids]
-    campaign_ids = {p.campaign_id for p in posts}
-    if len(campaign_ids) != 1:
-        raise HTTPException(400, "All posts must belong to the same campaign.")
-    campaign_id = campaign_ids.pop()
-
-    for post in posts:
-        if op == "approve":
-            await _apply_approve(db, post, actor)
-        elif op == "ack":
-            await _apply_ack(db, post, actor)
-        else:
-            await _apply_skip(db, post, actor)
-
-    # Approve leaves posts non-terminal (the worker settles them later), matching
-    # the single-post handler; ack and skip can complete the campaign now.
-    if op in ("ack", "skip"):
-        await campaign_service.check_completion(db, campaign_id)
-    await db.commit()
-
-    if op == "approve":
-        for post in posts:
-            await queue.enqueue_job("publish_post", str(post.id))
+    try:
+        posts = await approval_service.batch(db, op=op, post_ids=post_ids, actor=actor)
+    except ApprovalError as exc:
+        raise _to_http(exc) from exc
     return [PostOut.model_validate(p) for p in posts]

@@ -80,6 +80,25 @@ class Settings(BaseSettings):
     MAX_ACTIONS_PER_ACCOUNT_PER_DAY: int = 10
     MIN_SECONDS_BETWEEN_ACCOUNT_ACTIONS: int = 90
 
+    # Local testing override for the per-campaign notification stagger. When set,
+    # launch uses this window instead of the campaign's own stagger_min/max, so a
+    # developer can get the Slack DM (and scheduled posts) almost immediately
+    # instead of waiting out the 10-30 minute production default. Leave unset in
+    # production; the per-campaign values are the real control there.
+    STAGGER_OVERRIDE_MIN_SECONDS: int | None = None
+    STAGGER_OVERRIDE_MAX_SECONDS: int | None = None
+
+    # A person's assisted engagements (comment, like, self-comment) become
+    # actionable at different times as their targets publish. This short window
+    # lets the worker coalesce them into one Slack "mark all done" card instead of
+    # firing a separate DM per ask. Also the job-id dedupe window for that bundle.
+    ENGAGEMENT_BUNDLE_DELAY_SECONDS: int = 30
+
+    # How long after launch to re-DM anyone who still has posts awaiting their
+    # approval or an assisted engagement they have not marked done. Defaults to a
+    # few hours; drop it for a quick local check of the reminder path.
+    REMINDER_DELAY_SECONDS: int = 6 * 60 * 60
+
     # Uploaded campaign video cap. Short clips only; bytes still live in the DB
     # asset store for now, so keep this modest until object storage lands.
     MAX_VIDEO_BYTES: int = 64 * 1024 * 1024

@@ -82,8 +82,9 @@ people who actually built the thing, without the spam.
 - **Genuine variety.** The model drafts distinct variations and varied
   interaction text, tuned to each participant's team voice (persona), not one
   post reworded six ways. People still approve, edit, or skip their own.
-- **Real approval.** Each person approves, edits, or skips their own post in one
-  tap from the web app (Slack coming next). Nothing publishes without them.
+- **Real approval.** Each person approves, edits, or skips their own actions in one
+  tap, from the web app or a bundled Slack DM (one Approve all / Skip all for
+  everything they owe a campaign). Nothing publishes without them.
 - **Official API only.** No scraping and no credential capture. Posts and
   reshares run on each member's own LinkedIn consent (`w_member_social`).
   Comments and likes need `w_member_social_feed` (LinkedIn's Community
@@ -160,7 +161,11 @@ For enabling comments and likes (LinkedIn's vetted Community Management API), se
 
 ## Project status
 
-Development is essentially complete; Slack approval is the remaining workflow.
+Development is essentially complete. The full Slack loop is live: bundled
+approve/skip at launch, a bundled mark-all-done for the assisted like and comment
+step, a deferred reminder for anyone still outstanding, and a reconnect DM on a
+stale token. The one remaining nice-to-have is a recurring scheduler so reminders
+fire on a cadence rather than once per launch.
 
 - [x] Scaffold, full data model, migrations, seed, reference API, themed UI shell, landing page
 - [x] Google auth, onboarding, users, teams and personas
@@ -170,7 +175,10 @@ Development is essentially complete; Slack approval is the remaining workflow.
 - [x] Self-comment ("link in the comments") as a tracked, assisted step
 - [x] Assisted-manual comments and likes (until Community Management API access lands)
 - [x] Leaderboard
-- [ ] Slack approval
+- [x] Slack bundled approval (one Approve all / Skip all DM per participant)
+- [x] Slack assisted engagement bundle (one Mark all done DM for like and comment)
+- [x] Slack reminders (deferred re-nudge) and reconnect prompts
+- [ ] Recurring reminder scheduler (cron cadence)
 
 ## License
 

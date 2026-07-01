@@ -6,6 +6,7 @@ window and human-paced approvals sequence correctly without a rigid phase lock.
 """
 
 import random
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -16,6 +17,7 @@ from app.config import settings
 from app.core.engagement import is_assisted
 from app.core.safe_fetch import fetch_image, media_kind
 from app.db.session import async_session_factory
+from app.integrations.slack import build_slack_client
 from app.logger import get_logger
 from app.models.campaign import Campaign
 from app.models.post import Post
@@ -31,8 +33,9 @@ from app.repositories import audit_repo
 from app.repositories.campaign_repo import campaign_repo
 from app.repositories.post_repo import post_repo
 from app.repositories.social_account_repo import social_account_repo
+from app.repositories.user_repo import user_repo
 from app.schemas.post import Assignment
-from app.services import campaign_service
+from app.services import campaign_service, slack_service
 from app.services.engagement_service import engagement_ask
 from app.services.generation_service import GenerationError
 from app.storage import db_asset_store
@@ -84,24 +87,123 @@ async def launch_campaign(ctx: dict, campaign_id: str) -> None:
         await db.commit()
 
     redis = ctx["redis"]
+    # One bundled ask per participant, not per post: group the campaign's pending
+    # posts by owner so each person gets a single Slack card for all their actions.
+    # Stagger each participant's notification across the campaign window.
+    seen: set[uuid.UUID] = set()
+    participant_ids: list[uuid.UUID] = []
     for post in posts:
         if post.status != "pending":
             continue
-        delay = random.uniform(
-            campaign.stagger_min_seconds, campaign.stagger_max_seconds
+        if post.user_id not in seen:
+            seen.add(post.user_id)
+            participant_ids.append(post.user_id)
+    # A local override collapses the stagger for fast testing; production leaves it
+    # unset and uses the campaign's own window.
+    stagger_min = (
+        settings.STAGGER_OVERRIDE_MIN_SECONDS
+        if settings.STAGGER_OVERRIDE_MIN_SECONDS is not None
+        else campaign.stagger_min_seconds
+    )
+    stagger_max = (
+        settings.STAGGER_OVERRIDE_MAX_SECONDS
+        if settings.STAGGER_OVERRIDE_MAX_SECONDS is not None
+        else campaign.stagger_max_seconds
+    )
+    stagger_max = max(stagger_min, stagger_max)
+    for user_id in participant_ids:
+        delay = random.uniform(stagger_min, stagger_max)
+        await redis.enqueue_job(
+            "notify_participant", campaign_id, str(user_id), _defer_by=delay
         )
-        await redis.enqueue_job("notify_person", str(post.id), _defer_by=delay)
-    await redis.enqueue_job("send_reminders", campaign_id)
+    # Deferred nudge: anyone still not approved or not done by then gets re-DMed.
+    await redis.enqueue_job(
+        "send_reminders",
+        campaign_id,
+        _defer_by=settings.REMINDER_DELAY_SECONDS,
+    )
 
 
-async def notify_person(ctx: dict, post_id: str) -> None:
-    """Mark the post scheduled and (later) DM the person on Slack to approve."""
+async def notify_participant(ctx: dict, campaign_id: str, user_id: str) -> None:
+    """Schedule a participant's pending posts and DM them the bundled ask.
+
+    All of one person's pending actions in the campaign move to ``scheduled``
+    together, then (if Slack is configured) we send a single card listing every
+    action with Approve all / Skip all. The scheduling happens with or without
+    Slack, so an unconfigured deployment only drops the DM, never the campaign:
+    people still approve from the portal.
+    """
+    cid = uuid.UUID(campaign_id)
+    uid = uuid.UUID(user_id)
     async with async_session_factory() as db:
-        post = await post_repo.get(db, uuid.UUID(post_id))
-        if post is None or post.status != "pending":
-            return
-        post.status = "scheduled"
+        posts = await post_repo.list_for_campaign_user(
+            db, cid, uid, statuses=("pending",)
+        )
+        for post in posts:
+            post.status = "scheduled"
         await db.commit()
+
+        if not posts:
+            return
+        client = build_slack_client()
+        if client is None:
+            return
+        campaign = await campaign_repo.get(db, cid)
+        user = await user_repo.get(db, uid)
+        if campaign is None or user is None:
+            await client.aclose()
+            return
+        try:
+            await slack_service.notify_participant(db, client, campaign, user, posts)
+        finally:
+            await client.aclose()
+
+
+async def notify_engagements(ctx: dict, campaign_id: str, user_id: str) -> None:
+    """DM a participant their assisted engagements (comment/like) to mark done.
+
+    Fired (deduped, briefly deferred) when an assisted ask goes action_required,
+    so a person gets one "mark all done" card for everything currently awaiting
+    their hand rather than a DM per ask. A no-op without Slack or if nothing is
+    outstanding (the portal carries the same asks either way).
+    """
+    cid = uuid.UUID(campaign_id)
+    uid = uuid.UUID(user_id)
+    client = build_slack_client()
+    if client is None:
+        return
+    try:
+        async with async_session_factory() as db:
+            posts = await post_repo.list_for_campaign_user(
+                db, cid, uid, statuses=("action_required",)
+            )
+            if not posts:
+                return
+            campaign = await campaign_repo.get(db, cid)
+            user = await user_repo.get(db, uid)
+            if campaign is None or user is None:
+                return
+            await slack_service.notify_engagements(db, client, campaign, user, posts)
+    finally:
+        await client.aclose()
+
+
+async def handle_slack_interaction(ctx: dict, payload: dict[str, Any]) -> None:
+    """Run a signature-verified Slack interaction off the request path.
+
+    The endpoint verifies the signature and acks 200 immediately, then hands the
+    parsed payload here so the approval work and the outbound card update happen
+    in a job, not inside the request (Slack's own 3s ack window is never at risk).
+    A no-op without Slack.
+    """
+    client = build_slack_client()
+    if client is None:
+        return
+    try:
+        async with async_session_factory() as db:
+            await slack_service.handle_interaction(db, client, payload)
+    finally:
+        await client.aclose()
 
 
 async def _resolve_target_urn(db: AsyncSession, post: Post) -> str | None:
@@ -246,6 +348,25 @@ def _nonretryable(exc: Exception) -> bool:
     return isinstance(exc, LinkedInAPIError) and 400 <= exc.status_code < 500
 
 
+_DUPLICATE_URN_RE = re.compile(r"urn:li:(?:share|ugcPost|activity):\d+")
+
+
+def _duplicate_urn(exc: Exception) -> str | None:
+    """Extract the existing URN from a LinkedIn 422 duplicate-content rejection.
+
+    When identical content was already posted (common after a reset and relaunch),
+    LinkedIn returns 422 "Content is a duplicate of urn:li:share:..." and names the
+    live URN. We adopt that URN so the post is recognized as published rather than
+    failed. Returns None when the error is not a duplicate we can recover from.
+    """
+    if not (isinstance(exc, LinkedInAPIError) and exc.status_code == 422):
+        return None
+    if "duplicate" not in str(exc).lower():
+        return None
+    match = _DUPLICATE_URN_RE.search(str(exc))
+    return match.group(0) if match else None
+
+
 def _publish_failure_message(action: str, exc: Exception, *, rolled_back: bool) -> str:
     """Actionable failure text for the post row, so the UI shows why and the
     owner can fix it and retry."""
@@ -332,6 +453,17 @@ async def publish_post(ctx: dict, post_id: str) -> None:
             )
             await campaign_service.check_completion(db, post.campaign_id)
             await db.commit()
+            # Nudge the person on Slack to comment/like and mark it done. A
+            # person's asks go action_required at different times (like, then
+            # comment, then a self-comment once its post is live), so we dedupe on
+            # a per-person job id and defer briefly to bundle them into one card.
+            await ctx["redis"].enqueue_job(
+                "notify_engagements",
+                str(post.campaign_id),
+                str(post.user_id),
+                _job_id=f"engage:{post.campaign_id}:{post.user_id}",
+                _defer_by=settings.ENGAGEMENT_BUNDLE_DELAY_SECONDS,
+            )
             return
 
         if post.social_account_id is None:
@@ -444,6 +576,31 @@ async def publish_post(ctx: dict, post_id: str) -> None:
             post = await post_repo.get(db, pid)
             if post is None:
                 return
+            # Duplicate content: LinkedIn refused because this exact post/reshare
+            # is already live, and it names that URN. Adopt it so a reset-and-
+            # relaunch settles as published instead of failing something that in
+            # fact posted. Only for content actions, and only when the body itself
+            # was the duplicate (external_id still None): a 422 duplicate on the
+            # first-comment phase must not overwrite the already-live body URN.
+            dup_urn = _duplicate_urn(exc)
+            if (
+                dup_urn is not None
+                and post.external_id is None
+                and post.action in ("post", "repost_comment")
+            ):
+                post.external_id = dup_urn
+                post.status = "published"
+                post.published_at = datetime.now(UTC)
+                post.error = None
+                await audit_repo.record(
+                    db,
+                    action="post_published",
+                    campaign_id=post.campaign_id,
+                    post_id=post.id,
+                )
+                await campaign_service.check_completion(db, post.campaign_id)
+                await db.commit()
+                return
             # A 4xx is the client's fault and never succeeds on retry (a 403 scope
             # gap, a 422 bad reshare parent, etc.), so fail it now instead of
             # silently retrying, which leaves the card stuck "processing" for the
@@ -483,10 +640,67 @@ async def publish_post(ctx: dict, post_id: str) -> None:
 
 
 async def send_reminders(ctx: dict, campaign_id: str) -> None:
-    """Stub until the Slack phase: nudges people with still-pending posts."""
-    log.info("job.send_reminders.stub", campaign_id=campaign_id)
+    """Re-DM participants who still have something outstanding in a campaign.
+
+    Two buckets per person: ``scheduled`` posts still awaiting their approval get
+    the approve/skip bundle again, and ``action_required`` assisted asks get the
+    mark-all-done bundle again. People who are fully settled get nothing. A no-op
+    without Slack, since the portal always carries the same outstanding work.
+    """
+    cid = uuid.UUID(campaign_id)
+    client = build_slack_client()
+    if client is None:
+        return
+    try:
+        async with async_session_factory() as db:
+            campaign = await campaign_repo.get(db, cid)
+            if campaign is None:
+                return
+            posts = await post_repo.list_for_campaign(db, cid)
+            # Bucket outstanding posts per person so each gets at most one DM of
+            # each kind, never a card for work that is already settled.
+            awaiting_approval: dict[uuid.UUID, list[Post]] = {}
+            awaiting_engagement: dict[uuid.UUID, list[Post]] = {}
+            for post in posts:
+                if post.status == "scheduled":
+                    awaiting_approval.setdefault(post.user_id, []).append(post)
+                elif post.status == "action_required":
+                    awaiting_engagement.setdefault(post.user_id, []).append(post)
+
+            user_ids = set(awaiting_approval) | set(awaiting_engagement)
+            for uid in user_ids:
+                user = await user_repo.get(db, uid)
+                if user is None:
+                    continue
+                if uid in awaiting_approval:
+                    await slack_service.notify_participant(
+                        db, client, campaign, user, awaiting_approval[uid]
+                    )
+                if uid in awaiting_engagement:
+                    await slack_service.notify_engagements(
+                        db, client, campaign, user, awaiting_engagement[uid]
+                    )
+    finally:
+        await client.aclose()
 
 
 async def request_reconnect(ctx: dict, account_id: str) -> None:
-    """Stub until the Slack phase: ask the member to reconnect a stale account."""
-    log.info("job.request_reconnect.stub", account_id=account_id)
+    """DM the owner of a stale LinkedIn account a link to reconnect it.
+
+    Enqueued when publishing hits a 401 and the account is marked stale, so the
+    person is nudged out of band instead of only seeing failures in the portal.
+    """
+    client = build_slack_client()
+    if client is None:
+        return
+    try:
+        async with async_session_factory() as db:
+            account = await social_account_repo.get(db, uuid.UUID(account_id))
+            if account is None:
+                return
+            user = await user_repo.get(db, account.user_id)
+            if user is None:
+                return
+            await slack_service.notify_reconnect(db, client, user)
+    finally:
+        await client.aclose()

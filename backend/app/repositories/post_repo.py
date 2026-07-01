@@ -55,6 +55,28 @@ class PostRepository(BaseRepository[Post]):
         )
         return list((await db.execute(stmt)).scalars().all())
 
+    async def list_for_campaign_user(
+        self,
+        db: AsyncSession,
+        campaign_id: uuid.UUID,
+        user_id: uuid.UUID,
+        *,
+        statuses: tuple[str, ...] | None = None,
+    ) -> list[Post]:
+        """A user's posts in one campaign, optionally filtered to given statuses.
+
+        Backs the Slack bundled ask: gather every action a person owns in a
+        campaign so one card (and one approve or skip) can settle them together.
+        """
+        stmt = select(Post).where(
+            Post.campaign_id == campaign_id,
+            Post.user_id == user_id,
+        )
+        if statuses is not None:
+            stmt = stmt.where(Post.status.in_(statuses))
+        stmt = stmt.order_by(Post.created_at, Post.id)
+        return list((await db.execute(stmt)).scalars().all())
+
     async def list_pending_for_campaign_user(
         self, db: AsyncSession, campaign_id: uuid.UUID, user_id: uuid.UUID
     ) -> list[Post]:

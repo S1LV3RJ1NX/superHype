@@ -88,12 +88,16 @@ actions you want.
    ```
    https://app.yourcompany.com/v1/slack/interactions
    ```
-   For local testing, expose your backend with a tunnel (for example ngrok) and use that URL. Slack must reach this within 3 seconds, so the handler acknowledges fast and does the real work in an ARQ job.
+   For local testing, expose your backend with a tunnel (for example ngrok or `cloudflared`) and use that public HTTPS URL: Slack cannot reach `localhost`. The endpoint must respond within 3 seconds, so `POST /v1/slack/interactions` verifies the signature, acks with an empty 200, and updates the original message out of band via the interaction's `response_url`.
 4. **Event Subscriptions** (only if you subscribe to events): enable and set the Request URL to `https://app.yourcompany.com/v1/slack/events`.
-5. **Install to Workspace**. Copy the **Bot User OAuth Token** into `SLACK_BOT_TOKEN` and the **Signing Secret** (from Basic Information) into `SLACK_SIGNING_SECRET`. Verify the signing secret on every inbound Slack request.
-6. User mapping: the first time the system needs to DM a person, it resolves their Slack id from their company email via `users.lookupByEmail` (this needs `users:read.email`) and stores it in `slack_identities`.
+5. **Install to Workspace**. Copy the **Bot User OAuth Token** into `SLACK_BOT_TOKEN` and the **Signing Secret** (from Basic Information) into `SLACK_SIGNING_SECRET`. Every inbound Slack request is verified against the signing secret (HMAC-SHA256 over the raw body, with a five-minute replay window); a bad or missing signature returns 401.
+6. User mapping: the first time the system needs to DM a person, it resolves their Slack id from their company email via `users.lookupByEmail` (this needs `users:read.email`) and caches it, plus the DM channel, in `slack_identities`.
 
-Slack is optional. The web app exposes the same approve, edit, and skip actions, so the system runs without it; Slack just makes approvals one tap.
+How it works: when a campaign launches, each participant gets one DM bundling every action they own in that campaign (self post, reshare, comment, like, self-comment) behind **Approve all** / **Skip all**. A click runs the same approval path the web portal uses, then replaces the card with the result. If a self post or reshare needs a fresh LinkedIn token, the card answers with a reconnect link instead of publishing.
+
+Approving does not do the manual like or comment for someone, so as those become actionable (once the target post is live) a second DM bundles them behind **Mark all done** / **Skip all**, each with a deep link to the post and the suggested comment text. A deferred reminder re-DMs anyone still not approved or not done (`REMINDER_DELAY_SECONDS`, a few hours by default; drop it for a quick local check), and a stale token triggers a reconnect DM. For local testing, `ENGAGEMENT_BUNDLE_DELAY_SECONDS` sets how long the worker waits to coalesce a person's like and comment into one card.
+
+Slack is optional and strictly additive. The web app exposes the same approve, edit, and skip actions, so the system runs unchanged without it; when Slack is unconfigured, launch still schedules everyone's posts and only the DM is skipped.
 
 ---
 
@@ -169,7 +173,7 @@ The `backend/Makefile` wraps the common commands (`make server`, `make worker`,
 2. Have teammates sign in once with their company Google accounts. First sign-in runs a short onboarding (agree to participate, pick a team); each person is created as a viewer, though members of certain teams (for example Founders, GTM) are auto-granted the editor role.
 3. As an admin, open **Users** and raise anyone else who will run campaigns to editor (search, then change their role). Roles are cumulative: viewer, editor, admin.
 4. Every participant opens **Connectors** and connects their LinkedIn (the one-time consent). After that they only reconnect if a token goes stale between campaigns.
-5. An editor creates a campaign, picks the participants (people or whole teams), generates drafts, and an admin (or the editor, for their own campaign) launches it. Each person then approves, edits, or skips their own post in the web app (Slack approval is the next phase).
+5. An editor creates a campaign, picks the participants (people or whole teams), generates drafts, and an admin (or the editor, for their own campaign) launches it. Each person then approves, edits, or skips their own actions, either in the web app or from the bundled Slack DM (Approve all / Skip all) if Slack is configured. When the like and comment step comes due, they do it on LinkedIn and mark it done from the portal card or the Slack Mark all done DM.
 
 ---
 

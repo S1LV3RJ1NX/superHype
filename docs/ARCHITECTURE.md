@@ -439,16 +439,41 @@ SDK, and never a hardcoded model name.
 - `generate_drafts`: builds the plan with LLM fill; on `GenerationError` it moves
   the campaign to `failed` and audits it.
 - `launch_campaign`: transitions the campaign to `publishing` and fans out one
-  `notify_person` job per pending post, each deferred by a random delay drawn from
-  `[stagger_min_seconds, stagger_max_seconds]`. It then enqueues `send_reminders`.
-- `notify_person`: marks the post `scheduled` (and, in the Slack phase, will DM the
-  person to approve).
+  `notify_participant` job per participant (grouping the campaign's pending posts by
+  owner, so each person gets one bundled ask, not one per post), each deferred by a
+  random delay drawn from `[stagger_min_seconds, stagger_max_seconds]`. It then
+  enqueues `send_reminders`, deferred by `REMINDER_DELAY_SECONDS`.
+- `notify_participant`: marks all of one person's pending posts `scheduled`
+  together and, when Slack is configured, DMs them a single Block Kit card listing
+  every action with Approve all / Skip all. Slack is additive: the scheduling
+  happens with or without it, so the portal flow is unchanged when Slack is off.
+- `notify_engagements`: DMs a person the bundled assisted engagements (comment,
+  like, self-comment) that are awaiting their hand, each with a deep link and the
+  suggested text, under one Mark all done / Skip all control. Enqueued from
+  `publish_post` when an assisted ask goes `action_required`, deduped on a
+  per-person job id (`engage:{campaign}:{user}`) and deferred by
+  `ENGAGEMENT_BUNDLE_DELAY_SECONDS` so a person's like and comment collapse into a
+  single card rather than a DM per ask.
 - `publish_post`: the core publish job (detailed below).
-- `send_reminders` and `request_reconnect`: stubs until the Slack phase.
+- `send_reminders`: re-DMs anyone still outstanding, bucketed per person: the
+  approve/skip bundle for posts still `scheduled`, the mark-all-done bundle for
+  assisted asks still `action_required`. Fully-settled people get nothing. A no-op
+  without Slack (the portal always carries the same work).
+- `request_reconnect`: DMs the owner of a stale LinkedIn account a reconnect link.
+  Enqueued when publishing hits a 401 and the account is marked `stale`.
+- `handle_slack_interaction`: runs a signature-verified Slack button click
+  (approval work plus the card update via `response_url`) off the request path,
+  so the endpoint acks inside Slack's 3s window and does no external call inline.
 
-Approvals: when a person approves their own post (via `post_controller`), an
-individual `publish_post` job is enqueued. Launch is compulsory, so approval is
-rejected (409) until the campaign is launched (`campaigns.launched_at` is set).
+Approvals: the approve, acknowledge, and skip logic lives in
+`[services/approval_service.py](backend/app/services/approval_service.py)`, shared
+by the HTTP `post_controller` and the Slack controller so the ownership guards,
+state checks, and side effects (audit rows, completion, publish enqueue) live in
+one place. It raises transport-agnostic `ApprovalError` subclasses; each caller
+maps them to an HTTP response or a Slack card. When a person approves their own
+post, an individual `publish_post` job is enqueued. Launch is compulsory, so
+approval is rejected (409) until the campaign is launched
+(`campaigns.launched_at` is set).
 Before launch only plan edits are allowed; nothing reaches the publish queue. The
 portal hides the per-post Approve and Skip buttons until launch and surfaces a
 hint, and renders the `publishing` status as "Active".
@@ -572,7 +597,65 @@ image upload, `delete_post`, and `refresh`.
   optional date window. There is no member-post metrics API on LinkedIn, so the
   impressions term stays 0 and is kept only as a seam for a future analytics source.
 
-## 11. Known gaps and future work
+## 11. Slack bundled approval
+
+Slack removes the friction of approving from the portal. Each participant is DMed
+in bundles, one click per stage:
+
+- At launch, one card bundles every action they own in the campaign (self post,
+  reshare, comment, like, self-comment) behind a single Approve all / Skip all.
+- As their assisted asks (comment, like, self-comment) become actionable once
+  their targets publish, a second card bundles them behind Mark all done / Skip
+  all, each ask carrying a deep link to the post and the suggested comment text.
+  This card is what closes the loop on the manual engagement step: approving does
+  not do the like or comment, so the person still acts on LinkedIn and marks it
+  done, all from one message.
+- A deferred reminder (`send_reminders`) re-DMs anyone still not approved or not
+  done, and a stale token triggers a reconnect DM (`request_reconnect`).
+
+This is the near-term answer to "one approval for everything a person has to do",
+and it generalizes: the bundles become a full "approve all my actions" the day the
+Community Management API lands and comments and likes stop being assisted-manual.
+
+Pieces:
+
+- `[integrations/slack.py](backend/app/integrations/slack.py)`: a thin async Web API
+  client (`users.lookupByEmail`, `conversations.open`, `chat.postMessage`, and a
+  reply to an interaction's `response_url`) plus `verify_signature`, an
+  HMAC-SHA256 check over the raw request body with a five-minute replay window. The
+  client is transport-injectable so tests stub every call. `build_slack_client`
+  returns `None` when no bot token is set, which is how every caller degrades
+  gracefully.
+- `[models/slack_identity.py](backend/app/models/slack_identity.py)` +
+  `[repositories/slack_identity_repo.py](backend/app/repositories/slack_identity_repo.py)`:
+  cache the app-user to Slack-user mapping (and DM channel), keyed by `user_id` and
+  looked up by `slack_user_id` on an inbound click. Resolved once via email lookup,
+  then reused.
+- `[services/slack_service.py](backend/app/services/slack_service.py)`:
+  `notify_participant` builds and sends the launch-time approve/skip card;
+  `notify_engagements` builds the assisted mark-all-done card (each ask with its
+  deep link and suggested text); `notify_reconnect` DMs a stale-token owner a
+  reconnect link. `handle_interaction` maps the clicker back to an app user,
+  gathers their actionable posts in the campaign, and runs them through
+  `approval_service.batch` (the same path the portal uses), then replaces the card
+  with the outcome. One dispatch table maps each button (`campaign_approve_all`,
+  `campaign_skip_all`, `engagement_ack_all`, `engagement_skip_all`) to an approval
+  op and the post states it gathers. A reconnect-required approval answers with a
+  portal reconnect link instead of settling anything.
+- `[views/slack.py](backend/app/views/slack.py)` +
+  `[controllers/slack_controller.py](backend/app/controllers/slack_controller.py)`:
+  `POST /v1/slack/interactions` reads the raw body, verifies the signature (401 on
+  failure, 503 when Slack is unconfigured), parses the form-encoded `payload`, and
+  enqueues the `handle_slack_interaction` job, then acks with an empty 200. The
+  approval work and the outbound card update run in the worker, never in the
+  request, so Slack's 3s ack window is never at risk and no external call happens
+  in the request path.
+
+Because approvals route through the shared `approval_service`, every guard (owner
+only, launch required, valid state, reconnect gate, one campaign per batch) applies
+identically whether the click came from the browser or from Slack.
+
+## 12. Known gaps and future work
 
 - Reconnect-then-act (implemented for the portal). The portal pre-checks expiry at
   approve time and bundles re-consent with the action via a `resume_post_id` bound
@@ -588,8 +671,11 @@ image upload, `delete_post`, and `refresh`.
   converts to UTC, and sends UTC; the worker schedules with ARQ `_defer_until`. Do
   not pin a single fixed offset like IST, since cross-timezone teams and DST shifts
   make fixed offsets wrong.
-- Slack approval. `send_reminders` and `request_reconnect` are stubs; the Slack
-  Block Kit approve-from-Slack flow is the next phase.
+- Slack is fully wired (see section 11): bundled approve/skip at launch, the
+  assisted mark-all-done bundle, deferred `send_reminders`, and `request_reconnect`
+  on a stale token. Missing only a recurring scheduler, so `send_reminders` fires
+  once per launch (deferred by `REMINDER_DELAY_SECONDS`) rather than on a cadence;
+  a cron/`cron_jobs` sweep would let it nudge repeatedly.
 - Expiry-sweep cron. A daily sweep over `social_accounts.expires_at` to refresh or
   prompt reconnect is deferred (the supporting index already exists).
 - Insights. `provider.insights` is not implemented in v1.

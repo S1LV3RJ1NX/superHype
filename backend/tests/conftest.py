@@ -24,6 +24,7 @@ from app.models.asset import Asset
 from app.models.audit_log import AuditLog
 from app.models.campaign import Campaign
 from app.models.post import Post
+from app.models.slack_identity import SlackIdentity
 from app.models.social_account import SocialAccount
 from app.models.team import Team
 from app.models.user import User
@@ -37,6 +38,7 @@ _SQLITE_TABLES = [
     Post.__table__,
     AuditLog.__table__,
     SocialAccount.__table__,
+    SlackIdentity.__table__,
 ]
 
 
@@ -52,6 +54,10 @@ def _pin_account_guardrails(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(settings, "MIN_SECONDS_BETWEEN_ACCOUNT_ACTIONS", 90)
     monkeypatch.setattr(settings, "MAX_ACTIONS_PER_ACCOUNT_PER_DAY", 10)
+    # Clear any local stagger override so launch tests see the campaign's own
+    # window; the override test sets these explicitly.
+    monkeypatch.setattr(settings, "STAGGER_OVERRIDE_MIN_SECONDS", None)
+    monkeypatch.setattr(settings, "STAGGER_OVERRIDE_MAX_SECONDS", None)
     # Default to the self-serve world (assisted-manual comments and likes), so
     # the suite is deterministic regardless of a developer's local .env. Tests
     # that exercise the automated comment/like path opt in with the cm_enabled

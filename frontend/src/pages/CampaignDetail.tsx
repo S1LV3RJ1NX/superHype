@@ -513,8 +513,17 @@ export function CampaignDetail() {
                 disabled={busy}
                 className="inline-flex items-center gap-2 rounded-md bg-clay px-4 py-2 text-sm font-medium text-paper hover:bg-clay-press disabled:opacity-50"
               >
-                <Rocket className="h-4 w-4" />
-                Launch
+                {busy ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Launching...
+                  </>
+                ) : (
+                  <>
+                    <Rocket className="h-4 w-4" />
+                    Launch
+                  </>
+                )}
               </button>
             )}
             {/* Launched, but the worker has not flipped the status to publishing

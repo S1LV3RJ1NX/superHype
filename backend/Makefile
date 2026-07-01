@@ -37,3 +37,6 @@ lint: ## Lint (ruff) and type-check (mypy)
 
 format: ## Format with ruff
 	uv run ruff format .
+
+tunnel: ## Create a tunnel to the backend
+	cloudflared tunnel --url http://localhost:8000
