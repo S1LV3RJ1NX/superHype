@@ -332,3 +332,136 @@ async def test_missing_post_404(client, as_role):
     async with as_role("editor"):
         resp = await client.post(f"/v1/posts/{uuid.uuid4()}/approve")
     assert resp.status_code == 404
+
+
+async def _amplify_like_comment(client, user):
+    """An amplify campaign whose participant has an assisted like + comment pair."""
+    created = await client.post("/v1/campaigns", json=_amplify_payload())
+    cid = created.json()["id"]
+    await client.post(
+        f"/v1/campaigns/{cid}/plan",
+        json={"participant_ids": [str(user.id)]},
+    )
+    items = (await client.get(f"/v1/campaigns/{cid}/posts")).json()["items"]
+    like = next(p for p in items if p["action"] == "like")
+    comment = next(p for p in items if p["action"] == "comment")
+    return cid, like, comment
+
+
+async def test_postout_exposes_assisted_flag(client, as_role, monkeypatch):
+    # The combined card relies on this flag to know which rows to merge. With the
+    # Community Management API off (default) comment/like are assisted; the
+    # non-assisted repost is not. Flipping the flag makes every action automated.
+    from app.config import settings
+
+    async with as_role("editor") as user:
+        created = await client.post("/v1/campaigns", json=_amplify_payload())
+        cid = created.json()["id"]
+        await client.post(
+            f"/v1/campaigns/{cid}/plan",
+            json={"participant_ids": [str(user.id)]},
+        )
+        items = (await client.get(f"/v1/campaigns/{cid}/posts")).json()["items"]
+        assisted = {p["action"]: p["assisted"] for p in items}
+        assert assisted["comment"] is True
+        assert assisted["like"] is True
+        assert assisted["repost_comment"] is False
+
+        monkeypatch.setattr(settings, "COMMUNITY_MANAGEMENT_ENABLED", True)
+        items = (await client.get(f"/v1/campaigns/{cid}/posts")).json()["items"]
+        assert all(p["assisted"] is False for p in items)
+
+
+async def test_batch_approve_enqueues_both(client, as_role, enqueued):
+    # Assisted like + comment approve together, need no LinkedIn token, and each
+    # enqueues its own publish_post so the worker raises both asks.
+    async with as_role("editor") as user:
+        cid, like, comment = await _amplify_like_comment(client, user)
+        await _launch(client, cid)
+        resp = await client.post(
+            "/v1/posts/batch",
+            json={"op": "approve", "post_ids": [comment["id"], like["id"]]},
+        )
+    assert resp.status_code == 200
+    assert {p["status"] for p in resp.json()} == {"approved"}
+    published = {
+        args[0] for name, args, _ in enqueued if name == "publish_post" and args
+    }
+    assert like["id"] in published
+    assert comment["id"] in published
+
+
+async def test_batch_ack_settles_both_and_completes(client, as_role, db):
+    from app.models.campaign import Campaign
+    from app.models.post import Post
+
+    async with as_role("editor") as user:
+        cid, like, comment = await _amplify_like_comment(client, user)
+        await _launch(client, cid)
+        items = (await client.get(f"/v1/campaigns/{cid}/posts")).json()["items"]
+        repost = next(p for p in items if p["action"] == "repost_comment")
+        # Skip the non-assisted repost so the only remaining rows are the pair.
+        await client.post(f"/v1/posts/{repost['id']}/skip")
+        # Stand in for the worker: put the campaign in publishing and raise both
+        # assisted asks, then acknowledge them together.
+        cobj = await db.get(Campaign, uuid.UUID(cid))
+        cobj.status = "publishing"
+        for pid in (like["id"], comment["id"]):
+            pobj = await db.get(Post, uuid.UUID(pid))
+            pobj.status = "action_required"
+        await db.commit()
+
+        resp = await client.post(
+            "/v1/posts/batch",
+            json={"op": "ack", "post_ids": [comment["id"], like["id"]]},
+        )
+        assert resp.status_code == 200
+        assert {p["status"] for p in resp.json()} == {"acknowledged"}
+        camp = (await client.get(f"/v1/campaigns/{cid}")).json()
+    assert camp["status"] == "completed"
+
+
+async def test_batch_skip_skips_both(client, as_role):
+    async with as_role("editor") as user:
+        cid, like, comment = await _amplify_like_comment(client, user)
+        resp = await client.post(
+            "/v1/posts/batch",
+            json={"op": "skip", "post_ids": [comment["id"], like["id"]]},
+        )
+    assert resp.status_code == 200
+    assert {p["status"] for p in resp.json()} == {"skipped"}
+
+
+async def test_batch_non_owner_forbidden(client, as_role):
+    async with as_role("editor") as owner:
+        _, like, comment = await _amplify_like_comment(client, owner)
+    async with as_role("editor", email="intruder@test.local"):
+        resp = await client.post(
+            "/v1/posts/batch",
+            json={"op": "ack", "post_ids": [comment["id"], like["id"]]},
+        )
+    assert resp.status_code == 403
+
+
+async def test_batch_rejects_mixed_campaigns(client, as_role):
+    async with as_role("editor") as user:
+        _, like_a, _ = await _amplify_like_comment(client, user)
+        _, _, comment_b = await _amplify_like_comment(client, user)
+        resp = await client.post(
+            "/v1/posts/batch",
+            json={"op": "skip", "post_ids": [like_a["id"], comment_b["id"]]},
+        )
+    assert resp.status_code == 400
+
+
+async def test_batch_ack_wrong_state_rejects_whole_batch(client, as_role):
+    # Both rows are pending (never raised as asks), so ack is invalid and the
+    # atomic batch rejects rather than partially settling.
+    async with as_role("editor") as user:
+        cid, like, comment = await _amplify_like_comment(client, user)
+        await _launch(client, cid)
+        resp = await client.post(
+            "/v1/posts/batch",
+            json={"op": "ack", "post_ids": [comment["id"], like["id"]]},
+        )
+    assert resp.status_code == 409

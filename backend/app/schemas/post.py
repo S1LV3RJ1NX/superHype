@@ -2,8 +2,11 @@
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+from app.core.engagement import is_assisted
 
 
 class PostOut(BaseModel):
@@ -37,6 +40,16 @@ class PostOut(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def assisted(self) -> bool:
+        """True when this action is a guided human step, not an API call.
+
+        Lets the client merge the assisted like+comment pair into one card
+        without knowing the COMMUNITY_MANAGEMENT_ENABLED flag itself.
+        """
+        return is_assisted(self.action)
+
 
 class PostUpdate(BaseModel):
     body: str | None = None
@@ -66,3 +79,18 @@ class PlanRequest(BaseModel):
     based on the campaign type (see campaign_service.expand_participants)."""
 
     participant_ids: list[uuid.UUID]
+
+
+class BatchAction(BaseModel):
+    """Settle several posts in one atomic request.
+
+    Backs the combined assisted like+comment card: one Approve, Mark done, or
+    Skip acts on both rows together. Kept general (a list of ids plus an op) so
+    the same endpoint serves the wider "approve all my actions" flow once the
+    Community Management API is enabled.
+    """
+
+    op: Literal["approve", "ack", "skip"]
+    # Capped so one request cannot settle an unbounded set; 100 matches the list
+    # pagination limit and comfortably covers a person's actions in a campaign.
+    post_ids: list[uuid.UUID] = Field(min_length=1, max_length=100)

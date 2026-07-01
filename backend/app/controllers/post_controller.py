@@ -11,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.engagement import is_assisted as _is_assisted
 from app.models.post import Post
 from app.models.user import User
 from app.repositories import audit_repo
@@ -20,7 +21,6 @@ from app.repositories.social_account_repo import social_account_repo
 from app.schemas.common import Page, PageParams
 from app.schemas.post import PostOut, PostUpdate
 from app.services import campaign_service
-from app.services.engagement_service import is_assisted as _is_assisted
 from app.workers import queue
 
 
@@ -89,8 +89,13 @@ async def update_post(
     return PostOut.model_validate(post)
 
 
-async def approve_post(db: AsyncSession, post_id: uuid.UUID, actor: User) -> PostOut:
-    post = await _load_or_404(db, post_id)
+async def _apply_approve(db: AsyncSession, post: Post, actor: User) -> bool:
+    """Validate and mutate one post to `approved` in place. No commit or enqueue.
+
+    Returns whether this was a retry (a failed post being re-approved). Shared by
+    the single-post and batch approve paths so the guards and gates stay in one
+    place. The caller commits once and enqueues `publish_post` for each post.
+    """
     _require_owner(post, actor)
     # "failed" is allowed so the owner can retry after fixing the cause (e.g. a
     # stale token that they have since reconnected). Retry reuses this whole path
@@ -150,6 +155,46 @@ async def approve_post(db: AsyncSession, post_id: uuid.UUID, actor: User) -> Pos
         campaign_id=post.campaign_id,
         post_id=post.id,
     )
+    return is_retry
+
+
+async def _apply_ack(db: AsyncSession, post: Post, actor: User) -> None:
+    """Validate and mutate one assisted post to `acknowledged`. No commit."""
+    _require_owner(post, actor)
+    if post.status != "action_required":
+        raise HTTPException(409, "Only posts awaiting your action can be marked done.")
+    post.status = "acknowledged"
+    post.acknowledged_at = datetime.now(UTC)
+    await audit_repo.record(
+        db,
+        actor_id=actor.id,
+        action="engagement_acknowledged",
+        campaign_id=post.campaign_id,
+        post_id=post.id,
+    )
+
+
+async def _apply_skip(db: AsyncSession, post: Post, actor: User) -> None:
+    """Validate and mutate one post to `skipped`. No commit."""
+    _require_owner_or_admin(post, actor)
+    # Assisted engagement asks (action_required) are skippable too: the person
+    # may decide not to comment or like, and that should settle the post. A
+    # failed post is skippable so the owner can drop it instead of retrying.
+    if post.status not in ("pending", "scheduled", "action_required", "failed"):
+        raise HTTPException(409, "Only pending or failed posts can be skipped.")
+    post.status = "skipped"
+    await audit_repo.record(
+        db,
+        actor_id=actor.id,
+        action="post_skipped",
+        campaign_id=post.campaign_id,
+        post_id=post.id,
+    )
+
+
+async def approve_post(db: AsyncSession, post_id: uuid.UUID, actor: User) -> PostOut:
+    post = await _load_or_404(db, post_id)
+    await _apply_approve(db, post, actor)
     await db.commit()
     await queue.enqueue_job("publish_post", str(post.id))
     # No db.refresh: the session keeps attributes after commit
@@ -167,18 +212,7 @@ async def acknowledge_post(
     someone else's engagement done because only that person can actually act.
     """
     post = await _load_or_404(db, post_id)
-    _require_owner(post, actor)
-    if post.status != "action_required":
-        raise HTTPException(409, "Only posts awaiting your action can be marked done.")
-    post.status = "acknowledged"
-    post.acknowledged_at = datetime.now(UTC)
-    await audit_repo.record(
-        db,
-        actor_id=actor.id,
-        action="engagement_acknowledged",
-        campaign_id=post.campaign_id,
-        post_id=post.id,
-    )
+    await _apply_ack(db, post, actor)
     await campaign_service.check_completion(db, post.campaign_id)
     await db.commit()
     return PostOut.model_validate(post)
@@ -186,20 +220,56 @@ async def acknowledge_post(
 
 async def skip_post(db: AsyncSession, post_id: uuid.UUID, actor: User) -> PostOut:
     post = await _load_or_404(db, post_id)
-    _require_owner_or_admin(post, actor)
-    # Assisted engagement asks (action_required) are skippable too: the person
-    # may decide not to comment or like, and that should settle the post. A
-    # failed post is skippable so the owner can drop it instead of retrying.
-    if post.status not in ("pending", "scheduled", "action_required", "failed"):
-        raise HTTPException(409, "Only pending or failed posts can be skipped.")
-    post.status = "skipped"
-    await audit_repo.record(
-        db,
-        actor_id=actor.id,
-        action="post_skipped",
-        campaign_id=post.campaign_id,
-        post_id=post.id,
-    )
+    await _apply_skip(db, post, actor)
     await campaign_service.check_completion(db, post.campaign_id)
     await db.commit()
     return PostOut.model_validate(post)
+
+
+async def batch_action(
+    db: AsyncSession,
+    *,
+    op: str,
+    post_ids: list[uuid.UUID],
+    actor: User,
+) -> list[PostOut]:
+    """Settle several posts (approve, ack, or skip) in one atomic request.
+
+    Backs the combined assisted like+comment card: one click settles both rows.
+    Every post must belong to the same campaign; the same per-row guards and
+    state checks as the single-post handlers apply, so a bad row rejects the
+    whole batch before anything commits. Generalizes to the "approve all my
+    actions" flow once the Community Management API is enabled.
+    """
+    # Dedupe while preserving order so a repeated id does not double-process.
+    seen: set[uuid.UUID] = set()
+    ordered_ids: list[uuid.UUID] = []
+    for pid in post_ids:
+        if pid not in seen:
+            seen.add(pid)
+            ordered_ids.append(pid)
+
+    posts = [await _load_or_404(db, pid) for pid in ordered_ids]
+    campaign_ids = {p.campaign_id for p in posts}
+    if len(campaign_ids) != 1:
+        raise HTTPException(400, "All posts must belong to the same campaign.")
+    campaign_id = campaign_ids.pop()
+
+    for post in posts:
+        if op == "approve":
+            await _apply_approve(db, post, actor)
+        elif op == "ack":
+            await _apply_ack(db, post, actor)
+        else:
+            await _apply_skip(db, post, actor)
+
+    # Approve leaves posts non-terminal (the worker settles them later), matching
+    # the single-post handler; ack and skip can complete the campaign now.
+    if op in ("ack", "skip"):
+        await campaign_service.check_completion(db, campaign_id)
+    await db.commit()
+
+    if op == "approve":
+        for post in posts:
+            await queue.enqueue_job("publish_post", str(post.id))
+    return [PostOut.model_validate(p) for p in posts]

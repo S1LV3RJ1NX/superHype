@@ -13,6 +13,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.engagement import is_assisted
 from app.core.safe_fetch import fetch_image, media_kind
 from app.db.session import async_session_factory
 from app.logger import get_logger
@@ -32,7 +33,7 @@ from app.repositories.post_repo import post_repo
 from app.repositories.social_account_repo import social_account_repo
 from app.schemas.post import Assignment
 from app.services import campaign_service
-from app.services.engagement_service import engagement_ask, is_assisted
+from app.services.engagement_service import engagement_ask
 from app.services.generation_service import GenerationError
 from app.storage import db_asset_store
 

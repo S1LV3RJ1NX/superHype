@@ -55,6 +55,11 @@ fully automated. To automate comments and likes through the API instead, set
 `COMMUNITY_MANAGEMENT_ENABLED=true` (only works once your app holds
 `w_member_social_feed`).
 
+The assisted like and comment on the same post are merged into one "like +
+comment" card: one Approve, then one **Mark done** opens the post, likes it, and
+pastes the comment in a single pass (both settle together via the batch endpoint).
+When `COMMUNITY_MANAGEMENT_ENABLED=true` the two run as separate automated cards.
+
 ### A.1 Amplify an existing post (the cleanest full test)
 
 1. Connect your LinkedIn on the Connectors page if you have not.
@@ -69,8 +74,9 @@ fully automated. To automate comments and likes through the API instead, set
    draft the comment and reshare text; edit any card if you want.
 5. Save, then Launch.
 6. Approve each card. Watch the worker publish the reshare; the like and comment
-   turn into assisted "mark done" steps once the target is live. Refresh LinkedIn
-   to see the interactions and the campaign progress bar fill.
+   are merged into one assisted "like + comment" card that turns into a single
+   "mark done" step once the target is live. Refresh LinkedIn to see the
+   interactions and the campaign progress bar fill.
 
 Exercises: URL parsing, participant expansion, LLM generation, per-post approval,
 worker publish, the assisted-manual flow, the stagger, guardrails, and audit log.
@@ -82,8 +88,9 @@ worker publish, the assisted-manual flow, the stagger, guardrails, and audit log
    example "For more details: <link>").
 2. Step 2 is the participant picker: select yourself (or your team). Each
    participant is planned a post of their own (in their team voice), and, with more
-   than one participant, a like and a comment on every other participant's post. A
-   self-comment, if set, is planned as its own tracked card per authored post.
+   than one participant, a like and a comment on every other participant's post
+   (merged into one assisted "like + comment" card per target). A self-comment, if
+   set, is planned as its own tracked card per authored post.
 3. Press Generate to draft each variation, then Save and Launch. Approve your post
    card.
 4. The worker publishes your post. The self-comment waits until that post is live,
@@ -183,16 +190,16 @@ coordinated push with per-person consent.
 5. Each participant approves their own cards (in the portal for now; Slack approval
    comes later). Confirm a person can only act on their own posts.
 6. Watch the reshares publish and the likes and comments settle (automated if you
-   hold `w_member_social_feed`, otherwise assisted "mark done") over the stagger
-   window, not all at once.
+   hold `w_member_social_feed`, otherwise a single assisted "like + comment" card
+   per target) over the stagger window, not all at once.
 
 ### B.3 Run a distribute campaign
 
 1. An editor creates a Distribute campaign from one seed idea, optionally with a
    Link, an image, and a self-comment.
 2. In the participant picker, select the authors (or their teams). Each is planned
-   a post of their own, plus a like and comment on everyone else's post, plus a
-   self-comment on their own post if the campaign has one.
+   a post of their own, plus a merged like + comment on everyone else's post, plus
+   a self-comment on their own post if the campaign has one.
 3. Generate, let authors edit and approve their own posts, then watch each person's
    post publish and the cross-interactions and self-comments follow once each post
    is live.

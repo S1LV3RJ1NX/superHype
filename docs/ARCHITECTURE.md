@@ -469,6 +469,19 @@ payload is factored into `services/engagement_service.py` so a Slack card can
 reuse it later. Posts and reshares stay fully automated; flip the flag to true to
 dispatch comments, likes, and self-comments through the API with no code change.
 
+Combined like + comment: because an assisted like and comment on the same target
+both just send the person to LinkedIn, the portal merges them into one card so
+they open the post once, like it, paste the comment, and settle both together.
+`PostOut.assisted` (computed from `is_assisted`) tells the client which rows are
+assisted; the frontend groups the like + comment for one actor + target (and only
+when both share a status) and drives one Approve, Mark done, or Skip through
+`POST /v1/posts/batch` (`{ op, post_ids }`), which settles every listed post in a
+single atomic transaction. The two rows stay distinct in the database so the
+leaderboard still scores like and comment separately. The endpoint takes an
+arbitrary id list on purpose: once the Community Management API is enabled, the
+same batch approve can fire a person's full action set at once with no backend
+change.
+
 ### publish_post
 
 `publish_post` is idempotent, dependency-aware, guardrailed, and supports the

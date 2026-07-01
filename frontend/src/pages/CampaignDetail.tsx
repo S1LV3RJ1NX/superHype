@@ -46,9 +46,14 @@ interface Post {
   body: string | null;
   status: string;
   target_post_id: string | null;
+  target_external_id: string | null;
   engagement_url: string | null;
   acknowledged_at: string | null;
   error: string | null;
+  // True when the action is a guided human step (comment/like/self_comment while
+  // the Community Management API is off), so the client can merge the assisted
+  // like+comment pair into one card.
+  assisted: boolean;
 }
 
 interface Readiness {
@@ -235,6 +240,30 @@ export function CampaignDetail() {
     }
   };
 
+  // Batch action for the combined like+comment card: approve, ack, or skip both
+  // rows in one atomic request. The rows are assisted (own-browser) actions, so
+  // approve never hits the reconnect gate; a plain error surface is enough.
+  const runBatch = async (
+    ids: string[],
+    op: "approve" | "ack" | "skip",
+  ) => {
+    setError(null);
+    ids.forEach(startActing);
+    try {
+      const updated = await apiFetch<Post[]>(`/v1/posts/batch`, {
+        method: "POST",
+        body: JSON.stringify({ op, post_ids: ids }),
+      });
+      updated.forEach(applyPost);
+      void refreshCampaign();
+      void refreshReadiness();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Action failed");
+    } finally {
+      ids.forEach(stopActing);
+    }
+  };
+
   const refresh = async () => {
     setRefreshing(true);
     await load();
@@ -315,6 +344,106 @@ export function CampaignDetail() {
       : own * 1000;
   };
   const orderedPosts = [...posts].sort((a, b) => orderKey(a) - orderKey(b));
+
+  // Merge the assisted like+comment pair for one actor+target into a single
+  // card so the person opens LinkedIn once, likes and pastes the comment, and
+  // settles both together. Only assisted rows (Community Management API off) are
+  // merged, and only when both rows share the same status, so a transient
+  // divergence during publishing falls back to rendering each row on its own.
+  const isAssistedEngagement = (p: Post) =>
+    p.assisted && (p.action === "like" || p.action === "comment");
+  const groupKeyOf = (p: Post) =>
+    `${p.user_id}|${p.target_post_id ?? p.target_external_id ?? "seed"}|${p.status}`;
+  const groups = new Map<string, Post[]>();
+  for (const p of orderedPosts) {
+    if (!isAssistedEngagement(p)) continue;
+    const key = groupKeyOf(p);
+    const members = groups.get(key);
+    if (members) members.push(p);
+    else groups.set(key, [p]);
+  }
+
+  const meId = user?.id;
+  const isAdmin = user?.role === "admin";
+  const launched = !!campaign.launched_at;
+
+  const renderSingle = (post: Post) => (
+    <PostCard
+      key={post.id}
+      post={post}
+      roster={roster}
+      meId={meId}
+      isAdmin={isAdmin}
+      launched={launched}
+      busy={actingIds.has(post.id)}
+      onEdit={(body) =>
+        runPost(post.id, () =>
+          apiFetch<Post>(`/v1/posts/${post.id}`, {
+            method: "PATCH",
+            body: JSON.stringify({ body }),
+          }),
+        )
+      }
+      onApprove={() => approvePost(post.id)}
+      onAck={() =>
+        runPost(post.id, () =>
+          apiFetch<Post>(`/v1/posts/${post.id}/ack`, { method: "POST" }),
+        )
+      }
+      onSkip={() =>
+        runPost(post.id, () =>
+          apiFetch<Post>(`/v1/posts/${post.id}/skip`, { method: "POST" }),
+        )
+      }
+    />
+  );
+
+  const renderGroup = (comment: Post, like: Post) => {
+    const ids = [comment.id, like.id];
+    return (
+      <CombinedEngagementCard
+        key={`grp-${comment.id}-${like.id}`}
+        comment={comment}
+        like={like}
+        roster={roster}
+        meId={meId}
+        isAdmin={isAdmin}
+        launched={launched}
+        busy={ids.some((i) => actingIds.has(i))}
+        onEditComment={(body) =>
+          runPost(comment.id, () =>
+            apiFetch<Post>(`/v1/posts/${comment.id}`, {
+              method: "PATCH",
+              body: JSON.stringify({ body }),
+            }),
+          )
+        }
+        onApprove={() => runBatch(ids, "approve")}
+        onAck={() => runBatch(ids, "ack")}
+        onSkip={() => runBatch(ids, "skip")}
+      />
+    );
+  };
+
+  // Emit combined cards at the position of their first row; everything else on
+  // its own. A row already folded into a combined card is not re-rendered.
+  const renderItems: ReactNode[] = [];
+  const consumed = new Set<string>();
+  for (const post of orderedPosts) {
+    if (consumed.has(post.id)) continue;
+    if (isAssistedEngagement(post)) {
+      const members = groups.get(groupKeyOf(post)) ?? [];
+      const comment = members.find((m) => m.action === "comment");
+      const like = members.find((m) => m.action === "like");
+      if (members.length === 2 && comment && like) {
+        consumed.add(comment.id);
+        consumed.add(like.id);
+        renderItems.push(renderGroup(comment, like));
+        continue;
+      }
+    }
+    renderItems.push(renderSingle(post));
+  }
 
   return (
     <AppShell>
@@ -502,40 +631,7 @@ export function CampaignDetail() {
                     : "No posts yet."}
                 </p>
               )}
-              {orderedPosts.map((post) => (
-                <PostCard
-                  key={post.id}
-                  post={post}
-                  roster={roster}
-                  meId={user?.id}
-                  isAdmin={user?.role === "admin"}
-                  launched={!!campaign.launched_at}
-                  busy={actingIds.has(post.id)}
-                  onEdit={(body) =>
-                    runPost(post.id, () =>
-                      apiFetch<Post>(`/v1/posts/${post.id}`, {
-                        method: "PATCH",
-                        body: JSON.stringify({ body }),
-                      }),
-                    )
-                  }
-                  onApprove={() => approvePost(post.id)}
-                  onAck={() =>
-                    runPost(post.id, () =>
-                      apiFetch<Post>(`/v1/posts/${post.id}/ack`, {
-                        method: "POST",
-                      }),
-                    )
-                  }
-                  onSkip={() =>
-                    runPost(post.id, () =>
-                      apiFetch<Post>(`/v1/posts/${post.id}/skip`, {
-                        method: "POST",
-                      }),
-                    )
-                  }
-                />
-              ))}
+              {renderItems}
             </div>
           </div>
         </div>
@@ -704,6 +800,260 @@ function PostCard({
       {/* A failed post can be retried by its owner (e.g. after reconnecting a
           stale LinkedIn token); owner or admin can skip it to settle it. */}
       {canAct && post.status === "failed" && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {isOwner && (
+            <button
+              onClick={() => {
+                setActing("approve");
+                onApprove();
+              }}
+              disabled={busy}
+              className="inline-flex items-center gap-1.5 rounded-md bg-clay px-3 py-1.5 text-xs font-medium text-paper hover:bg-clay-press disabled:opacity-50"
+            >
+              {busy && acting === "approve" ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3.5 w-3.5" />
+              )}
+              Retry
+            </button>
+          )}
+          <button
+            onClick={() => {
+              setActing("skip");
+              onSkip();
+            }}
+            disabled={busy}
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
+          >
+            {busy && acting === "skip" ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <SkipForward className="h-3.5 w-3.5" />
+            )}
+            Skip
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// The assisted like and comment on one target, merged into a single card: open
+// the post once, like it, paste the comment, and settle both rows together. The
+// two rows share a status (the parent only groups matching-status rows), so this
+// reads the comment row for text/state and acts on both via the batch endpoint.
+function CombinedEngagementCard({
+  comment,
+  like,
+  roster,
+  meId,
+  isAdmin,
+  launched,
+  busy,
+  onEditComment,
+  onApprove,
+  onAck,
+  onSkip,
+}: {
+  comment: Post;
+  like: Post;
+  roster: RosterUser[];
+  meId?: string;
+  isAdmin: boolean;
+  launched: boolean;
+  busy: boolean;
+  onEditComment: (body: string) => void;
+  onApprove: () => void;
+  onAck: () => void;
+  onSkip: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(comment.body ?? "");
+  const [acting, setActing] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!busy) setActing(null);
+  }, [busy]);
+
+  const status = comment.status;
+  const owner = roster.find((u) => u.id === comment.user_id);
+  const isOwner = comment.user_id === meId;
+  const canAct = isAdmin || isOwner;
+  const pending = status === "pending" || status === "scheduled";
+  const actionRequired = status === "action_required";
+  const engagementUrl = comment.engagement_url ?? like.engagement_url;
+
+  const copyText = async () => {
+    if (!comment.body) return;
+    try {
+      await navigator.clipboard.writeText(comment.body);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard can be blocked; the text is still visible above to copy by hand.
+    }
+  };
+
+  return (
+    <div className="rounded-lg border border-border bg-surface p-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="rounded bg-sand px-2 py-0.5 text-xs font-medium text-muted-ink">
+            like + comment
+          </span>
+          <span className="text-sm text-ink">
+            {owner?.name ?? owner?.email ?? "Unknown"}
+          </span>
+        </div>
+        <StatusBadge status={status} />
+      </div>
+
+      <div className="mt-2">
+        {editing ? (
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={3}
+            className="input"
+          />
+        ) : (
+          <p className="whitespace-pre-wrap text-sm text-ink">
+            {comment.body || <span className="text-muted-ink">No text yet.</span>}
+          </p>
+        )}
+      </div>
+
+      {status === "approved" && (
+        <div className="mt-3 flex items-center gap-2 rounded-md border border-ok/20 bg-ok/5 px-3 py-2 text-xs text-muted-ink">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-ok" />
+          Processing your approval...
+        </div>
+      )}
+
+      {actionRequired && (
+        <div className="mt-3 rounded-md border border-pending/30 bg-pending/5 p-3">
+          <p className="text-xs text-muted-ink">
+            Open the post, like it and add this comment, then mark both done.
+          </p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            {engagementUrl && (
+              <a
+                href={engagementUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 rounded-md bg-clay px-3 py-1.5 text-xs font-medium text-paper hover:bg-clay-press"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                Open on LinkedIn
+              </a>
+            )}
+            {comment.body && (
+              <button
+                onClick={copyText}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-ink hover:bg-sand"
+              >
+                <Copy className="h-3.5 w-3.5" />
+                {copied ? "Copied" : "Copy comment"}
+              </button>
+            )}
+            {isOwner && (
+              <button
+                onClick={() => {
+                  setActing("ack");
+                  onAck();
+                }}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-md bg-ok/10 px-3 py-1.5 text-xs font-medium text-ok hover:bg-ok/20 disabled:opacity-50"
+              >
+                {busy && acting === "ack" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
+                Mark done
+              </button>
+            )}
+            {canAct && (
+              <button
+                onClick={() => {
+                  setActing("skip");
+                  onSkip();
+                }}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
+              >
+                {busy && acting === "skip" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <SkipForward className="h-3.5 w-3.5" />
+                )}
+                Skip
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {(comment.error || like.error) && (
+        <p className="mt-2 text-xs text-fail">{comment.error || like.error}</p>
+      )}
+
+      {canAct && pending && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {editing ? (
+            <>
+              <SmallButton
+                label="Save"
+                onClick={() => {
+                  onEditComment(draft);
+                  setEditing(false);
+                }}
+                disabled={busy}
+              />
+              <SmallButton label="Cancel" onClick={() => setEditing(false)} />
+            </>
+          ) : (
+            <SmallButton label="Edit" onClick={() => setEditing(true)} />
+          )}
+          {launched && (
+            <>
+              <button
+                onClick={() => {
+                  setActing("approve");
+                  onApprove();
+                }}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-md bg-ok/10 px-3 py-1.5 text-xs font-medium text-ok hover:bg-ok/20 disabled:opacity-50"
+              >
+                {busy && acting === "approve" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <Check className="h-3.5 w-3.5" />
+                )}
+                Approve
+              </button>
+              <button
+                onClick={() => {
+                  setActing("skip");
+                  onSkip();
+                }}
+                disabled={busy}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
+              >
+                {busy && acting === "skip" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <SkipForward className="h-3.5 w-3.5" />
+                )}
+                Skip
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {canAct && status === "failed" && (
         <div className="mt-3 flex flex-wrap gap-2">
           {isOwner && (
             <button

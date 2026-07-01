@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.deps import ROLE_HIERARCHY
+from app.core.engagement import is_assisted
 from app.core.linkedin_urn import resolve_post_urn
 from app.models.campaign import Campaign
 from app.models.user import User
@@ -30,7 +31,6 @@ from app.schemas.common import Page, PageParams
 from app.schemas.post import PlanRequest, PostOut
 from app.services import campaign_service
 from app.services.campaign_service import TransitionError
-from app.services.engagement_service import is_assisted
 from app.workers import queue
 
 
