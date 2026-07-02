@@ -42,6 +42,22 @@ async def test_create_amplify_requires_url_and_text(client, as_role):
     assert no_text.status_code == 422
 
 
+async def test_create_amplify_rejects_unresolvable_url(client, as_role):
+    # A non-URL like "test" passes the presence check but resolves to no activity
+    # URN; without this guard every interaction later fails with no target.
+    async with as_role("viewer"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json={
+                "title": "A",
+                "type": "amplify",
+                "seed_url": "test",
+                "seed_content": "x",
+            },
+        )
+    assert resp.status_code == 422
+
+
 async def test_create_distribute_requires_seed_text(client, as_role):
     async with as_role("editor"):
         resp = await client.post(

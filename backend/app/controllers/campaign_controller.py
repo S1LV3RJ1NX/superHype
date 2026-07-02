@@ -75,6 +75,24 @@ def _require_source_material(
         )
 
 
+def _require_resolvable_amplify_target(
+    campaign_type: str, *, seed_url: str | None, seed_urn: str | None
+) -> None:
+    """Amplify acts on one live post, so its URL must parse to an activity URN.
+
+    ``_require_source_material`` only checks the URL is present; a string like
+    "test" passes that but resolves to no URN, leaving every like, comment, and
+    reshare with a null target that fails at launch. Reject it up front so a
+    doomed campaign is never created.
+    """
+    if campaign_type == "amplify" and (seed_url and seed_url.strip()) and not seed_urn:
+        raise HTTPException(
+            422,
+            "That post URL could not be read as a LinkedIn post. Paste the full "
+            "post URL (the one with an activity id) or a lnkd.in share link.",
+        )
+
+
 async def _load_or_404(db: AsyncSession, campaign_id: uuid.UUID) -> Campaign:
     campaign = await campaign_repo.get(db, campaign_id)
     if campaign is None:
@@ -108,13 +126,17 @@ async def create_campaign(
     _require_source_material(
         body.type, seed_url=body.seed_url, seed_content=body.seed_content
     )
+    seed_urn = await resolve_post_urn(body.seed_url)
+    _require_resolvable_amplify_target(
+        body.type, seed_url=body.seed_url, seed_urn=seed_urn
+    )
     campaign = await campaign_repo.create(
         db,
         title=body.title,
         type=body.type,
         raw_brief=body.raw_brief,
         seed_url=body.seed_url,
-        seed_urn=await resolve_post_urn(body.seed_url),
+        seed_urn=seed_urn,
         seed_content=body.seed_content,
         tone=body.tone,
         length=body.length,
@@ -208,6 +230,11 @@ async def update_campaign(
         campaign.type,
         seed_url=updates.get("seed_url", campaign.seed_url),
         seed_content=updates.get("seed_content", campaign.seed_content),
+    )
+    _require_resolvable_amplify_target(
+        campaign.type,
+        seed_url=updates.get("seed_url", campaign.seed_url),
+        seed_urn=updates.get("seed_urn", campaign.seed_urn),
     )
     if updates:
         await campaign_repo.update(db, campaign, **updates)

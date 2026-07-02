@@ -89,6 +89,18 @@ function seedUrlLooksLikeActivity(raw: string): boolean {
   return /\d{6,}/.test(url);
 }
 
+// Cheap client-side mirror of the backend guard: catch obvious non-URLs (like
+// "test") before submit. It is intentionally permissive, since the backend is
+// authoritative and is the only side that can expand an lnkd.in short link, so
+// those are accepted optimistically here rather than flagged.
+function seedUrlLooksResolvable(raw: string): boolean {
+  const url = raw.trim();
+  if (!url) return true;
+  if (/(^|\/\/)([a-z0-9-]+\.)*lnkd\.in\//i.test(url)) return true;
+  if (/(activity|share|ugcpost)[:-]\d{6,}/i.test(url)) return true;
+  return /\d{17,}/.test(url);
+}
+
 export function CampaignFields({
   value,
   onChange,
@@ -157,6 +169,17 @@ export function CampaignFields({
                 </span>
               </div>
             )}
+            {value.seedUrl.trim() !== "" &&
+              !seedUrlLooksResolvable(value.seedUrl) && (
+                <div className="mt-2 flex items-start gap-2 rounded-md border border-pending/30 bg-pending/5 px-3 py-2 text-xs font-medium text-pending">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    This does not look like a LinkedIn post URL. Paste the full
+                    post link (the one with an activity id) or a lnkd.in share
+                    link.
+                  </span>
+                </div>
+              )}
           </Field>
         )}
         <Field
