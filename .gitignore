@@ -20,4 +20,5 @@ dist/
 .DS_Store
 *.log
 the-why/
-tfy-deploy/
+tfy-deploy/*
+!tfy-deploy/Makefile
