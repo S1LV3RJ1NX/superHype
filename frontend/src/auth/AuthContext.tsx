@@ -18,6 +18,7 @@ export interface AppUser {
   is_active: boolean;
   team_id: string | null;
   team_name: string | null;
+  linkedin_status: string | null;
 }
 
 interface AuthContextValue {

@@ -25,6 +25,7 @@ export function CampaignWizard({
   initialFields,
   roster: initialRoster,
   initialParticipantIds,
+  initialActionsByParticipant,
   lockedPosts,
 }: {
   mode: "create" | "edit";
@@ -36,6 +37,7 @@ export function CampaignWizard({
   initialFields?: CampaignFieldsValue;
   roster?: RosterUser[];
   initialParticipantIds?: string[];
+  initialActionsByParticipant?: Record<string, string[]>;
   lockedPosts?: LockedPost[];
 }) {
   const isEdit = mode === "edit";
@@ -114,7 +116,24 @@ export function CampaignWizard({
     }
   };
 
-  const savePlan = async (participantIds: string[], generate: boolean) => {
+  // Changing the seed material or tone/length means the existing drafts no
+  // longer match, so ask the backend to rewrite everyone. Otherwise re-planning
+  // is incremental: it keeps existing participants' text (and edits) and only
+  // generates the newly added people.
+  const generationFieldsChanged = (): boolean => {
+    if (!isEdit || !initialFields) return false;
+    return (
+      fields.seedContent.trim() !== initialFields.seedContent.trim() ||
+      fields.length !== initialFields.length ||
+      fields.tones.join(",") !== initialFields.tones.join(",")
+    );
+  };
+
+  const savePlan = async (
+    participantIds: string[],
+    generate: boolean,
+    actionsByParticipant?: Record<string, string[]>,
+  ) => {
     if (!created) return;
     setError(null);
     setSubmitting(true);
@@ -123,7 +142,13 @@ export function CampaignWizard({
         `/v1/campaigns/${created.id}/${generate ? "generate" : "plan"}`,
         {
           method: "POST",
-          body: JSON.stringify({ participant_ids: participantIds }),
+          body: JSON.stringify({
+            participant_ids: participantIds,
+            regenerate: generationFieldsChanged(),
+            ...(actionsByParticipant
+              ? { actions_by_participant: actionsByParticipant }
+              : {}),
+          }),
         },
       );
       onDone(created.id);
@@ -177,7 +202,9 @@ export function CampaignWizard({
       ) : (
         <div className="mt-3">
           <p className="mb-3 text-sm text-muted-ink">
-            Pick who takes part. Actions are automatic based on the campaign type.
+            {type === "distribute"
+              ? "Pick who takes part. Actions are automatic based on the campaign type."
+              : "Pick who takes part and choose each person's actions (like, comment, repost)."}
           </p>
 
           <PlanBuilder
@@ -187,11 +214,17 @@ export function CampaignWizard({
             busy={submitting}
             onPlan={savePlan}
             initialParticipantIds={initialParticipantIds}
+            initialActionsByParticipant={initialActionsByParticipant}
             lockedPosts={lockedPosts}
           />
 
           {error && <p className="mt-3 text-sm text-fail">{error}</p>}
 
+          {/* One finish action: the Generate button inside PlanBuilder persists
+              the current selection and creates the plan. Back edits the details;
+              Cancel leaves (the campaign is already saved as a draft). This
+              avoids a separate "Done" that would silently drop a just-added
+              person's selection. */}
           <div className="mt-4 flex justify-between">
             <button
               onClick={() => setStep(1)}
@@ -202,11 +235,11 @@ export function CampaignWizard({
               Back
             </button>
             <button
-              onClick={() => created && onDone(created.id)}
-              disabled={submitting || !created}
+              onClick={onCancel}
+              disabled={submitting}
               className="rounded-md border border-border px-4 py-2 text-sm text-muted-ink hover:bg-sand disabled:opacity-50"
             >
-              {isEdit ? "Done" : "Save as draft"}
+              Cancel
             </button>
           </div>
         </div>

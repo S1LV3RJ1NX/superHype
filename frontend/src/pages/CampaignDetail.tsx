@@ -7,7 +7,9 @@ import {
   ExternalLink,
   Link2,
   Loader2,
+  Pause,
   Pencil,
+  Play,
   RefreshCw,
   Rocket,
   RotateCcw,
@@ -89,17 +91,24 @@ export function CampaignDetail() {
       return next;
     });
 
-  // Production only deletes un-launched campaigns; local/dev can delete any
-  // status (test cleanup), matching the backend gate.
+  // Admins can delete a campaign in any state (cleanup, pilot resets). A plain
+  // creator is limited to un-launched statuses in production (launched campaigns
+  // have in-flight posts); local/dev lets the creator delete any status too.
+  // Mirrors the backend gate in campaign_controller.delete_campaign.
   const canDelete =
     !!campaign &&
-    (import.meta.env.DEV || DELETABLE_STATUSES.includes(campaign.status)) &&
-    (user?.role === "admin" || campaign.created_by === user?.id);
+    (user?.role === "admin" ||
+      ((import.meta.env.DEV || DELETABLE_STATUSES.includes(campaign.status)) &&
+        campaign.created_by === user?.id));
 
   const canEdit =
     !!campaign &&
     EDITABLE_STATUSES.includes(campaign.status) &&
     (user?.role === "admin" || campaign.created_by === user?.id);
+
+  // Pause/resume a launched campaign: creator or admin only.
+  const canManage =
+    !!campaign && (user?.role === "admin" || campaign.created_by === user?.id);
 
   const confirmDelete = async () => {
     if (!campaign) return;
@@ -365,6 +374,7 @@ export function CampaignDetail() {
 
   const meId = user?.id;
   const isAdmin = user?.role === "admin";
+  const isCreator = campaign.created_by === meId;
   const launched = !!campaign.launched_at;
 
   const renderSingle = (post: Post) => (
@@ -374,6 +384,7 @@ export function CampaignDetail() {
       roster={roster}
       meId={meId}
       isAdmin={isAdmin}
+      isCreator={isCreator}
       launched={launched}
       busy={actingIds.has(post.id)}
       onEdit={(body) =>
@@ -408,6 +419,7 @@ export function CampaignDetail() {
         roster={roster}
         meId={meId}
         isAdmin={isAdmin}
+        isCreator={isCreator}
         launched={launched}
         busy={ids.some((i) => actingIds.has(i))}
         onEditComment={(body) =>
@@ -534,6 +546,34 @@ export function CampaignDetail() {
                 <Loader2 className="h-4 w-4 animate-spin" />
                 Launching...
               </span>
+            )}
+            {canManage && campaign.status === "publishing" && (
+              <button
+                onClick={() =>
+                  run(() =>
+                    apiFetch(`/v1/campaigns/${id}/pause`, { method: "POST" }),
+                  )
+                }
+                disabled={busy}
+                className="inline-flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium text-ink hover:bg-sand disabled:opacity-50"
+              >
+                <Pause className="h-4 w-4" />
+                Pause
+              </button>
+            )}
+            {canManage && campaign.status === "paused" && (
+              <button
+                onClick={() =>
+                  run(() =>
+                    apiFetch(`/v1/campaigns/${id}/resume`, { method: "POST" }),
+                  )
+                }
+                disabled={busy}
+                className="inline-flex items-center gap-2 rounded-md bg-clay px-4 py-2 text-sm font-medium text-paper hover:bg-clay-press disabled:opacity-50"
+              >
+                <Play className="h-4 w-4" />
+                Resume
+              </button>
             )}
           </div>
         </div>
@@ -663,6 +703,7 @@ function PostCard({
   roster,
   meId,
   isAdmin,
+  isCreator,
   launched,
   busy,
   onEdit,
@@ -674,6 +715,7 @@ function PostCard({
   roster: RosterUser[];
   meId?: string;
   isAdmin: boolean;
+  isCreator: boolean;
   launched: boolean;
   busy: boolean;
   onEdit: (body: string) => void;
@@ -692,6 +734,9 @@ function PostCard({
   const owner = roster.find((u) => u.id === post.user_id);
   const isOwner = post.user_id === meId;
   const canAct = isAdmin || isOwner;
+  // The campaign creator can refine anyone's text before launch, but approving
+  // and publishing stay with the owner or an admin.
+  const canEditText = canAct || isCreator;
   const pending = post.status === "pending" || post.status === "scheduled";
   // Assisted-manual engagement: a comment or like the person performs by hand.
   const actionRequired = post.status === "action_required";
@@ -751,9 +796,10 @@ function PostCard({
 
       {post.error && <p className="mt-2 text-xs text-fail">{post.error}</p>}
 
-      {canAct && pending && (
+      {pending && (canEditText || (canAct && launched)) && (
         <div className="mt-3 flex flex-wrap gap-2">
-          {post.action !== "like" &&
+          {canEditText &&
+            post.action !== "like" &&
             (editing ? (
               <>
                 <SmallButton
@@ -769,7 +815,7 @@ function PostCard({
             ) : (
               <SmallButton label="Edit" onClick={() => setEditing(true)} />
             ))}
-          {launched && (
+          {canAct && launched && (
             <>
               <button
                 onClick={() => {
@@ -858,6 +904,7 @@ function CombinedEngagementCard({
   roster,
   meId,
   isAdmin,
+  isCreator,
   launched,
   busy,
   onEditComment,
@@ -870,6 +917,7 @@ function CombinedEngagementCard({
   roster: RosterUser[];
   meId?: string;
   isAdmin: boolean;
+  isCreator: boolean;
   launched: boolean;
   busy: boolean;
   onEditComment: (body: string) => void;
@@ -889,6 +937,8 @@ function CombinedEngagementCard({
   const owner = roster.find((u) => u.id === comment.user_id);
   const isOwner = comment.user_id === meId;
   const canAct = isAdmin || isOwner;
+  // Creator can refine the comment text before launch; approve stays owner/admin.
+  const canEditText = canAct || isCreator;
   const pending = status === "pending" || status === "scheduled";
   const actionRequired = status === "action_required";
   const engagementUrl = comment.engagement_url ?? like.engagement_url;
@@ -1008,24 +1058,25 @@ function CombinedEngagementCard({
         <p className="mt-2 text-xs text-fail">{comment.error || like.error}</p>
       )}
 
-      {canAct && pending && (
+      {pending && (canEditText || (canAct && launched)) && (
         <div className="mt-3 flex flex-wrap gap-2">
-          {editing ? (
-            <>
-              <SmallButton
-                label="Save"
-                onClick={() => {
-                  onEditComment(draft);
-                  setEditing(false);
-                }}
-                disabled={busy}
-              />
-              <SmallButton label="Cancel" onClick={() => setEditing(false)} />
-            </>
-          ) : (
-            <SmallButton label="Edit" onClick={() => setEditing(true)} />
-          )}
-          {launched && (
+          {canEditText &&
+            (editing ? (
+              <>
+                <SmallButton
+                  label="Save"
+                  onClick={() => {
+                    onEditComment(draft);
+                    setEditing(false);
+                  }}
+                  disabled={busy}
+                />
+                <SmallButton label="Cancel" onClick={() => setEditing(false)} />
+              </>
+            ) : (
+              <SmallButton label="Edit" onClick={() => setEditing(true)} />
+            ))}
+          {canAct && launched && (
             <>
               <button
                 onClick={() => {
@@ -1219,6 +1270,7 @@ const CAMPAIGN_STATUS_STYLES: Record<string, string> = {
   generating: "bg-pending/15 text-pending",
   review: "bg-clay/15 text-clay",
   publishing: "bg-ok/15 text-ok",
+  paused: "bg-pending/15 text-pending",
   completed: "bg-ok text-paper",
   failed: "bg-fail/10 text-fail",
 };

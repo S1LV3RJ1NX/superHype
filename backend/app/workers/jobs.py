@@ -52,13 +52,18 @@ def _provider() -> LinkedInProvider:
 
 
 async def generate_drafts(
-    ctx: dict, campaign_id: str, assignments: list[dict[str, Any]]
+    ctx: dict,
+    campaign_id: str,
+    assignments: list[dict[str, Any]],
+    regenerate: bool = False,
 ) -> None:
     cid = uuid.UUID(campaign_id)
     parsed = [Assignment.model_validate(a) for a in assignments]
     async with async_session_factory() as db:
         try:
-            await campaign_service.build_plan(db, cid, parsed, generate=True)
+            await campaign_service.build_plan(
+                db, cid, parsed, generate=True, regenerate=regenerate
+            )
             await db.commit()
         except GenerationError as exc:
             await db.rollback()
@@ -124,6 +129,61 @@ async def launch_campaign(ctx: dict, campaign_id: str) -> None:
     )
 
 
+async def resume_campaign(ctx: dict, campaign_id: str) -> None:
+    """Re-drive a resumed campaign's outstanding work.
+
+    Pausing drained the queue (deferred jobs self-aborted), so resuming has to
+    re-enqueue: approved posts that were mid-publish get published again
+    (publish_post is idempotent), participants still holding pending posts get
+    re-notified on a fresh stagger, and everyone still outstanding gets a
+    reminder. A no-op if the campaign is no longer publishing.
+    """
+    cid = uuid.UUID(campaign_id)
+    async with async_session_factory() as db:
+        campaign = await campaign_repo.get(db, cid)
+        if campaign is None or campaign.status != "publishing":
+            return
+        posts = await post_repo.list_for_campaign(db, cid)
+
+    redis = ctx["redis"]
+    # Approved posts were dropped mid-flight by the pause guard; re-publish them.
+    for post in posts:
+        if post.status == "approved":
+            await redis.enqueue_job("publish_post", str(post.id))
+
+    # Participants with still-pending posts were never notified (their staggered
+    # notify aborted while paused). Re-notify them on a fresh stagger window.
+    seen: set[uuid.UUID] = set()
+    pending_participants: list[uuid.UUID] = []
+    for post in posts:
+        if post.status != "pending":
+            continue
+        if post.user_id not in seen:
+            seen.add(post.user_id)
+            pending_participants.append(post.user_id)
+    stagger_min = (
+        settings.STAGGER_OVERRIDE_MIN_SECONDS
+        if settings.STAGGER_OVERRIDE_MIN_SECONDS is not None
+        else campaign.stagger_min_seconds
+    )
+    stagger_max = (
+        settings.STAGGER_OVERRIDE_MAX_SECONDS
+        if settings.STAGGER_OVERRIDE_MAX_SECONDS is not None
+        else campaign.stagger_max_seconds
+    )
+    stagger_max = max(stagger_min, stagger_max)
+    for user_id in pending_participants:
+        delay = random.uniform(stagger_min, stagger_max)
+        await redis.enqueue_job(
+            "notify_participant", campaign_id, str(user_id), _defer_by=delay
+        )
+
+    # Nudge everyone still awaiting approval or an assisted action.
+    await redis.enqueue_job(
+        "send_reminders", campaign_id, _defer_by=settings.REMINDER_DELAY_SECONDS
+    )
+
+
 async def notify_participant(ctx: dict, campaign_id: str, user_id: str) -> None:
     """Schedule a participant's pending posts and DM them the bundled ask.
 
@@ -136,6 +196,11 @@ async def notify_participant(ctx: dict, campaign_id: str, user_id: str) -> None:
     cid = uuid.UUID(campaign_id)
     uid = uuid.UUID(user_id)
     async with async_session_factory() as db:
+        # Paused or deleted before this staggered notify fired: do not schedule
+        # the person's posts or DM them. Resume re-drives the fan-out.
+        campaign = await campaign_repo.get(db, cid)
+        if campaign is None or campaign.status == "paused":
+            return
         posts = await post_repo.list_for_campaign_user(
             db, cid, uid, statuses=("pending",)
         )
@@ -148,9 +213,8 @@ async def notify_participant(ctx: dict, campaign_id: str, user_id: str) -> None:
         client = build_slack_client()
         if client is None:
             return
-        campaign = await campaign_repo.get(db, cid)
         user = await user_repo.get(db, uid)
-        if campaign is None or user is None:
+        if user is None:
             await client.aclose()
             return
         try:
@@ -174,14 +238,18 @@ async def notify_engagements(ctx: dict, campaign_id: str, user_id: str) -> None:
         return
     try:
         async with async_session_factory() as db:
+            campaign = await campaign_repo.get(db, cid)
+            # Paused or deleted: skip the engagement nudge. Resume re-DMs via
+            # send_reminders; the portal still carries the same asks.
+            if campaign is None or campaign.status == "paused":
+                return
             posts = await post_repo.list_for_campaign_user(
                 db, cid, uid, statuses=("action_required",)
             )
             if not posts:
                 return
-            campaign = await campaign_repo.get(db, cid)
             user = await user_repo.get(db, uid)
-            if campaign is None or user is None:
+            if user is None:
                 return
             await slack_service.notify_engagements(db, client, campaign, user, posts)
     finally:
@@ -406,6 +474,14 @@ async def publish_post(ctx: dict, post_id: str) -> None:
         # Terminal or already-asked states are no-ops: skipped/failed are done,
         # action_required/acknowledged mean the assisted ask was already raised.
         if post.status in ("skipped", "failed", "action_required", "acknowledged"):
+            return
+
+        # Paused or deleted: drop the job rather than publish. A staggered or
+        # backed-off publish enqueued before the pause lands here when it fires;
+        # aborting drains the queue. Resume re-enqueues the approved posts. A
+        # missing campaign means it was deleted, so there is nothing to do.
+        campaign = await campaign_repo.get(db, post.campaign_id)
+        if campaign is None or campaign.status == "paused":
             return
 
         # Dependency-aware: wait until our target post is live.
@@ -654,7 +730,8 @@ async def send_reminders(ctx: dict, campaign_id: str) -> None:
     try:
         async with async_session_factory() as db:
             campaign = await campaign_repo.get(db, cid)
-            if campaign is None:
+            # Skip reminders for a deleted or paused campaign; resume re-drives.
+            if campaign is None or campaign.status == "paused":
                 return
             posts = await post_repo.list_for_campaign(db, cid)
             # Bucket outstanding posts per person so each gets at most one DM of

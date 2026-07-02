@@ -89,6 +89,15 @@ function seedUrlLooksLikeActivity(raw: string): boolean {
   return /\d{6,}/.test(url);
 }
 
+// LinkedIn's "Embed this post" hands you an <iframe> whose src carries the
+// reshareable share URN. Pull the src out so we store a tidy URL instead of the
+// whole HTML snippet (the parser copes with either, but the clean URL reads
+// better and is what the warnings inspect).
+function extractSeedUrl(raw: string): string {
+  const iframe = raw.match(/<iframe[^>]*\ssrc=["']([^"']+)["']/i);
+  return iframe ? iframe[1] : raw;
+}
+
 // Cheap client-side mirror of the backend guard: catch obvious non-URLs (like
 // "test") before submit. It is intentionally permissive, since the backend is
 // authoritative and is the only side that can expand an lnkd.in short link, so
@@ -151,21 +160,32 @@ export function CampaignFields({
           />
         </Field>
         {type === "amplify" && (
-          <Field label="Post URL to amplify" required>
+          <Field label="Post to amplify" required>
             <input
               value={value.seedUrl}
-              onChange={(e) => onChange({ seedUrl: e.target.value })}
-              placeholder="https://www.linkedin.com/feed/update/urn:li:share:..."
+              onChange={(e) =>
+                onChange({ seedUrl: extractSeedUrl(e.target.value) })
+              }
+              placeholder="Paste the post's Embed code (recommended), or a share / lnkd.in link"
               className="input"
             />
+            <div className="mt-1.5">
+              <Hint>
+                Open the post's "..." menu on LinkedIn, choose "Embed this post",
+                and paste the code here. That is the one option that carries a
+                reshareable link, so the repost step works. "Copy link to post"
+                gives an activity link that cannot be reshared.
+              </Hint>
+            </div>
             {seedUrlLooksLikeActivity(value.seedUrl) && (
               <div className="mt-2 flex items-start gap-2 rounded-md border border-pending/30 bg-pending/5 px-3 py-2 text-xs font-medium text-pending">
                 <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                 <span>
-                  This looks like a feed activity link. Likes and comments work,
-                  but LinkedIn will not reshare an activity URN, so the repost step
-                  will fail. Open the post, use its share or ugcPost link (the
-                  direct post URL), and paste that instead.
+                  This is an activity link (from "Copy link to post"). Likes and
+                  comments will still work, but LinkedIn cannot reshare an
+                  activity URN, so the repost is skipped. To include the repost,
+                  open the post's "..." menu, choose "Embed this post", and paste
+                  that code here instead.
                 </span>
               </div>
             )}
@@ -174,9 +194,9 @@ export function CampaignFields({
                 <div className="mt-2 flex items-start gap-2 rounded-md border border-pending/30 bg-pending/5 px-3 py-2 text-xs font-medium text-pending">
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <span>
-                    This does not look like a LinkedIn post URL. Paste the full
-                    post link (the one with an activity id) or a lnkd.in share
-                    link.
+                    This does not look like a LinkedIn post. Use the post's "..."
+                    menu, choose "Embed this post", and paste that code (or a
+                    share / lnkd.in link).
                   </span>
                 </div>
               )}

@@ -1,12 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
+import { useAuth } from "@/auth/AuthContext";
 import { Wordmark } from "@/components/Wordmark";
 import { apiFetch, ApiError } from "@/lib/api";
+
+const ONBOARDING_RETURN_KEY = "onboarding_return";
 
 export function LinkedInCallback() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { refresh } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const exchanging = useRef(false);
 
@@ -30,12 +34,21 @@ export function LinkedInCallback() {
             body: JSON.stringify({ code, state }),
           },
         );
+        // Refresh so the app sees the new connection (the onboarding gate and
+        // step both key off the user's linkedin_status).
+        const fromOnboarding =
+          sessionStorage.getItem(ONBOARDING_RETURN_KEY) === "1";
+        sessionStorage.removeItem(ONBOARDING_RETURN_KEY);
+        await refresh();
         if (result.resumed_campaign_id) {
           // Reconnected as part of approving a post: return to that campaign,
           // where the queued action is now publishing.
           navigate(`/app/campaigns/${result.resumed_campaign_id}?reconnected=1`, {
             replace: true,
           });
+        } else if (fromOnboarding) {
+          // Connected during onboarding: return to finish the last step.
+          navigate("/app/onboarding", { replace: true });
         } else {
           navigate("/app/connections", { replace: true });
         }
@@ -48,7 +61,7 @@ export function LinkedInCallback() {
         );
       }
     })();
-  }, [searchParams, navigate]);
+  }, [searchParams, navigate, refresh]);
 
   if (error) {
     return (

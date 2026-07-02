@@ -267,10 +267,16 @@ async def delete_campaign(
     campaign = await _load_or_404(db, campaign_id)
     if not (_is_admin(actor) or campaign.created_by == actor.id):
         raise HTTPException(403, "Only the creator or an admin can delete a campaign.")
-    # Production protects a launched campaign (it has live or in-flight posts) by
-    # allowing deletion only before launch. In local/dev we relax this so test
-    # campaigns in any state are easy to clean up.
-    if settings.is_production and campaign.status not in _DELETABLE_STATUSES:
+    # In production a launched campaign has live or in-flight posts, so a plain
+    # creator can only delete it before launch. Admins may delete in any state
+    # (cleanup, pilot resets); deletion cancels any still-queued jobs so nothing
+    # from the removed campaign publishes afterward. In local/dev anyone may
+    # delete in any state to make test campaigns easy to clear.
+    if (
+        settings.is_production
+        and not _is_admin(actor)
+        and campaign.status not in _DELETABLE_STATUSES
+    ):
         raise HTTPException(409, "Only un-launched campaigns can be deleted.")
     await campaign_service.delete_campaign(db, campaign, actor_id=actor.id)
     await db.commit()
@@ -285,10 +291,18 @@ async def build_plan(
     if not (_is_admin(actor) or campaign.created_by == actor.id):
         raise HTTPException(403, "Only the creator or an admin can plan a campaign.")
     assignments = await campaign_service.expand_participants(
-        db, campaign, body.participant_ids
+        db,
+        campaign,
+        body.participant_ids,
+        actions_by_participant=body.actions_by_participant,
     )
     rows = await campaign_service.build_plan(
-        db, campaign_id, assignments, generate=False, actor_id=actor.id
+        db,
+        campaign_id,
+        assignments,
+        generate=False,
+        regenerate=body.regenerate,
+        actor_id=actor.id,
     )
     await db.commit()
     return [PostOut.model_validate(r) for r in rows]
@@ -303,7 +317,10 @@ async def generate(
     if not (_is_admin(actor) or campaign.created_by == actor.id):
         raise HTTPException(403, "Only the creator or an admin can generate.")
     assignments = await campaign_service.expand_participants(
-        db, campaign, body.participant_ids
+        db,
+        campaign,
+        body.participant_ids,
+        actions_by_participant=body.actions_by_participant,
     )
     try:
         await campaign_service.transition(db, campaign, "generating", actor_id=actor.id)
@@ -315,6 +332,7 @@ async def generate(
         "generate_drafts",
         str(campaign_id),
         [a.model_dump(mode="json") for a in assignments],
+        regenerate=body.regenerate,
     )
     await db.refresh(campaign)
     return CampaignOut.model_validate(campaign)
@@ -337,5 +355,40 @@ async def launch(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> Campa
     await db.commit()
 
     await queue.enqueue_job("launch_campaign", str(campaign_id))
+    await db.refresh(campaign)
+    return CampaignOut.model_validate(campaign)
+
+
+async def pause(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> CampaignOut:
+    """Pause a launched campaign so no further posts publish or DMs go out.
+
+    Deferred worker jobs (staggered notifies, backoff republishes, reminders)
+    check the campaign status when they fire and abort while it is paused, so
+    pausing effectively drains the remaining queue. Resume re-drives the work.
+    """
+    campaign = await _load_or_404(db, campaign_id)
+    if not (_is_admin(actor) or campaign.created_by == actor.id):
+        raise HTTPException(403, "Only the creator or an admin can pause a campaign.")
+    try:
+        await campaign_service.transition(db, campaign, "paused", actor_id=actor.id)
+    except TransitionError:
+        raise HTTPException(409, "Only a launched campaign can be paused.") from None
+    await db.commit()
+    await db.refresh(campaign)
+    return CampaignOut.model_validate(campaign)
+
+
+async def resume(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> CampaignOut:
+    """Resume a paused campaign and re-enqueue its outstanding work."""
+    campaign = await _load_or_404(db, campaign_id)
+    if not (_is_admin(actor) or campaign.created_by == actor.id):
+        raise HTTPException(403, "Only the creator or an admin can resume a campaign.")
+    try:
+        await campaign_service.transition(db, campaign, "publishing", actor_id=actor.id)
+    except TransitionError:
+        raise HTTPException(409, "Only a paused campaign can be resumed.") from None
+    await db.commit()
+
+    await queue.enqueue_job("resume_campaign", str(campaign_id))
     await db.refresh(campaign)
     return CampaignOut.model_validate(campaign)

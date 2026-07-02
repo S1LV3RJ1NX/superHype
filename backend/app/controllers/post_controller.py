@@ -41,9 +41,20 @@ async def _load_or_404(db: AsyncSession, post_id: uuid.UUID) -> Post:
     return post
 
 
-def _require_owner_or_admin(post: Post, user: User) -> None:
-    if not (_is_admin(user) or post.user_id == user.id):
-        raise HTTPException(403, "You can only act on your own posts.")
+async def _require_editor_of(db: AsyncSession, post: Post, user: User) -> None:
+    """Who may edit a post's text: its owner, an admin, or the campaign creator.
+
+    The creator drives the campaign, so they refine any participant's comment or
+    reshare before launch; ownership still gates the act of approving/publishing.
+    """
+    if _is_admin(user) or post.user_id == user.id:
+        return
+    campaign = await campaign_repo.get(db, post.campaign_id)
+    if campaign is not None and campaign.created_by == user.id:
+        return
+    raise HTTPException(
+        403, "You can only edit your own posts or posts in a campaign you created."
+    )
 
 
 def _to_http(exc: ApprovalError) -> HTTPException:
@@ -53,9 +64,11 @@ def _to_http(exc: ApprovalError) -> HTTPException:
     if isinstance(exc, CampaignNotFoundError):
         return HTTPException(404, "Campaign not found.")
     if isinstance(exc, NotOwnerError):
-        return HTTPException(403, "Only the post owner can approve this post.")
+        return HTTPException(403, "Only the person asked can mark this action done.")
     if isinstance(exc, NotOwnerOrAdminError):
-        return HTTPException(403, "You can only act on your own posts.")
+        return HTTPException(
+            403, "Only the owner, the campaign creator, or an admin can do this."
+        )
     if isinstance(exc, LaunchRequiredError):
         return HTTPException(409, "Launch the campaign before approving posts.")
     if isinstance(exc, ReconnectRequiredError):
@@ -95,7 +108,7 @@ async def update_post(
     db: AsyncSession, post_id: uuid.UUID, body: PostUpdate, actor: User
 ) -> PostOut:
     post = await _load_or_404(db, post_id)
-    _require_owner_or_admin(post, actor)
+    await _require_editor_of(db, post, actor)
     if post.status not in ("pending", "scheduled"):
         raise HTTPException(409, "Only pending posts can be edited.")
     updates = body.model_dump(exclude_unset=True)

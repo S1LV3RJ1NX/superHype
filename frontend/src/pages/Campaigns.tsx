@@ -31,6 +31,7 @@ const STATUS_STYLES: Record<string, string> = {
   generating: "bg-pending/15 text-pending",
   review: "bg-clay/15 text-clay",
   publishing: "bg-pending/15 text-pending",
+  paused: "bg-pending/15 text-pending",
   completed: "bg-ok/15 text-ok",
   failed: "bg-fail/10 text-fail",
 };

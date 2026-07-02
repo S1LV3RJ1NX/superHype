@@ -40,17 +40,19 @@ class CampaignNotFoundError(ApprovalError):
 
 
 class NotOwnerError(ApprovalError):
-    """Actor is not the post owner (approve and ack are owner-only)."""
+    """Actor may not acknowledge this post (ack is owner-only)."""
 
     def __init__(self) -> None:
-        super().__init__("Only the post owner can approve this post.")
+        super().__init__("Only the person asked can mark this action done.")
 
 
 class NotOwnerOrAdminError(ApprovalError):
-    """Actor is neither the owner nor an admin (skip)."""
+    """Actor is not the owner, campaign creator, or an admin (approve/skip)."""
 
     def __init__(self) -> None:
-        super().__init__("You can only act on your own posts.")
+        super().__init__(
+            "Only the owner, the campaign creator, or an admin can do this."
+        )
 
 
 class InvalidStateError(ApprovalError):
@@ -80,16 +82,30 @@ def _is_admin(user: User) -> bool:
 
 
 def _require_owner(post: Post, user: User) -> None:
-    # Approval publishes under the owner's own LinkedIn token, and only the owner
-    # can re-consent a stale token, so no one (not even an admin) approves on
-    # another person's behalf. Admin override stays on skip/edit for cleanup.
+    # Acknowledging an assisted ask means "I performed this like/comment by hand".
+    # Only the person asked can truthfully do that, so ack stays owner-only even
+    # for an admin.
     if post.user_id != user.id:
         raise NotOwnerError()
 
 
-def _require_owner_or_admin(post: Post, user: User) -> None:
-    if not (_is_admin(user) or post.user_id == user.id):
-        raise NotOwnerOrAdminError()
+async def _require_owner_admin_or_creator(
+    db: AsyncSession, post: Post, user: User
+) -> None:
+    """Approve/skip are open to the owner, an admin, or the campaign creator.
+
+    The creator drives the campaign, so they (and admins) settle any
+    participant's action for a whole domain at once (approve all comments, etc).
+    A non-assisted action still publishes under the owner's own token, so if that
+    token is missing or stale the reconnect gate rejects it and the owner must
+    re-consent; approving on their behalf never bypasses that.
+    """
+    if _is_admin(user) or post.user_id == user.id:
+        return
+    campaign = await campaign_repo.get(db, post.campaign_id)
+    if campaign is not None and campaign.created_by == user.id:
+        return
+    raise NotOwnerOrAdminError()
 
 
 async def _apply_approve(db: AsyncSession, post: Post, actor: User) -> bool:
@@ -97,7 +113,7 @@ async def _apply_approve(db: AsyncSession, post: Post, actor: User) -> bool:
 
     Returns whether this was a retry (a failed post being re-approved).
     """
-    _require_owner(post, actor)
+    await _require_owner_admin_or_creator(db, post, actor)
     # "failed" is allowed so the owner can retry after fixing the cause (e.g. a
     # stale token that they have since reconnected). Retry reuses this whole path
     # including the reconnect gate; publish_post is idempotent so a retry never
@@ -165,7 +181,7 @@ async def _apply_ack(db: AsyncSession, post: Post, actor: User) -> None:
 
 async def _apply_skip(db: AsyncSession, post: Post, actor: User) -> None:
     """Validate and mutate one post to ``skipped``. No commit."""
-    _require_owner_or_admin(post, actor)
+    await _require_owner_admin_or_creator(db, post, actor)
     # Assisted engagement asks (action_required) are skippable too: the person
     # may decide not to comment or like, and that should settle the post. A
     # failed post is skippable so the owner can drop it instead of retrying.
@@ -203,7 +219,11 @@ async def _load_batch(db: AsyncSession, post_ids: list[uuid.UUID]) -> list[Post]
 async def approve(
     db: AsyncSession, post_ids: list[uuid.UUID], actor: User
 ) -> list[Post]:
-    """Approve one or more of the actor's posts atomically, then enqueue publish."""
+    """Approve one or more posts atomically, then enqueue publish.
+
+    Open to the owner, an admin, or the campaign creator, so a whole domain
+    (every comment, every reshare) can be approved in one batch.
+    """
     posts = await _load_batch(db, post_ids)
     for post in posts:
         await _apply_approve(db, post, actor)

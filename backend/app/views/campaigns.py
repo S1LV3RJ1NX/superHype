@@ -108,3 +108,21 @@ async def launch(
     actor: User = Depends(get_current_user),
 ) -> CampaignOut:
     return await campaign_controller.launch(db, campaign_id, actor)
+
+
+@router.post("/{campaign_id}/pause", response_model=CampaignOut)
+async def pause(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_user),
+) -> CampaignOut:
+    return await campaign_controller.pause(db, campaign_id, actor)
+
+
+@router.post("/{campaign_id}/resume", response_model=CampaignOut)
+async def resume(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_user),
+) -> CampaignOut:
+    return await campaign_controller.resume(db, campaign_id, actor)

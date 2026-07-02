@@ -76,9 +76,21 @@ class Assignment(BaseModel):
 
 class PlanRequest(BaseModel):
     """Participants for a campaign; the backend expands each into concrete actions
-    based on the campaign type (see campaign_service.expand_participants)."""
+    based on the campaign type (see campaign_service.expand_participants).
+
+    ``regenerate`` forces every post to be rewritten. Left False (the default),
+    re-planning preserves text for participants already in the plan and only
+    generates the newly added ones, so adding a person does not overwrite edits.
+
+    ``actions_by_participant`` is amplify only: the campaign manager picks which
+    of like/comment/repost_comment each person does. When omitted, amplify
+    defaults to all three per participant. Distribute ignores it and derives its
+    own action graph. A participant mapped to an empty list contributes no posts.
+    """
 
     participant_ids: list[uuid.UUID]
+    regenerate: bool = False
+    actions_by_participant: dict[uuid.UUID, list[str]] | None = None
 
 
 class BatchAction(BaseModel):

@@ -59,13 +59,32 @@ function fieldsFromCampaign(c: Campaign): CampaignFieldsValue {
 }
 
 function participantIdsFromPosts(posts: Post[]): string[] {
-  // Distinct users who still have pending (re-plannable) posts; actions are
-  // re-derived from the campaign type when the plan is rebuilt.
+  // Distinct users who still have pending (re-plannable) posts.
   const ids = new Set<string>();
   for (const p of posts) {
     if (p.status === "pending") ids.add(p.user_id);
   }
   return Array.from(ids);
+}
+
+const AMPLIFY_ACTION_KEYS = ["like", "comment", "repost_comment"];
+
+// Seed the amplify action matrix from the current pending posts so an edit opens
+// with each person's existing action selection, not a reset to all three.
+function actionsByParticipantFromPosts(
+  posts: Post[],
+): Record<string, string[]> {
+  const map: Record<string, Set<string>> = {};
+  for (const p of posts) {
+    if (p.status !== "pending") continue;
+    if (!AMPLIFY_ACTION_KEYS.includes(p.action)) continue;
+    (map[p.user_id] ??= new Set()).add(p.action);
+  }
+  const out: Record<string, string[]> = {};
+  for (const [uid, set] of Object.entries(map)) {
+    out[uid] = AMPLIFY_ACTION_KEYS.filter((k) => set.has(k));
+  }
+  return out;
 }
 
 export function CampaignEditor() {
@@ -85,6 +104,8 @@ export function CampaignEditor() {
   const [initialParticipantIds, setInitialParticipantIds] = useState<string[]>(
     [],
   );
+  const [initialActionsByParticipant, setInitialActionsByParticipant] =
+    useState<Record<string, string[]>>({});
   const [lockedPosts, setLockedPosts] = useState<LockedPost[]>([]);
 
   const load = useCallback(async () => {
@@ -101,6 +122,7 @@ export function CampaignEditor() {
       setRoster(r);
       setInitialFields(fieldsFromCampaign(c));
       setInitialParticipantIds(participantIdsFromPosts(p.items));
+      setInitialActionsByParticipant(actionsByParticipantFromPosts(p.items));
       setLockedPosts(
         p.items
           .filter((post) => post.status !== "pending")
@@ -189,6 +211,7 @@ export function CampaignEditor() {
               initialFields={initialFields}
               roster={roster}
               initialParticipantIds={initialParticipantIds}
+              initialActionsByParticipant={initialActionsByParticipant}
               lockedPosts={lockedPosts}
               onDone={(cid) => navigate(`/app/campaigns/${cid}`)}
               onCancel={() => navigate(backTo)}

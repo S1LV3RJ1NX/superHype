@@ -38,7 +38,10 @@ TRANSITIONS: dict[str, set[str]] = {
     "draft": {"generating", "review"},
     "generating": {"review", "failed"},
     "review": {"generating", "publishing"},
-    "publishing": {"completed", "failed"},
+    # A launched campaign can be paused; pause halts all worker fan-out until it
+    # is resumed back to publishing.
+    "publishing": {"completed", "failed", "paused"},
+    "paused": {"publishing"},
     # Retrying a failed post reopens a completed campaign so the worker can run
     # again and check_completion can settle it once more.
     "completed": {"publishing"},
@@ -135,6 +138,7 @@ async def _resolve_interaction_texts(
     persona_by_user: dict[uuid.UUID, str],
     *,
     generate: bool,
+    preserved: list[str | None] | None = None,
 ) -> list[str]:
     """Produce one text per interaction, aligned to input order.
 
@@ -142,11 +146,24 @@ async def _resolve_interaction_texts(
     they react to (the distribute variation, or the campaign seed text for
     amplify), and carry the actor's team persona. Interactions are grouped by
     their target text so each LLM call reasons about a single post.
+
+    ``preserved`` carries text kept from a prior plan (an unchanged participant's
+    edited or previously generated comment): a non-None entry is used as-is and
+    never regenerated, so re-planning after adding or removing a person only
+    calls the LLM for the genuinely new interactions.
     """
     if not interaction_assignments:
         return []
+    kept: list[str | None] = (
+        list(preserved)
+        if preserved is not None
+        else [None] * len(interaction_assignments)
+    )
     if not generate:
-        return [a.body or "" for a in interaction_assignments]
+        return [
+            k if k is not None else (a.body or "")
+            for k, a in zip(kept, interaction_assignments, strict=False)
+        ]
 
     def _target_text(a: Assignment) -> str:
         if campaign.type == "distribute" and poster_rows:
@@ -157,11 +174,14 @@ async def _resolve_interaction_texts(
                 return body
         return campaign.seed_content or campaign.title or ""
 
+    # Only the entries without preserved text need a gateway call.
     groups: dict[str, list[int]] = {}
     for idx, a in enumerate(interaction_assignments):
+        if kept[idx] is not None:
+            continue
         groups.setdefault(_target_text(a), []).append(idx)
 
-    texts: list[str] = ["" for _ in interaction_assignments]
+    texts: list[str] = [t if t is not None else "" for t in kept]
     for target_text, idxs in groups.items():
         items = [
             {
@@ -199,16 +219,27 @@ async def _founder_flags(
     return result
 
 
+# Amplify actions in canonical order, so a person's chosen subset is expanded
+# in a stable sequence regardless of how the client listed them.
+_AMPLIFY_ACTIONS: tuple[str, ...] = ("like", "comment", "repost_comment")
+
+
 async def expand_participants(
-    db: AsyncSession, campaign: Campaign, participant_ids: list[uuid.UUID]
+    db: AsyncSession,
+    campaign: Campaign,
+    participant_ids: list[uuid.UUID],
+    *,
+    actions_by_participant: dict[uuid.UUID, list[str]] | None = None,
 ) -> list[Assignment]:
     """Turn a participant list into concrete actions from the campaign type.
 
-    Amplify: every member likes, comments, and reposts the seed post. Distribute:
+    Amplify: each member does the actions chosen for them (like, comment, and/or
+    repost); when ``actions_by_participant`` has no entry for a person they do all
+    three, and an explicit empty list means they contribute nothing. Distribute:
     every member authors their own post (its slot is their position in the list),
     then likes and comments on up to DISTRIBUTE_MAX_ENGAGEMENT_TARGETS other
     members' posts, founder-authored posts first, so a big campaign cannot fan out
-    quadratically.
+    quadratically (``actions_by_participant`` is ignored for distribute).
     """
     # Dedupe while preserving order so poster slots are stable and predictable.
     seen: set[uuid.UUID] = set()
@@ -223,9 +254,17 @@ async def expand_participants(
     out: list[Assignment] = []
     if campaign.type == "amplify":
         for uid in ordered:
-            out.append(Assignment(user_id=uid, action="like"))
-            out.append(Assignment(user_id=uid, action="comment"))
-            out.append(Assignment(user_id=uid, action="repost_comment"))
+            chosen = (
+                actions_by_participant.get(uid)
+                if actions_by_participant is not None
+                else None
+            )
+            # No entry -> all three; an entry (even empty) is taken literally so a
+            # manager can drop an action for one person. Canonical order + subset
+            # filter also drops any unknown action the client might send.
+            actions = [a for a in _AMPLIFY_ACTIONS if chosen is None or a in chosen]
+            for action in actions:
+                out.append(Assignment(user_id=uid, action=action))
         return out
 
     # Distribute: one authored post per member, in list order (slot = index).
@@ -244,28 +283,83 @@ async def expand_participants(
     return out
 
 
+def _assignment_key(campaign: Campaign, a: Assignment, ordered: list[uuid.UUID]) -> str:
+    """A stable identity for one action, independent of post-row uuids.
+
+    Keyed by (action, actor, target person or seed) so the same person doing the
+    same thing to the same target maps to the same key across re-plans, letting
+    an edited or already-generated body carry over. Slot indexes are resolved to
+    the target user so re-ordering participants does not lose a preserved body.
+    """
+    if a.action in ("post", "self_comment"):
+        return f"{a.action}:{a.user_id}"
+    if campaign.type == "distribute" and ordered and a.target_post_index is not None:
+        slot = max(0, min(a.target_post_index, len(ordered) - 1))
+        target = str(ordered[slot])
+    else:
+        target = "seed"
+    return f"{a.action}:{a.user_id}:{target}"
+
+
+async def _preserved_bodies(
+    db: AsyncSession, campaign: Campaign, campaign_id: uuid.UUID
+) -> dict[str, str]:
+    """Map assignment keys to the bodies of the current pending posts.
+
+    Read before the pending rows are cleared so a rebuild can reuse text for
+    unchanged actions (no gateway call, no lost manual edit). Interaction targets
+    resolve through the existing poster rows to the target person.
+    """
+    existing = await post_repo.list_for_campaign(db, campaign_id)
+    poster_user_by_id = {p.id: p.user_id for p in existing if p.action == "post"}
+    preserved: dict[str, str] = {}
+    for p in existing:
+        if p.status not in ("pending", "scheduled"):
+            continue
+        if not (p.body and p.body.strip()):
+            continue
+        if p.action in ("post", "self_comment"):
+            key = f"{p.action}:{p.user_id}"
+        elif p.target_post_id is not None:
+            target_user = poster_user_by_id.get(p.target_post_id)
+            key = f"{p.action}:{p.user_id}:{target_user if target_user else '?'}"
+        else:
+            key = f"{p.action}:{p.user_id}:seed"
+        preserved[key] = p.body
+    return preserved
+
+
 async def build_plan(
     db: AsyncSession,
     campaign_id: uuid.UUID,
     assignments: list[Assignment],
     *,
     generate: bool,
+    regenerate: bool = False,
     actor_id: uuid.UUID | None = None,
 ) -> list[Post]:
     """Create post rows from an assignment plan, optionally filling text via LLM.
 
-    Replaces only the pending posts so the call is safe to re-run; approved work
-    awaiting publish (`scheduled`), published, failed, or skipped posts are never
-    touched. Moves the campaign to `review`.
+    Incremental by default: text for actions that already exist in the current
+    plan (an unchanged participant's post or comment) is preserved, so adding or
+    removing a person only generates the new actions and never overwrites an edit
+    or a de-selected person's already-approved work. Pass ``regenerate=True`` to
+    discard preserved text and rewrite everything (used when the seed material or
+    generation hints changed). Only pending/scheduled rows are rebuilt; published,
+    failed, or skipped posts are never touched. Moves the campaign to `review`.
     """
     campaign = await campaign_repo.get(db, campaign_id)
     if campaign is None:
         raise TransitionError("Campaign not found.")
 
+    preserved = {} if regenerate else await _preserved_bodies(db, campaign, campaign_id)
+
     await post_repo.delete_pending_for_campaign(db, campaign_id)
 
     post_assignments = [a for a in assignments if a.action == "post"]
     interaction_assignments = [a for a in assignments if a.action != "post"]
+    # The ordered author list backs slot -> target-user resolution for keys.
+    ordered = [a.user_id for a in post_assignments]
 
     # Resolve each participant's LinkedIn account once.
     account_by_user: dict[uuid.UUID, uuid.UUID | None] = {}
@@ -282,32 +376,39 @@ async def build_plan(
 
     # Variation bodies must be resolved before interactions: a distribute comment
     # is written from the body of the post it reacts to, so the poster rows have
-    # to exist first. Manual text (generate=False) comes straight off the
-    # assignment and never touches the gateway.
-    if not post_assignments:
-        variation_bodies: list[str] = []
-    elif not generate:
-        variation_bodies = [a.body or "" for a in post_assignments]
-    else:
-        seed = campaign.seed_content or campaign.raw_brief or campaign.title
-        variation_bodies = ["" for _ in post_assignments]
-        # Group posters by their team persona so each author's post is written in
-        # that team's voice, batching one gateway call per distinct persona.
-        by_persona: dict[str, list[int]] = {}
-        for idx, a in enumerate(post_assignments):
-            by_persona.setdefault(persona_by_user.get(a.user_id, ""), []).append(idx)
-        for persona, idxs in by_persona.items():
-            bodies = await generate_variations(
-                seed,
-                len(idxs),
-                tone=campaign.tone,
-                length=campaign.length,
-                language=campaign.language,
-                extra=campaign.extra_instructions,
-                persona=persona or None,
-            )
-            for pos, idx in enumerate(idxs):
-                variation_bodies[idx] = bodies[pos] if pos < len(bodies) else ""
+    # to exist first. Text preserved from the prior plan is reused as-is; manual
+    # text (generate=False) falls back to the assignment; only the remaining slots
+    # touch the gateway.
+    variation_bodies: list[str] = []
+    if post_assignments:
+        variation_bodies = [
+            preserved.get(_assignment_key(campaign, a, ordered), "")
+            for a in post_assignments
+        ]
+        need_gen = [i for i, b in enumerate(variation_bodies) if not b]
+        if not generate:
+            for i in need_gen:
+                variation_bodies[i] = post_assignments[i].body or ""
+        elif need_gen:
+            seed = campaign.seed_content or campaign.raw_brief or campaign.title
+            # Group the not-yet-filled posters by team persona so each author's
+            # post is written in that team's voice, one gateway call per persona.
+            by_persona: dict[str, list[int]] = {}
+            for idx in need_gen:
+                key = persona_by_user.get(post_assignments[idx].user_id, "")
+                by_persona.setdefault(key, []).append(idx)
+            for persona, idxs in by_persona.items():
+                bodies = await generate_variations(
+                    seed,
+                    len(idxs),
+                    tone=campaign.tone,
+                    length=campaign.length,
+                    language=campaign.language,
+                    extra=campaign.extra_instructions,
+                    persona=persona or None,
+                )
+                for pos, idx in enumerate(idxs):
+                    variation_bodies[idx] = bodies[pos] if pos < len(bodies) else ""
 
     rows: list[Post] = []
 
@@ -338,12 +439,17 @@ async def build_plan(
         poster_rows.append(row)
         rows.append(row)
 
+    preserved_interactions: list[str | None] = [
+        preserved.get(_assignment_key(campaign, a, ordered)) or None
+        for a in interaction_assignments
+    ]
     interaction_texts = await _resolve_interaction_texts(
         campaign,
         interaction_assignments,
         poster_rows,
         persona_by_user,
         generate=generate,
+        preserved=preserved_interactions,
     )
 
     for i, a in enumerate(interaction_assignments):

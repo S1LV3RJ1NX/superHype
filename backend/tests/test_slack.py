@@ -234,11 +234,26 @@ async def test_notify_participant_posts_bundled_card(db):
     channel, text, blocks = client.messages[0]
     assert channel == "D-U-ANN"
     assert "3" in text
-    # The action block carries approve + skip + open-portal buttons.
-    action_block = next(b for b in blocks if b["type"] == "actions")
+    # The button block carries approve + skip + open-portal buttons.
+    action_block = next(
+        b
+        for b in blocks
+        if b["type"] == "actions"
+        and any(el.get("action_id") == "campaign_approve_all" for el in b["elements"])
+    )
     action_ids = {el.get("action_id") for el in action_block["elements"]}
     assert "campaign_approve_all" in action_ids
     assert "campaign_skip_all" in action_ids
+    # A per-action opt-in checkbox block, all actions ticked by default.
+    checkbox_block = next(
+        b for b in blocks if b.get("block_id") == "campaign_action_select"
+    )
+    checkboxes = checkbox_block["elements"][0]
+    assert checkboxes["type"] == "checkboxes"
+    values = {opt["value"] for opt in checkboxes["options"]}
+    assert values == {"post", "like", "comment"}
+    # Every option starts ticked so approving with no changes lets everything go.
+    assert checkboxes["options"] == checkboxes["initial_options"]
 
 
 async def test_notify_participant_skips_without_identity(db):
@@ -383,6 +398,22 @@ def _block_actions(slack_user_id: str, action_id: str, campaign_id) -> dict:
     }
 
 
+def _approve_with_selection(slack_user_id, campaign_id, selected_actions) -> dict:
+    """An Approve-all click carrying the ticked per-action checkbox state."""
+    payload = _block_actions(slack_user_id, "campaign_approve_all", campaign_id)
+    payload["state"] = {
+        "values": {
+            "campaign_action_select": {
+                "campaign_action_toggle": {
+                    "type": "checkboxes",
+                    "selected_options": [{"value": a} for a in selected_actions],
+                }
+            }
+        }
+    }
+    return payload
+
+
 async def _identity(db, user, slack_user_id="U-CLICK"):
     ident = SlackIdentity(
         user_id=user.id, slack_user_id=slack_user_id, slack_dm_channel="D1"
@@ -411,6 +442,51 @@ async def test_handle_interaction_approve_settles_and_enqueues(db, enqueued):
     published = [c for c in enqueued if c[0] == "publish_post"]
     assert len(published) == 2
     assert client.responses and "Approved" in client.responses[-1][1]["text"]
+
+
+async def test_handle_interaction_approve_only_checked_actions(db, enqueued):
+    # With the reshare unticked, Approve approves the like and comment and skips
+    # the reshare in the same interaction.
+    user = await _user(db)
+    campaign = await _launched_campaign(db)
+    like = await _post(db, campaign, user, action="like")
+    comment = await _post(db, campaign, user, action="comment")
+    repost = await _post(db, campaign, user, action="repost_comment")
+    await _identity(db, user)
+    await db.commit()
+
+    client = FakeSlackClient()
+    payload = _approve_with_selection("U-CLICK", campaign.id, {"like", "comment"})
+    await slack_service.handle_interaction(db, client, payload)
+
+    await db.refresh(like)
+    await db.refresh(comment)
+    await db.refresh(repost)
+    assert like.status == "approved"
+    assert comment.status == "approved"
+    assert repost.status == "skipped"
+    reply = client.responses[-1][1]["text"]
+    assert "Approved 2" in reply and "skipped 1" in reply
+
+
+async def test_handle_interaction_unticking_post_drops_self_comment(db):
+    # A self-comment cannot run without the person's own post, so unticking the
+    # post skips the self-comment even if it was left ticked.
+    user = await _user(db)
+    campaign = await _launched_campaign(db)
+    post = await _post(db, campaign, user, action="post")
+    self_comment = await _post(db, campaign, user, action="self_comment")
+    await _identity(db, user)
+    await db.commit()
+
+    client = FakeSlackClient()
+    payload = _approve_with_selection("U-CLICK", campaign.id, {"self_comment"})
+    await slack_service.handle_interaction(db, client, payload)
+
+    await db.refresh(post)
+    await db.refresh(self_comment)
+    assert post.status == "skipped"
+    assert self_comment.status == "skipped"
 
 
 async def test_handle_interaction_skip_settles(db):

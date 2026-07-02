@@ -253,6 +253,184 @@ async def test_launch_campaign_stagger_env_override(db, env, monkeypatch):
     assert 1 <= notify[0][2]["_defer_by"] <= 3
 
 
+async def test_publish_post_noop_when_paused(db, env, cm_enabled):
+    # A publish enqueued before the campaign was paused must abort when it fires,
+    # leaving the post untouched (resume re-enqueues it).
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="amplify", status="paused")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="like",
+        status="approved",
+        target_external_id="urn:li:activity:1",
+        idempotency_key="k",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    assert env["provider"].calls == []
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "approved"
+
+
+async def test_notify_participant_noop_when_paused(db, env):
+    # A staggered notify that fires after a pause must not schedule the person's
+    # posts or DM them.
+    user = await _user(db)
+    c = Campaign(title="C", type="amplify", status="paused")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        action="like",
+        status="pending",
+        idempotency_key=uuid.uuid4().hex,
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.notify_participant(env["ctx"], str(c.id), str(user.id))
+
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "pending"
+
+
+async def test_notify_engagements_noop_when_paused(db, env, monkeypatch):
+    # A deferred engagement nudge that fires after a pause must not DM anyone;
+    # resume re-drives it via send_reminders.
+    import app.services.slack_service as slack_mod
+
+    fake = _FakeSlackClient()
+    monkeypatch.setattr(jobs_mod, "build_slack_client", lambda: fake)
+    notify_engagements = AsyncMock()
+    monkeypatch.setattr(slack_mod, "notify_engagements", notify_engagements)
+
+    user = await _user(db)
+    c = Campaign(title="C", type="amplify", status="paused")
+    db.add(c)
+    await db.flush()
+    db.add(
+        Post(
+            campaign_id=c.id,
+            user_id=user.id,
+            action="comment",
+            status="action_required",
+            idempotency_key=uuid.uuid4().hex,
+        )
+    )
+    await db.commit()
+
+    await jobs_mod.notify_engagements(env["ctx"], str(c.id), str(user.id))
+
+    assert notify_engagements.await_count == 0
+    assert fake.closed
+
+
+async def test_send_reminders_noop_when_paused(db, env, monkeypatch):
+    # Reminders must skip a paused campaign entirely; resume re-drives the DMs.
+    import app.services.slack_service as slack_mod
+
+    fake = _FakeSlackClient()
+    monkeypatch.setattr(jobs_mod, "build_slack_client", lambda: fake)
+    notify_participant = AsyncMock()
+    notify_engagements = AsyncMock()
+    monkeypatch.setattr(slack_mod, "notify_participant", notify_participant)
+    monkeypatch.setattr(slack_mod, "notify_engagements", notify_engagements)
+
+    user = await _user(db)
+    c = Campaign(title="C", type="amplify", status="paused")
+    db.add(c)
+    await db.flush()
+    db.add(
+        Post(
+            campaign_id=c.id,
+            user_id=user.id,
+            action="post",
+            status="scheduled",
+            idempotency_key=uuid.uuid4().hex,
+        )
+    )
+    await db.commit()
+
+    await jobs_mod.send_reminders(env["ctx"], str(c.id))
+
+    assert notify_participant.await_count == 0
+    assert notify_engagements.await_count == 0
+    assert fake.closed
+
+
+async def test_resume_campaign_reenqueues_outstanding(db, env):
+    # Resume re-publishes approved posts, re-notifies participants still holding
+    # pending posts, and schedules a reminder.
+    approver = await _user(db)
+    acct = await _account(db, approver)
+    pending_user = await _user(db)
+    c = Campaign(
+        title="C",
+        type="amplify",
+        status="publishing",
+        stagger_min_seconds=1,
+        stagger_max_seconds=2,
+    )
+    db.add(c)
+    await db.flush()
+    approved = Post(
+        campaign_id=c.id,
+        user_id=approver.id,
+        social_account_id=acct.id,
+        action="repost_comment",
+        status="approved",
+        target_external_id="urn:li:activity:1",
+        idempotency_key="a",
+    )
+    pending = Post(
+        campaign_id=c.id,
+        user_id=pending_user.id,
+        action="like",
+        status="pending",
+        idempotency_key="b",
+    )
+    scheduled = Post(
+        campaign_id=c.id,
+        user_id=approver.id,
+        action="comment",
+        status="scheduled",
+        idempotency_key="c",
+    )
+    db.add_all([approved, pending, scheduled])
+    await db.commit()
+
+    await jobs_mod.resume_campaign(env["ctx"], str(c.id))
+
+    pub = [j for j in env["redis"].jobs if j[0] == "publish_post"]
+    assert [a[0] for _, a, _ in pub] == [str(approved.id)]
+    notify = [j for j in env["redis"].jobs if j[0] == "notify_participant"]
+    assert {a[1] for _, a, _ in notify} == {str(pending_user.id)}
+    assert any(j[0] == "send_reminders" for j in env["redis"].jobs)
+
+
+async def test_resume_campaign_noop_when_not_publishing(db, env):
+    # Guard against a stale resume job: if the campaign is not publishing, do
+    # nothing.
+    c = Campaign(title="C", type="amplify", status="paused")
+    db.add(c)
+    await db.commit()
+
+    await jobs_mod.resume_campaign(env["ctx"], str(c.id))
+
+    assert env["redis"].jobs == []
+
+
 async def test_publish_idempotent_noop(db, env):
     user = await _user(db)
     acct = await _account(db, user)

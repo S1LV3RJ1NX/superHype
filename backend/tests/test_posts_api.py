@@ -85,6 +85,50 @@ async def test_owner_can_edit_then_approve(client, as_role, enqueued, db):
     assert any(name == "publish_post" for name, _, _ in enqueued)
 
 
+async def test_creator_can_edit_other_participants_post(client, as_role):
+    # A non-admin creator drives the campaign, so they may refine a participant's
+    # comment text before launch even though they do not own that post.
+    async with as_role("editor", email="member@test.local") as member:
+        member_id = member.id
+
+    async with as_role("editor", email="creator@test.local") as creator:
+        created = await client.post("/v1/campaigns", json=_amplify_payload())
+        cid = created.json()["id"]
+        await client.post(
+            f"/v1/campaigns/{cid}/plan",
+            json={"participant_ids": [str(member_id)]},
+        )
+        posts = await client.get(f"/v1/campaigns/{cid}/posts")
+        post = next(p for p in posts.json()["items"] if p["action"] == "comment")
+        assert post["user_id"] == str(member_id)
+        assert post["user_id"] != str(creator.id)
+        edited = await client.patch(
+            f"/v1/posts/{post['id']}", json={"body": "creator edit"}
+        )
+    assert edited.status_code == 200
+    assert edited.json()["body"] == "creator edit"
+
+
+async def test_non_creator_non_owner_cannot_edit_post(client, as_role):
+    # An editor who neither owns the post nor created the campaign is blocked.
+    async with as_role("editor", email="member2@test.local") as member:
+        member_id = member.id
+
+    async with as_role("editor", email="creator2@test.local"):
+        created = await client.post("/v1/campaigns", json=_amplify_payload())
+        cid = created.json()["id"]
+        await client.post(
+            f"/v1/campaigns/{cid}/plan",
+            json={"participant_ids": [str(member_id)]},
+        )
+        posts = await client.get(f"/v1/campaigns/{cid}/posts")
+        post = next(p for p in posts.json()["items"] if p["action"] == "comment")
+
+    async with as_role("editor", email="outsider@test.local"):
+        resp = await client.patch(f"/v1/posts/{post['id']}", json={"body": "nope"})
+    assert resp.status_code == 403
+
+
 async def test_approve_requires_reconnect_without_account(client, as_role):
     # A reshare publishes under the owner's token, so the reconnect gate applies
     # (unlike an assisted comment or like, which needs no token).
@@ -114,15 +158,38 @@ async def test_non_owner_cannot_approve(client, as_role):
     assert resp.status_code == 403
 
 
-async def test_admin_cannot_approve_others_post(client, as_role, db):
-    # Approval publishes under the owner's own token, so even an admin must not
-    # approve on someone else's behalf.
+async def test_admin_can_approve_others_post(client, as_role, db):
+    # Per-domain approval: an admin can approve a participant's post on their
+    # behalf. It still publishes under the owner's token, which must be live.
     async with as_role("editor") as owner:
-        _, post = await _amplify_with_post(client, owner)
-        await _connect(db, owner.id)
+        cid, post = await _amplify_with_post(client, owner, action="comment")
+        await _launch(client, cid)
     async with as_role("admin", email="boss@test.local"):
         resp = await client.post(f"/v1/posts/{post['id']}/approve")
-    assert resp.status_code == 403
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "approved"
+
+
+async def test_creator_can_approve_participants_post(client, as_role):
+    # A non-admin creator drives the campaign and can approve a participant's
+    # (assisted) action for the whole domain.
+    async with as_role("editor", email="member@test.local") as member:
+        member_id = member.id
+
+    async with as_role("editor", email="owner-creator@test.local"):
+        created = await client.post("/v1/campaigns", json=_amplify_payload())
+        cid = created.json()["id"]
+        await client.post(
+            f"/v1/campaigns/{cid}/plan",
+            json={"participant_ids": [str(member_id)]},
+        )
+        await _launch(client, cid)
+        posts = await client.get(f"/v1/campaigns/{cid}/posts")
+        comment = next(p for p in posts.json()["items"] if p["action"] == "comment")
+        assert comment["user_id"] == str(member_id)
+        resp = await client.post(f"/v1/posts/{comment['id']}/approve")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "approved"
 
 
 async def test_admin_can_skip_others_post(client, as_role):

@@ -321,6 +321,95 @@ async def test_delete_campaign_after_launch_allowed_in_local(
     assert resp.status_code == 204
 
 
+async def test_admin_can_delete_launched_campaign_in_prod(
+    client, as_role, db, monkeypatch
+):
+    from app.config import settings
+    from app.models.campaign import Campaign
+
+    # Admins may delete a campaign in any state in production (cleanup, pilot reset),
+    # unlike a plain creator who is limited to un-launched statuses.
+    monkeypatch.setattr(settings, "ENV", "production")
+    async with as_role("admin"):
+        created = await client.post("/v1/campaigns", json=amplify())
+        cid = created.json()["id"]
+
+        import uuid as _uuid
+
+        campaign = await db.get(Campaign, _uuid.UUID(cid))
+        campaign.status = "publishing"
+        await db.commit()
+
+        resp = await client.delete(f"/v1/campaigns/{cid}")
+    assert resp.status_code == 204
+
+
+async def test_pause_and_resume_launched_campaign(client, as_role, db):
+    import uuid as _uuid
+
+    from app.models.campaign import Campaign
+
+    async with as_role("editor") as user:  # noqa: F841
+        created = await client.post("/v1/campaigns", json=amplify())
+        cid = created.json()["id"]
+        campaign = await db.get(Campaign, _uuid.UUID(cid))
+        campaign.status = "publishing"
+        await db.commit()
+
+        paused = await client.post(f"/v1/campaigns/{cid}/pause")
+        assert paused.status_code == 200
+        assert paused.json()["status"] == "paused"
+
+        resumed = await client.post(f"/v1/campaigns/{cid}/resume")
+        assert resumed.status_code == 200
+        assert resumed.json()["status"] == "publishing"
+
+
+async def test_pause_rejected_before_launch(client, as_role):
+    # Only a launched (publishing) campaign can be paused.
+    async with as_role("editor"):
+        created = await client.post("/v1/campaigns", json=amplify())
+        cid = created.json()["id"]
+        resp = await client.post(f"/v1/campaigns/{cid}/pause")
+    assert resp.status_code == 409
+
+
+async def test_resume_rejected_when_not_paused(client, as_role, db):
+    import uuid as _uuid
+
+    from app.models.campaign import Campaign
+
+    async with as_role("editor"):
+        created = await client.post("/v1/campaigns", json=amplify())
+        cid = created.json()["id"]
+        campaign = await db.get(Campaign, _uuid.UUID(cid))
+        campaign.status = "publishing"
+        await db.commit()
+        resp = await client.post(f"/v1/campaigns/{cid}/resume")
+    assert resp.status_code == 409
+
+
+async def test_pause_resume_forbidden_for_non_creator(client, as_role, db):
+    # Pause/resume have no route-level role gate, so the controller's
+    # creator-or-admin check is the only guard: an unrelated editor gets 403.
+    import uuid as _uuid
+
+    from app.models.campaign import Campaign
+
+    async with as_role("editor"):
+        created = await client.post("/v1/campaigns", json=amplify())
+        cid = created.json()["id"]
+        campaign = await db.get(Campaign, _uuid.UUID(cid))
+        campaign.status = "publishing"
+        await db.commit()
+
+    async with as_role("editor", email="intruder@test.local"):
+        paused = await client.post(f"/v1/campaigns/{cid}/pause")
+        assert paused.status_code == 403
+        resumed = await client.post(f"/v1/campaigns/{cid}/resume")
+        assert resumed.status_code == 403
+
+
 async def test_list_only_shows_own_campaigns(client, as_role):
     async with as_role("editor"):
         await client.post("/v1/campaigns", json=amplify("mine"))

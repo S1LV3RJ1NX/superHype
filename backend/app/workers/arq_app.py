@@ -20,6 +20,7 @@ from app.workers.jobs import (
     notify_participant,
     publish_post,
     request_reconnect,
+    resume_campaign,
     send_reminders,
 )
 
@@ -39,6 +40,7 @@ class WorkerSettings:
     functions = [
         generate_drafts,
         launch_campaign,
+        resume_campaign,
         notify_participant,
         # Short keep_result so the per-person job-id dedupe (which coalesces a
         # person's near-simultaneous like/comment into one card) only spans the

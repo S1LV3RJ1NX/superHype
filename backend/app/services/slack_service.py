@@ -51,6 +51,12 @@ _SKIP_ACTION_ID = "campaign_skip_all"
 _ACK_ACTION_ID = "engagement_ack_all"
 _ENGAGE_SKIP_ACTION_ID = "engagement_skip_all"
 
+# The per-action opt-in checkboxes on the bundle card. Ticked actions are the
+# ones "Approve" lets through; unticked ones are skipped. The block/action ids
+# are how we read the tick state back out of the interaction payload.
+_ACTION_SELECT_BLOCK_ID = "campaign_action_select"
+_ACTION_TOGGLE_ACTION_ID = "campaign_action_toggle"
+
 # action_id -> (approval op, statuses to gather for that op). One table drives
 # both bundle cards (approve/skip at launch, ack/skip for assisted engagements).
 _INTERACTION_OPS: dict[str, tuple[str, tuple[str, ...]]] = {
@@ -67,6 +73,37 @@ def _result_message(op: str, n: int) -> str:
     if op == "ack":
         return f"Marked {n} action(s) done. Thanks for keeping the campaign moving."
     return f"Skipped {n} action(s)."
+
+
+def _approve_result_message(n_approved: int, n_skipped: int) -> str:
+    """Outcome for a checkbox approve, which can both approve and skip at once."""
+    if n_approved and n_skipped:
+        return (
+            f"Approved {n_approved} action(s) and skipped {n_skipped}. "
+            "Thanks for keeping the campaign moving."
+        )
+    if n_approved:
+        return _result_message("approve", n_approved)
+    if n_skipped:
+        return _result_message("skip", n_skipped)
+    return "You're all set. Nothing here needs your action."
+
+
+def _selected_actions(payload: dict[str, Any]) -> set[str] | None:
+    """Ticked action keys from the card's checkboxes, or None if absent.
+
+    None means the card carried no per-action checkboxes (e.g. an older card or
+    the engagement bundle), in which case the caller falls back to "approve all".
+
+    The checkbox element is found by its action_id across whatever block Slack
+    keyed it under, rather than assuming our block_id survives round-trip.
+    """
+    values = (payload.get("state") or {}).get("values") or {}
+    for block in values.values():
+        element = (block or {}).get(_ACTION_TOGGLE_ACTION_ID)
+        if element:
+            return {opt.get("value") for opt in (element.get("selected_options") or [])}
+    return None
 
 
 async def resolve_identity(
@@ -100,28 +137,40 @@ async def resolve_identity(
     return identity
 
 
-def _summarize(posts: list[Post]) -> list[str]:
-    """Ordered, de-duplicated "N x label" lines describing the bundle."""
+def _action_counts(posts: list[Post]) -> tuple[list[str], dict[str, int]]:
+    """Distinct action keys in first-seen order, plus how many of each."""
     counts: dict[str, int] = {}
     order: list[str] = []
     for post in posts:
-        label = _ACTION_LABELS.get(post.action, post.action)
-        if label not in counts:
-            order.append(label)
-        counts[label] = counts.get(label, 0) + 1
-    lines = []
-    for label in order:
-        n = counts[label]
-        lines.append(f"- {label}" + (f" (x{n})" if n > 1 else ""))
-    return lines
+        if post.action not in counts:
+            order.append(post.action)
+        counts[post.action] = counts.get(post.action, 0) + 1
+    return order, counts
+
+
+def _action_options(posts: list[Post]) -> list[dict[str, Any]]:
+    """Checkbox options (one per distinct action) for the per-action opt-in."""
+    order, counts = _action_counts(posts)
+    options: list[dict[str, Any]] = []
+    for action in order:
+        label = _ACTION_LABELS.get(action, action)
+        n = counts[action]
+        text = label + (f" (x{n})" if n > 1 else "")
+        options.append({"text": {"type": "plain_text", "text": text}, "value": action})
+    return options
 
 
 def _bundle_blocks(
     campaign: Campaign, posts: list[Post]
 ) -> tuple[list[dict[str, Any]], str]:
-    """Build the Block Kit payload (and text fallback) for the bundled ask."""
+    """Build the Block Kit payload (and text fallback) for the bundled ask.
+
+    The card lists each action as an opt-in checkbox (all ticked by default):
+    Approve lets the ticked actions through and skips the rest, so a person can
+    drop, say, the reshare while still approving the like and comment in one go.
+    """
     portal_url = f"{settings.FRONTEND_URL}/app/campaigns/{campaign.id}"
-    summary = "\n".join(_summarize(posts))
+    options = _action_options(posts)
     text = f"You have {len(posts)} LinkedIn action(s) for {campaign.title}"
     blocks: list[dict[str, Any]] = [
         {
@@ -133,17 +182,30 @@ def _bundle_blocks(
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"*{campaign.title}*\nApprove everything below in one click, "
-                    f"or open the portal to review each item.\n\n{summary}"
+                    f"*{campaign.title}*\nTick the actions you want to go ahead "
+                    "with, then Approve. Unticked actions are skipped. Open the "
+                    "portal to review each item."
                 ),
             },
+        },
+        {
+            "type": "actions",
+            "block_id": _ACTION_SELECT_BLOCK_ID,
+            "elements": [
+                {
+                    "type": "checkboxes",
+                    "action_id": _ACTION_TOGGLE_ACTION_ID,
+                    "options": options,
+                    "initial_options": options,
+                }
+            ],
         },
         {
             "type": "actions",
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Approve all"},
+                    "text": {"type": "plain_text", "text": "Approve"},
                     "style": "primary",
                     "action_id": _APPROVE_ACTION_ID,
                     "value": str(campaign.id),
@@ -447,18 +509,60 @@ async def handle_interaction(
         )
         return
 
-    post_ids = [p.id for p in posts]
-    try:
-        settled = await approval_service.batch(db, op=op, post_ids=post_ids, actor=user)
-    except ReconnectRequiredError:
-        reconnect_url = f"{settings.FRONTEND_URL}/app/connections"
+    reconnect_url = f"{settings.FRONTEND_URL}/app/connections"
+
+    # Approve honours the per-action checkboxes: ticked actions are approved,
+    # unticked ones are skipped in the same interaction. Skip/ack settle every
+    # gathered post regardless (Skip all means skip all).
+    if op == "approve":
+        selected = _selected_actions(payload)
+        if selected is None:
+            approve_posts, skip_posts = posts, []
+        else:
+            # A self-comment cannot be posted if the person opts out of their own
+            # post, so dropping the post drops its self-comment too.
+            if "post" not in selected:
+                selected.discard("self_comment")
+            approve_posts = [p for p in posts if p.action in selected]
+            skip_posts = [p for p in posts if p.action not in selected]
+
+        approved: list[Post] = []
+        try:
+            if approve_posts:
+                approved = await approval_service.approve(
+                    db, [p.id for p in approve_posts], actor=user
+                )
+        except ReconnectRequiredError:
+            await _safe_respond(
+                client,
+                response_url,
+                "Your LinkedIn connection needs to be refreshed before we can "
+                f"publish. Reconnect here: {reconnect_url}",
+            )
+            return
+        except ApprovalError as exc:
+            await _safe_respond(client, response_url, f"Could not approve: {exc}")
+            return
+
+        skipped: list[Post] = []
+        try:
+            if skip_posts:
+                skipped = await approval_service.skip(
+                    db, [p.id for p in skip_posts], actor=user
+                )
+        except ApprovalError as exc:
+            await _safe_respond(client, response_url, f"Could not skip: {exc}")
+            return
+
         await _safe_respond(
-            client,
-            response_url,
-            "Your LinkedIn connection needs to be refreshed before we can "
-            f"publish. Reconnect here: {reconnect_url}",
+            client, response_url, _approve_result_message(len(approved), len(skipped))
         )
         return
+
+    try:
+        settled = await approval_service.batch(
+            db, op=op, post_ids=[p.id for p in posts], actor=user
+        )
     except ApprovalError as exc:
         await _safe_respond(client, response_url, f"Could not {op}: {exc}")
         return

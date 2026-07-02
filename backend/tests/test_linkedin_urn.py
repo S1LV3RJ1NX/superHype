@@ -44,6 +44,17 @@ def test_embed_share_url_keeps_share_namespace():
     assert parse_post_urn(url) == "urn:li:share:7470530295751168000"
 
 
+def test_full_embed_iframe_snippet_extracts_share_urn():
+    # "Embed this post" copies a whole <iframe>; the share id is found inside it
+    # and the height/width numbers are ignored (they carry no urn label).
+    iframe = (
+        '<iframe src="https://www.linkedin.com/embed/feed/update/'
+        'urn:li:share:7478359934011752448?collapsed=1" height="670" width="504" '
+        'frameborder="0" allowfullscreen="" title="Embedded post"></iframe>'
+    )
+    assert parse_post_urn(iframe) == "urn:li:share:7478359934011752448"
+
+
 def test_ugcpost_label_preserved():
     url = "https://www.linkedin.com/feed/update/urn:li:ugcPost:7123456789012345678/"
     assert parse_post_urn(url) == "urn:li:ugcPost:7123456789012345678"

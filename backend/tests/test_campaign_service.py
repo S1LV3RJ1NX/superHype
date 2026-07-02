@@ -42,6 +42,72 @@ async def test_legal_and_illegal_transitions(db):
         await campaign_service.transition(db, c, "draft")
 
 
+async def test_expand_amplify_defaults_to_all_three(db):
+    u1 = await _user(db)
+    u2 = await _user(db)
+    c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:1")
+
+    out = await campaign_service.expand_participants(db, c, [u1.id, u2.id])
+
+    per_user = {u1.id: set(), u2.id: set()}
+    for a in out:
+        per_user[a.user_id].add(a.action)
+    assert per_user[u1.id] == {"like", "comment", "repost_comment"}
+    assert per_user[u2.id] == {"like", "comment", "repost_comment"}
+
+
+async def test_expand_amplify_honors_per_participant_actions(db):
+    u1 = await _user(db)
+    u2 = await _user(db)
+    c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:1")
+
+    out = await campaign_service.expand_participants(
+        db,
+        c,
+        [u1.id, u2.id],
+        actions_by_participant={
+            u1.id: ["like", "repost_comment"],  # no comment for u1
+            u2.id: ["comment"],
+        },
+    )
+
+    per_user: dict = {u1.id: [], u2.id: []}
+    for a in out:
+        per_user[a.user_id].append(a.action)
+    # Canonical order preserved, comment dropped for u1.
+    assert per_user[u1.id] == ["like", "repost_comment"]
+    assert per_user[u2.id] == ["comment"]
+
+
+async def test_expand_amplify_empty_actions_excludes_participant(db):
+    u1 = await _user(db)
+    u2 = await _user(db)
+    c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:1")
+
+    out = await campaign_service.expand_participants(
+        db,
+        c,
+        [u1.id, u2.id],
+        actions_by_participant={u1.id: [], u2.id: ["like"]},
+    )
+
+    users = {a.user_id for a in out}
+    assert users == {u2.id}  # u1 contributes nothing
+    assert [a.action for a in out] == ["like"]
+
+
+async def test_expand_distribute_ignores_actions_map(db):
+    poster = await _user(db)
+    c = await _campaign(db, ctype="distribute", seed_content="seed")
+
+    out = await campaign_service.expand_participants(
+        db, c, [poster.id], actions_by_participant={poster.id: ["like"]}
+    )
+
+    # Distribute still authors a self post regardless of the amplify actions map.
+    assert any(a.action == "post" for a in out)
+
+
 async def test_build_plan_amplify_targets_seed_urn(db):
     u1 = await _user(db)
     u2 = await _user(db)
@@ -227,6 +293,124 @@ async def test_build_plan_keeps_scheduled_posts(db):
     all_posts = await post_repo.list_for_campaign(db, c.id)
     statuses = sorted(p.status for p in all_posts)
     assert statuses == ["pending", "scheduled"]
+
+
+async def test_build_plan_incremental_only_generates_new(db, monkeypatch):
+    # Re-planning after adding a participant generates text only for the new
+    # person; the existing person's body is preserved (no gateway call, no
+    # overwrite of an edit).
+    u_a = await _user(db)
+    u_b = await _user(db)
+    c = await _campaign(
+        db, ctype="amplify", seed_urn="urn:li:activity:1", seed_content="seed"
+    )
+
+    calls: list[int] = []
+
+    async def fake_interactions(target_text, items, **kw):
+        calls.append(len(items))
+        return [f"comment-{i}" for i in range(len(items))]
+
+    monkeypatch.setattr(campaign_service, "generate_interactions", fake_interactions)
+
+    await campaign_service.build_plan(
+        db, c.id, [Assignment(user_id=u_a.id, action="comment")], generate=True
+    )
+    assert sum(calls) == 1
+
+    calls.clear()
+    await campaign_service.build_plan(
+        db,
+        c.id,
+        [
+            Assignment(user_id=u_a.id, action="comment"),
+            Assignment(user_id=u_b.id, action="comment"),
+        ],
+        generate=True,
+    )
+    # Only the newly added B needs generation.
+    assert sum(calls) == 1
+    rows = await post_repo.list_for_campaign(db, c.id)
+    bodies = {r.user_id: r.body for r in rows if r.action == "comment"}
+    assert bodies[u_a.id] == "comment-0"
+    assert bodies[u_b.id]
+
+
+async def test_build_plan_regenerate_rewrites_everyone(db, monkeypatch):
+    u_a = await _user(db)
+    u_b = await _user(db)
+    c = await _campaign(
+        db, ctype="amplify", seed_urn="urn:li:activity:1", seed_content="seed"
+    )
+    calls: list[int] = []
+
+    async def fake_interactions(target_text, items, **kw):
+        calls.append(len(items))
+        return [f"c-{i}" for i in range(len(items))]
+
+    monkeypatch.setattr(campaign_service, "generate_interactions", fake_interactions)
+
+    await campaign_service.build_plan(
+        db, c.id, [Assignment(user_id=u_a.id, action="comment")], generate=True
+    )
+    calls.clear()
+    await campaign_service.build_plan(
+        db,
+        c.id,
+        [
+            Assignment(user_id=u_a.id, action="comment"),
+            Assignment(user_id=u_b.id, action="comment"),
+        ],
+        generate=True,
+        regenerate=True,
+    )
+    # regenerate=True discards preserved text, so both are rewritten.
+    assert sum(calls) == 2
+
+
+async def test_build_plan_incremental_drops_removed_participant(db):
+    u_a = await _user(db)
+    u_b = await _user(db)
+    c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:1")
+    await campaign_service.build_plan(
+        db,
+        c.id,
+        [
+            Assignment(user_id=u_a.id, action="comment", body="a"),
+            Assignment(user_id=u_b.id, action="comment", body="b"),
+        ],
+        generate=False,
+    )
+    # De-select B: their pending post is dropped.
+    await campaign_service.build_plan(
+        db,
+        c.id,
+        [Assignment(user_id=u_a.id, action="comment", body="a")],
+        generate=False,
+    )
+    rows = await post_repo.list_for_campaign(db, c.id)
+    assert {r.user_id for r in rows} == {u_a.id}
+
+
+async def test_build_plan_manual_replan_keeps_edited_body(db):
+    # A manual re-plan (no participant change, no generation) preserves an edit
+    # made to a pending post rather than resetting it to an empty assignment body.
+    u = await _user(db)
+    c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:1")
+    rows = await campaign_service.build_plan(
+        db, c.id, [Assignment(user_id=u.id, action="comment")], generate=False
+    )
+    comment = next(r for r in rows if r.action == "comment")
+    comment.body = "hand edited"
+    await db.flush()
+
+    # expand_participants sends no body, so without preservation this would blank
+    # the comment.
+    await campaign_service.build_plan(
+        db, c.id, [Assignment(user_id=u.id, action="comment")], generate=False
+    )
+    refreshed = await post_repo.list_for_campaign(db, c.id)
+    assert next(r for r in refreshed if r.action == "comment").body == "hand edited"
 
 
 async def test_check_completion_moves_to_completed(db):
