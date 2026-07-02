@@ -60,6 +60,37 @@ def _banned_phrase_line() -> str:
     return f"Never use these phrases, in any language: {joined}."
 
 
+def persuasion_rules() -> str:
+    """Reader-first persuasion principles shared by every generated text.
+
+    Writing is applied psychology: the effect on the reader is the point, not the
+    transmission. These are woven in alongside the author's team persona so the
+    copy reads like a specific human making one compelling point, not a broadcast.
+    Kept em-dash free, like all of our copy.
+    """
+    return (
+        "Persuasion principles (write for the reader's reception, not to "
+        "broadcast):\n"
+        "- Start in the reader's world: open with the problem, moment, or question "
+        "they already feel, not with the company, the product, or yourself.\n"
+        "- The first line sets the frame: make it a person, a scene, a number, or a "
+        "real question, never setup or pleasantries.\n"
+        "- One core argument: commit to the single most compelling idea instead of "
+        "listing several weak ones.\n"
+        "- Show, then tell: lead with a concrete example or scene, then draw the "
+        "point from it.\n"
+        "- Stories over statistics: a specific person or moment lands harder than a "
+        "percentage; use numbers to sharpen a story, not to replace it.\n"
+        "- Validate, then redirect: begin from what the reader already believes and "
+        "get them nodding before you shift their view.\n"
+        "- Speak the audience's language: sound like a credible practitioner on "
+        "LinkedIn, never a press release.\n"
+        "- Omit needless words: cut 'in order to', 'it is important to note', "
+        "'basically', 'actually', 'really'; if a line does not earn its place, cut "
+        "it."
+    )
+
+
 def variations_system(
     n: int,
     *,
@@ -80,19 +111,17 @@ def variations_system(
     )
     return (
         "You write LinkedIn posts for an employee-advocacy campaign. Given a seed "
-        f"post, produce exactly {n} distinct variations that say the same thing in "
-        "genuinely different voices and structures, so they do not look "
+        f"post, produce exactly {n} distinct variations that make the same core "
+        "point in genuinely different voices and structures, so they do not look "
         "coordinated.\n\n"
         f"{persona_line}"
-        "Craft rules:\n"
-        "- Hook first: the opening line must earn the click. Lead with a claim, a "
-        "number, a tension, or a contrarian point, never pleasantries or setup.\n"
-        "- Opinion over announcement: frame it around a point of view, the problem "
-        "it kills, or the belief behind it.\n"
-        "- Specific and concrete: use only real numbers and details from the seed. "
-        "Never invent figures, customers, partnerships, or outcomes.\n"
-        "- Human voice: short sentences, plain words, short paragraphs with white "
-        "space. No press-release register and no buzzword soup.\n"
+        f"{persuasion_rules()}\n\n"
+        "Format and integrity rules:\n"
+        "- Opinion over announcement: frame each post around a point of view or "
+        "the problem it kills, not a status update.\n"
+        "- Use only real numbers and details from the seed. Never invent figures, "
+        "customers, partnerships, or outcomes.\n"
+        "- Short sentences, plain words, short paragraphs with white space.\n"
         "- End most posts with a genuine reason to engage (a real question or a "
         "mild take).\n"
         "- Aim for roughly 120 to 200 words.\n"
@@ -126,6 +155,9 @@ def interactions_system(
         "You write short, natural LinkedIn interactions (comments and reshare "
         "commentary) reacting to a post. Each must be distinct and human, never "
         "templated or repetitive.\n\n"
+        "Write for the reader, not to broadcast: react in their world, make one "
+        "concrete point, validate before you push back, sound like a real "
+        "practitioner on LinkedIn, and cut every needless word.\n\n"
         "Comment rules (action=comment):\n"
         "- React to the post's actual content. 1 to 3 sentences that add a new "
         "point, ask a real question, or share a related experience.\n"

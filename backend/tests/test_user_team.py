@@ -68,18 +68,20 @@ async def test_set_my_team_writes_audit(client: AsyncClient, as_role, engine):
     assert any(log.actor_id == actor_id for log in logs)
 
 
-async def test_editor_team_auto_grants_editor(client: AsyncClient, as_role, engine):
-    team = await _make_team(engine, "GTM")
+async def test_team_selection_keeps_viewer(client: AsyncClient, as_role, engine):
+    # No team auto-grants a role anymore: joining any team leaves a viewer a
+    # viewer. Admins grant editor manually via PATCH /v1/users/{id}.
+    team = await _make_team(engine, "Sales")
     async with as_role("viewer"):
         resp = await client.patch("/v1/users/me", json={"team_id": str(team.id)})
     assert resp.status_code == 200
-    assert resp.json()["role"] == "editor"
+    assert resp.json()["role"] == "viewer"
 
 
-async def test_editor_team_auto_grant_writes_audit(
+async def test_team_selection_writes_no_role_change(
     client: AsyncClient, as_role, engine
 ):
-    team = await _make_team(engine, "GTM")
+    team = await _make_team(engine, "Sales")
     async with as_role("viewer") as user:
         resp = await client.patch("/v1/users/me", json={"team_id": str(team.id)})
         assert resp.status_code == 200
@@ -90,25 +92,11 @@ async def test_editor_team_auto_grant_writes_audit(
         rows = await session.execute(
             select(AuditLog).where(AuditLog.action == "role_change")
         )
-    logs = list(rows.scalars().all())
-    grant = [
-        log
-        for log in logs
-        if log.actor_id == actor_id and log.detail.get("reason") == "team_auto_grant"
-    ]
-    assert len(grant) == 1
-    assert grant[0].detail["new_role"] == "editor"
+    logs = [log for log in rows.scalars().all() if log.actor_id == actor_id]
+    assert logs == []
 
 
-async def test_non_editor_team_keeps_viewer(client: AsyncClient, as_role, engine):
-    team = await _make_team(engine, "Engineering")
-    async with as_role("viewer"):
-        resp = await client.patch("/v1/users/me", json={"team_id": str(team.id)})
-    assert resp.status_code == 200
-    assert resp.json()["role"] == "viewer"
-
-
-async def test_editor_team_never_demotes_admin(client: AsyncClient, as_role, engine):
+async def test_team_selection_never_demotes_admin(client: AsyncClient, as_role, engine):
     team = await _make_team(engine, "Engineering")
     async with as_role("admin"):
         resp = await client.patch("/v1/users/me", json={"team_id": str(team.id)})

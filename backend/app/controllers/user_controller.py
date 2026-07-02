@@ -13,11 +13,6 @@ from app.repositories.user_repo import user_repo
 from app.schemas.common import Page, PageParams
 from app.schemas.user import UserOut
 
-# Teams whose members act on behalf of the company and so get the editor role
-# automatically on joining. Matched case-insensitively. We only elevate a viewer;
-# existing editors and admins are never touched (and never demoted).
-_EDITOR_TEAMS = {"founder's office", "gtm", "marketing and sales"}
-
 
 async def _hydrate_one(db: AsyncSession, user: User) -> UserOut:
     out = UserOut.model_validate(user)
@@ -74,22 +69,8 @@ async def set_my_team(db: AsyncSession, *, user: User, team_id: uuid.UUID) -> Us
             action="team_assigned",
             detail={"team_id": str(team.id), "name": team.name},
         )
-        # Some teams act for the company, so joining one auto-grants editor. Only
-        # elevate a viewer; never demote an existing editor or admin.
-        if target.role == "viewer" and team.name.strip().lower() in _EDITOR_TEAMS:
-            await user_repo.set_role(db, target, "editor")
-            await audit_repo.record(
-                db,
-                actor_id=target.id,
-                action="role_change",
-                detail={
-                    "target_id": str(target.id),
-                    "old_role": "viewer",
-                    "new_role": "editor",
-                    "reason": "team_auto_grant",
-                    "team": team.name,
-                },
-            )
+        # No role change on team selection: everyone joins as a viewer and an
+        # admin grants editor manually via PATCH /v1/users/{id}.
         await db.commit()
     return await _hydrate_one(db, target)
 

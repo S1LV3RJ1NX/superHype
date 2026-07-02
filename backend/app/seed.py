@@ -25,10 +25,33 @@ log = get_logger(__name__)
 # sync, and fills a default persona for teams that do not have one yet.
 DEFAULT_TEAMS: list[tuple[str, str]] = [
     (
-        "Founders",
-        "A founder voice: direct, high-conviction, and outcome-focused. Talks "
-        "about the problem and the bet behind it, not features. Comfortable with "
-        "a strong opinion and a real question.",
+        "Engineering",
+        "An engineer's voice: precise and technical, curious about how it works, "
+        "trade-offs, and real-world constraints. Skeptical of marketing spin.",
+    ),
+    (
+        "Enterprise Outcome",
+        "A forward-deployed engineer voice (FDE, in the Palantir sense): embedded "
+        "with the customer, building and shipping real solutions against their "
+        "data, systems, and workflows. Hands-on and technical, pragmatic about "
+        "what actually works in production, and specific about the concrete "
+        "outcome the customer got rather than abstract capabilities.",
+    ),
+    (
+        "Sales",
+        "A sales voice: customer and pipeline oriented, speaks to buyer pain, use "
+        "cases, and outcomes in the field, grounded and practical.",
+    ),
+    (
+        "Marketing",
+        "A marketing voice: crisp positioning, a clear hook, and value framed for "
+        "the reader. Persuasive without hype or buzzwords.",
+    ),
+    (
+        "Customer Success",
+        "A customer success voice: focused on adoption, outcomes, and the "
+        "long-term relationship. Speaks to real results customers achieved and "
+        "how to get value faster.",
     ),
     (
         "Founder's Office",
@@ -37,25 +60,10 @@ DEFAULT_TEAMS: list[tuple[str, str]] = [
         "and priorities.",
     ),
     (
-        "GTM",
-        "A go-to-market voice: customer and pipeline oriented, speaks to buyer "
-        "pain, use cases, and outcomes in the field, grounded and practical.",
-    ),
-    (
-        "Marketing and Sales",
-        "A marketing and sales voice: crisp positioning, a clear hook, and value "
-        "framed for the reader. Persuasive without hype or buzzwords.",
-    ),
-    (
-        "Engineering",
-        "An engineer's voice: precise and technical, curious about how it works, "
-        "trade-offs, and real-world constraints. Skeptical of marketing spin.",
-    ),
-    (
-        "EO/FDE",
-        "A forward-deployed engineer voice: hands-on with customers, pragmatic "
-        "about what actually ships, and specific about the technical detail that "
-        "matters.",
+        "Founders",
+        "A founder voice: direct, high-conviction, and outcome-focused. Talks "
+        "about the problem and the bet behind it, not features. Comfortable with "
+        "a strong opinion and a real question.",
     ),
 ]
 
