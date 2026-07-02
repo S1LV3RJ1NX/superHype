@@ -295,17 +295,21 @@ async def test_notify_engagements_posts_mark_done_card(db):
     action_block = next(b for b in blocks if b["type"] == "actions")
     action_ids = {el.get("action_id") for el in action_block["elements"]}
     assert action_ids == {"engagement_ack_all", "engagement_skip_all"}
-    # One combined section: labeled like-and-comment, with the suggested comment in
-    # a fenced code block so Slack shows its one-tap Copy button.
+    # One combined section: labeled like-and-comment, pointing to the follow-up
+    # message that carries the copyable comment. The comment text is not inlined
+    # in the card anymore (no fenced code block), only in the standalone message.
     combined = next(
         b
         for b in blocks
         if b.get("type") == "section"
-        and "Great post, love the RL angle." in b["text"]["text"]
+        and "Like and comment on this teammate's post" in b["text"]["text"]
     )
     combined_text = combined["text"]["text"]
-    assert "Like and comment on this teammate's post" in combined_text
-    assert "```\nGreat post, love the RL angle.\n```" in combined_text
+    assert (
+        "Copy the comment from the next message and paste it on the post"
+        in combined_text
+    )
+    assert "Great post, love the RL angle." not in combined_text
     # No separate bare "Like" entry survived the grouping.
     like_only = [
         b

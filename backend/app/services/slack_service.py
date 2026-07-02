@@ -266,9 +266,9 @@ def _engagement_blocks(
         url = next((p.engagement_url for p in group if p.engagement_url), None)
         if url:
             line += f" - <{url}|open the post>"
-        # The comment text (from the comment or self-comment in the group) goes in
-        # a fenced code block (one-tap Copy on desktop) and is also sent as its own
-        # message (below) so it is copyable on mobile.
+        # The comment text (from the comment or self-comment in the group) is not
+        # inlined here: it is sent as its own message (below) so it copies cleanly
+        # on both mobile and desktop. The card just points to that message.
         body = next(
             (
                 p.body
@@ -279,10 +279,8 @@ def _engagement_blocks(
         )
         if body:
             comment_texts.append(body)
-            safe_body = body.replace("```", "'''")
             line += (
-                "\n_Copy the comment below and paste it on the post:_"
-                f"\n```\n{safe_body}\n```"
+                "\n_Copy the comment from the next message and paste it on the post._"
             )
         blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": line}})
     if comment_texts:
@@ -293,8 +291,8 @@ def _engagement_blocks(
                     {
                         "type": "mrkdwn",
                         "text": (
-                            "On mobile, long-press the comment message below and "
-                            "tap Copy text."
+                            "The suggested comment is in the message below. Long-press "
+                            "(mobile) or click (desktop) it to copy."
                         ),
                     }
                 ],
