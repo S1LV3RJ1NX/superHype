@@ -21,6 +21,7 @@ from app.providers.linkedin import (
     LinkedInAuthError,
     LinkedInRateLimitError,
 )
+from app.workers.queue import flush_campaign_jobs as _real_flush_campaign_jobs
 
 pytestmark = pytest.mark.asyncio
 
@@ -279,6 +280,75 @@ async def test_publish_post_noop_when_paused(db, env, cm_enabled):
     async with env["maker"]() as s:
         rp = await s.get(Post, p.id)
         assert rp.status == "approved"
+
+
+async def test_publish_post_noop_when_reset(db, env, cm_enabled):
+    # A reset rewinds the campaign to review and clears launched_at, so a publish
+    # deferred from the previous run must abort rather than post again.
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="amplify", status="review", launched_at=None)
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="like",
+        status="approved",
+        target_external_id="urn:li:activity:1",
+        idempotency_key="k",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    assert env["provider"].calls == []
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "approved"
+
+
+async def test_flush_campaign_jobs_removes_only_matching(monkeypatch):
+    # Reset flushes a campaign's queued jobs: campaign-keyed jobs matched by id
+    # and publish_post matched by post id. Other campaigns' jobs are untouched.
+    import fakeredis.aioredis
+    from arq.connections import ArqRedis
+    from arq.constants import default_queue_name
+    from arq.jobs import Job
+
+    import app.workers.queue as queue_mod
+
+    fake = fakeredis.aioredis.FakeRedis()
+    pool = ArqRedis(connection_pool=fake.connection_pool)
+    monkeypatch.setattr(queue_mod, "_pool", pool)
+
+    cid, other_cid = "camp-1", "camp-2"
+    mine_post, other_post = "post-mine", "post-other"
+
+    await pool.enqueue_job("notify_participant", cid, "u1", _defer_by=999)
+    await pool.enqueue_job("send_reminders", cid, _defer_by=999)
+    await pool.enqueue_job("notify_engagements", cid, "u1", _defer_by=999)
+    await pool.enqueue_job("publish_post", mine_post, _defer_by=999)
+    # Kept: a different campaign and an unrelated post.
+    await pool.enqueue_job("notify_participant", other_cid, "u9", _defer_by=999)
+    await pool.enqueue_job("publish_post", other_post, _defer_by=999)
+
+    removed = await _real_flush_campaign_jobs(cid, {mine_post})
+    assert removed == 4
+
+    remaining = set()
+    for raw in await pool.zrange(default_queue_name, 0, -1):
+        jid = raw.decode() if isinstance(raw, bytes) else raw
+        info = await Job(jid, pool).info()
+        remaining.add((info.function, info.args))
+    assert remaining == {
+        ("notify_participant", (other_cid, "u9")),
+        ("publish_post", (other_post,)),
+    }
+
+    await pool.aclose()
 
 
 async def test_notify_participant_noop_when_paused(db, env):

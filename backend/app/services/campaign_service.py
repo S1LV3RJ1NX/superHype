@@ -101,6 +101,38 @@ async def transition(
     return campaign
 
 
+async def reset_for_rerun(
+    db: AsyncSession,
+    campaign: Campaign,
+    *,
+    actor_id: uuid.UUID | None = None,
+) -> int:
+    """Rewind a launched campaign back to review so it can be launched again.
+
+    Every post returns to pending (publish artifacts wiped) and the campaign
+    returns to review with its launch cleared. This is deliberately outside the
+    normal TRANSITIONS matrix: it is an admin override that can rewind from any
+    launched state (publishing, paused, completed, failed). Because the campaign
+    is back in review, the worker guards (which no-op for a paused or review
+    campaign) drop any jobs still deferred from the previous run, so no stale
+    publish or DM fires after a reset. The plan itself (post rows and bodies) is
+    kept. The caller owns the commit.
+    """
+    from_status = campaign.status
+    rewound = await post_repo.rewind_for_campaign(db, campaign.id)
+    await campaign_repo.update(
+        db, campaign, status="review", launched_at=None, launched_by=None
+    )
+    await audit_repo.record(
+        db,
+        actor_id=actor_id,
+        action="campaign_reset",
+        campaign_id=campaign.id,
+        detail={"posts_rewound": rewound, "from_status": from_status},
+    )
+    return rewound
+
+
 async def _personas_by_user(
     db: AsyncSession, user_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, str]:

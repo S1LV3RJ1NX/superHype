@@ -359,6 +359,35 @@ async def launch(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> Campa
     return CampaignOut.model_validate(campaign)
 
 
+async def reset(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> CampaignOut:
+    """Rewind a launched campaign to review so it can be launched again.
+
+    A convenience for restarting a campaign without recreating it: every post
+    goes back to pending and the campaign returns to review. Only allowed once a
+    campaign has been launched (there is nothing to rewind before that), and only
+    for the creator or an admin, matching launch/pause/delete.
+    """
+    campaign = await _load_or_404(db, campaign_id)
+    if not (_is_admin(actor) or campaign.created_by == actor.id):
+        raise HTTPException(403, "Only the creator or an admin can reset a campaign.")
+    if campaign.launched_at is None:
+        raise HTTPException(409, "Only a launched campaign can be reset.")
+    posts = await post_repo.list_for_campaign(db, campaign_id)
+    await campaign_service.reset_for_rerun(db, campaign, actor_id=actor.id)
+    await db.commit()
+
+    # Drop the campaign's still-queued jobs so a re-launch starts clean and no
+    # deferred publish or DM from the previous run fires once it is publishing
+    # again. Enqueued (not run inline) to keep the request off the queue scan;
+    # the worker guards are the safety net if this misses one.
+    await queue.enqueue_job(
+        "flush_campaign_jobs", str(campaign_id), [str(p.id) for p in posts]
+    )
+
+    await db.refresh(campaign)
+    return CampaignOut.model_validate(campaign)
+
+
 async def pause(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> CampaignOut:
     """Pause a launched campaign so no further posts publish or DMs go out.
 

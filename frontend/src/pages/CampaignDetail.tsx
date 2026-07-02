@@ -81,6 +81,7 @@ export function CampaignDetail() {
   const [actingIds, setActingIds] = useState<Set<string>>(new Set());
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
 
   const startActing = (postId: string) =>
     setActingIds((prev) => new Set(prev).add(postId));
@@ -109,6 +110,16 @@ export function CampaignDetail() {
   // Pause/resume a launched campaign: creator or admin only.
   const canManage =
     !!campaign && (user?.role === "admin" || campaign.created_by === user?.id);
+
+  // Reset rewinds a launched campaign back to review so it can be launched
+  // again. Gate on launched_at (not just status) so a never-launched campaign
+  // that failed during generation does not show a Reset that the backend 409s.
+  // Same creator-or-admin gate as pause/resume.
+  const canReset =
+    canManage &&
+    !!campaign &&
+    !!campaign.launched_at &&
+    ["publishing", "paused", "completed", "failed"].includes(campaign.status);
 
   const confirmDelete = async () => {
     if (!campaign) return;
@@ -575,6 +586,17 @@ export function CampaignDetail() {
                 Resume
               </button>
             )}
+            {canReset && (
+              <button
+                onClick={() => setResetOpen(true)}
+                disabled={busy}
+                className="inline-flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium text-ink hover:bg-sand disabled:opacity-50"
+                title="Rewind this campaign to review so it can be launched again"
+              >
+                <RotateCcw className="h-4 w-4" />
+                Reset
+              </button>
+            )}
           </div>
         </div>
 
@@ -693,6 +715,55 @@ export function CampaignDetail() {
           onConfirm={confirmDelete}
           onClose={() => !deleting && setDeleteOpen(false)}
         />
+      )}
+      {resetOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
+          onClick={() => !busy && setResetOpen(false)}
+        >
+          <div
+            className="w-full max-w-md rounded-lg border border-border bg-surface p-5 shadow-lg"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start gap-3">
+              <span className="mt-0.5 rounded-full bg-clay/10 p-1.5 text-clay">
+                <RotateCcw className="h-4 w-4" />
+              </span>
+              <div>
+                <h2 className="font-serif text-lg text-ink">Reset campaign</h2>
+                <p className="mt-1 text-sm text-muted-ink">
+                  This rewinds{" "}
+                  <span className="font-medium text-ink">{campaign.title}</span>{" "}
+                  back to review. Every post returns to pending and its publish
+                  results (links, timestamps) are cleared, so you can launch it
+                  again from the start. The plan and its text are kept. Posts that
+                  already went live on LinkedIn are not deleted there.
+                </p>
+              </div>
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <button
+                onClick={() => setResetOpen(false)}
+                disabled={busy}
+                className="rounded-md border border-border px-4 py-2 text-sm text-muted-ink hover:bg-sand disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setResetOpen(false);
+                  void run(() =>
+                    apiFetch(`/v1/campaigns/${id}/reset`, { method: "POST" }),
+                  );
+                }}
+                disabled={busy}
+                className="rounded-md bg-clay px-4 py-2 text-sm font-medium text-paper hover:bg-clay-press disabled:opacity-50"
+              >
+                Reset campaign
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </AppShell>
   );

@@ -410,6 +410,77 @@ async def test_pause_resume_forbidden_for_non_creator(client, as_role, db):
         assert resumed.status_code == 403
 
 
+async def test_reset_launched_campaign_rewinds_to_review(client, as_role, db, enqueued):
+    import uuid as _uuid
+    from datetime import UTC, datetime
+
+    from app.models.campaign import Campaign
+    from app.models.post import Post
+
+    async with as_role("editor") as user:
+        created = await client.post("/v1/campaigns", json=amplify())
+        cid = created.json()["id"]
+        campaign = await db.get(Campaign, _uuid.UUID(cid))
+        campaign.status = "publishing"
+        campaign.launched_at = datetime.now(UTC)
+        # A published post whose artifacts should be wiped by the reset.
+        post = Post(
+            campaign_id=campaign.id,
+            user_id=user.id,
+            action="repost_comment",
+            status="published",
+            external_id="urn:li:share:123",
+            published_at=datetime.now(UTC),
+        )
+        db.add(post)
+        await db.commit()
+        pid = str(post.id)
+
+        resp = await client.post(f"/v1/campaigns/{cid}/reset")
+        assert resp.status_code == 200
+        assert resp.json()["status"] == "review"
+        assert resp.json()["launched_at"] is None
+
+        posts = (await client.get(f"/v1/campaigns/{cid}/posts")).json()["items"]
+        assert posts and all(p["status"] == "pending" for p in posts)
+        assert all(p["external_id"] is None for p in posts)
+
+    # Reset enqueues a flush of the campaign's queued jobs, passing its post ids
+    # so a deferred publish_post cannot fire after a re-launch. Calls are recorded
+    # as (job_name, args, kwargs); here args is (campaign_id, [post_ids]).
+    flush = next(c for c in enqueued if c[0] == "flush_campaign_jobs")
+    assert flush[1][0] == cid
+    assert pid in flush[1][1]
+
+
+async def test_reset_rejected_before_launch(client, as_role):
+    # Nothing to rewind before launch: reset only applies to launched campaigns.
+    async with as_role("editor"):
+        created = await client.post("/v1/campaigns", json=amplify())
+        cid = created.json()["id"]
+        resp = await client.post(f"/v1/campaigns/{cid}/reset")
+    assert resp.status_code == 409
+
+
+async def test_reset_forbidden_for_non_creator(client, as_role, db):
+    import uuid as _uuid
+    from datetime import UTC, datetime
+
+    from app.models.campaign import Campaign
+
+    async with as_role("editor"):
+        created = await client.post("/v1/campaigns", json=amplify())
+        cid = created.json()["id"]
+        campaign = await db.get(Campaign, _uuid.UUID(cid))
+        campaign.status = "publishing"
+        campaign.launched_at = datetime.now(UTC)
+        await db.commit()
+
+    async with as_role("editor", email="intruder@test.local"):
+        resp = await client.post(f"/v1/campaigns/{cid}/reset")
+    assert resp.status_code == 403
+
+
 async def test_list_only_shows_own_campaigns(client, as_role):
     async with as_role("editor"):
         await client.post("/v1/campaigns", json=amplify("mine"))

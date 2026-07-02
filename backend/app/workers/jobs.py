@@ -184,6 +184,18 @@ async def resume_campaign(ctx: dict, campaign_id: str) -> None:
     )
 
 
+async def flush_campaign_jobs(ctx: dict, campaign_id: str, post_ids: list[str]) -> None:
+    """Drop a reset campaign's still-queued jobs so none fire after a re-launch.
+
+    Enqueued by the reset endpoint so the queue scan stays off the request path.
+    The worker guards already no-op these jobs while the campaign sits in review;
+    this just clears them out so a later re-launch starts from a clean queue.
+    """
+    from app.workers.queue import flush_campaign_jobs_on_pool
+
+    await flush_campaign_jobs_on_pool(ctx["redis"], campaign_id, set(post_ids))
+
+
 async def notify_participant(ctx: dict, campaign_id: str, user_id: str) -> None:
     """Schedule a participant's pending posts and DM them the bundled ask.
 
@@ -196,10 +208,12 @@ async def notify_participant(ctx: dict, campaign_id: str, user_id: str) -> None:
     cid = uuid.UUID(campaign_id)
     uid = uuid.UUID(user_id)
     async with async_session_factory() as db:
-        # Paused or deleted before this staggered notify fired: do not schedule
-        # the person's posts or DM them. Resume re-drives the fan-out.
+        # Paused, deleted, or reset before this staggered notify fired: do not
+        # schedule the person's posts or DM them. A reset rewinds the campaign to
+        # review, so that guard drains jobs left over from the previous run.
+        # Resume/relaunch re-drives the fan-out.
         campaign = await campaign_repo.get(db, cid)
-        if campaign is None or campaign.status == "paused":
+        if campaign is None or campaign.status in ("paused", "review"):
             return
         posts = await post_repo.list_for_campaign_user(
             db, cid, uid, statuses=("pending",)
@@ -239,9 +253,9 @@ async def notify_engagements(ctx: dict, campaign_id: str, user_id: str) -> None:
     try:
         async with async_session_factory() as db:
             campaign = await campaign_repo.get(db, cid)
-            # Paused or deleted: skip the engagement nudge. Resume re-DMs via
-            # send_reminders; the portal still carries the same asks.
-            if campaign is None or campaign.status == "paused":
+            # Paused, deleted, or reset: skip the engagement nudge. Resume re-DMs
+            # via send_reminders; the portal still carries the same asks.
+            if campaign is None or campaign.status in ("paused", "review"):
                 return
             posts = await post_repo.list_for_campaign_user(
                 db, cid, uid, statuses=("action_required",)
@@ -481,7 +495,9 @@ async def publish_post(ctx: dict, post_id: str) -> None:
         # aborting drains the queue. Resume re-enqueues the approved posts. A
         # missing campaign means it was deleted, so there is nothing to do.
         campaign = await campaign_repo.get(db, post.campaign_id)
-        if campaign is None or campaign.status == "paused":
+        # A reset rewinds the campaign to review (and its posts to pending), so a
+        # stale publish deferred from the previous run no-ops instead of posting.
+        if campaign is None or campaign.status in ("paused", "review"):
             return
 
         # Dependency-aware: wait until our target post is live.
@@ -730,8 +746,9 @@ async def send_reminders(ctx: dict, campaign_id: str) -> None:
     try:
         async with async_session_factory() as db:
             campaign = await campaign_repo.get(db, cid)
-            # Skip reminders for a deleted or paused campaign; resume re-drives.
-            if campaign is None or campaign.status == "paused":
+            # Skip reminders for a deleted, paused, or reset campaign; resume or
+            # relaunch re-drives.
+            if campaign is None or campaign.status in ("paused", "review"):
                 return
             posts = await post_repo.list_for_campaign(db, cid)
             # Bucket outstanding posts per person so each gets at most one DM of

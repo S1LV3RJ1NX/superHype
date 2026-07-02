@@ -110,6 +110,15 @@ async def launch(
     return await campaign_controller.launch(db, campaign_id, actor)
 
 
+@router.post("/{campaign_id}/reset", response_model=CampaignOut)
+async def reset(
+    campaign_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(get_current_user),
+) -> CampaignOut:
+    return await campaign_controller.reset(db, campaign_id, actor)
+
+
 @router.post("/{campaign_id}/pause", response_model=CampaignOut)
 async def pause(
     campaign_id: uuid.UUID,

@@ -2,9 +2,9 @@
 
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
-from sqlalchemy import case, delete, func, or_, select
+from sqlalchemy import CursorResult, case, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.post import Post
@@ -108,6 +108,38 @@ class PostRepository(BaseRepository[Post]):
             )
         )
         await db.flush()
+
+    async def rewind_for_campaign(
+        self, db: AsyncSession, campaign_id: uuid.UUID
+    ) -> int:
+        """Rewind every post in a campaign to pending, clearing publish artifacts.
+
+        Used when an admin resets a launched campaign so it can be launched again.
+        The plan (rows and their bodies) is kept; only the results of a run are
+        wiped: external ids, timestamps, engagement links, per-author media urns,
+        errors, and retries. Returns the number of rows reset.
+        """
+        result = cast(
+            CursorResult,
+            await db.execute(
+                update(Post)
+                .where(Post.campaign_id == campaign_id)
+                .values(
+                    status="pending",
+                    external_id=None,
+                    published_at=None,
+                    scheduled_at=None,
+                    first_comment_external_id=None,
+                    engagement_url=None,
+                    acknowledged_at=None,
+                    image_asset_urn=None,
+                    error=None,
+                    retries=0,
+                )
+            ),
+        )
+        await db.flush()
+        return result.rowcount
 
     async def delete_all_for_campaign(
         self, db: AsyncSession, campaign_id: uuid.UUID

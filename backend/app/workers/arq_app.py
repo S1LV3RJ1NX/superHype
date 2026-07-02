@@ -13,6 +13,7 @@ from app.core.redis import get_arq_redis_settings
 from app.db.session import engine
 from app.logger import get_logger
 from app.workers.jobs import (
+    flush_campaign_jobs,
     generate_drafts,
     handle_slack_interaction,
     launch_campaign,
@@ -55,6 +56,7 @@ class WorkerSettings:
         send_reminders,
         request_reconnect,
         handle_slack_interaction,
+        flush_campaign_jobs,
     ]
     on_startup = on_startup
     on_shutdown = on_shutdown
