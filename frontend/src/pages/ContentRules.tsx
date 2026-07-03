@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Check, Loader2, ScrollText } from "lucide-react";
 
 import { AppShell } from "@/components/AppShell";
+import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { apiFetch, ApiError } from "@/lib/api";
 
 interface ContentRule {
@@ -84,15 +85,15 @@ export function ContentRules() {
           </div>
         ) : (
           <>
-            <textarea
-              value={body}
-              onChange={(e) => setBody(e.target.value)}
-              rows={20}
-              placeholder={
-                "e.g.\n- Always write in English.\n- Refer to the company as Acme.\n- Never promise timelines or unreleased features.\n- Keep a grounded, practitioner voice."
-              }
-              className="mt-6 w-full rounded-md border border-border bg-surface px-3 py-2 font-mono text-sm text-ink focus:outline-none focus:ring-2 focus:ring-ring"
-            />
+            <div className="mt-6">
+              <MarkdownEditor
+                value={body}
+                onChange={setBody}
+                placeholder={
+                  "e.g.\n- Always write in English.\n- Refer to the company as Acme.\n- Never promise timelines or unreleased features.\n- Keep a grounded, practitioner voice."
+                }
+              />
+            </div>
             <div className="mt-3 flex items-center justify-between">
               <span className="text-xs text-muted-ink">
                 {updatedAt

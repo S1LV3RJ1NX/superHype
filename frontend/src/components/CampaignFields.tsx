@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Info, Loader2, Upload, X } from "lucide-react";
 
+import { MarkdownEditor } from "@/components/MarkdownEditor";
 import { ApiError, fetchAssetObjectUrl, uploadAsset } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -288,12 +289,11 @@ export function CampaignFields({
         </Hint>
 
         <Field label="Campaign rules (optional)">
-          <textarea
+          <MarkdownEditor
             value={value.campaignRules}
-            onChange={(e) => onChange({ campaignRules: e.target.value })}
-            rows={3}
+            onChange={(campaignRules) => onChange({ campaignRules })}
+            minHeight={140}
             placeholder="Rules that apply only to this campaign, e.g. mention the new pricing page, keep it under 150 words."
-            className="input"
           />
           <label className="mt-2 flex items-center gap-2 text-sm text-ink">
             <input
