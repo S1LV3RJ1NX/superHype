@@ -100,8 +100,16 @@ def variations_system(
     extra: str | None = None,
     persona: str | None = None,
 ) -> str:
-    """System prompt for generating N distinct post variations from a seed."""
+    """System prompt for generating N distinct post variations from a seed.
+
+    Ordering is deliberate: the composed content rules (global, then campaign)
+    lead, then the code-based craft prompt, then the seed post arrives as the
+    user message. The integrity rules below are non-negotiable even when a
+    content rule is silent on them (never fabricate, never use em dashes).
+    """
     hints = _hint_block(tone=tone, length=length, language=language)
+    rules_block = f"{extra.strip()}\n\n" if extra and extra.strip() else ""
+    hint_tail = f"{hints}\n\n" if hints else ""
     persona_clean = " ".join((persona or "").split())
     persona_line = (
         "Write every variation in this author's team voice and point of view, "
@@ -110,6 +118,7 @@ def variations_system(
         else ""
     )
     return (
+        f"{rules_block}"
         "You write LinkedIn posts for an employee-advocacy campaign. Given a seed "
         f"post, produce exactly {n} distinct variations that make the same core "
         "point in genuinely different voices and structures, so they do not look "
@@ -128,7 +137,7 @@ def variations_system(
         "- Never use em dashes or en dashes (the characters and the words). Use "
         "commas, periods, colons, or parentheses instead.\n"
         f"- {_banned_phrase_line()}\n\n"
-        f"{hints} {extra or ''}\n\n"
+        f"{hint_tail}"
         'Respond with a single JSON object: {"variations": ["...", ...]} '
         f"containing exactly {n} strings and nothing else."
     ).strip()
@@ -143,8 +152,14 @@ def interactions_system(
     language: str | None = None,
     extra: str | None = None,
 ) -> str:
-    """System prompt for generating `count` distinct interaction texts."""
+    """System prompt for generating `count` distinct interaction texts.
+
+    Same ordering contract as variations: the composed content rules (global,
+    then campaign) lead, then the code-based craft prompt, then the post being
+    reacted to arrives as the user message.
+    """
     hints = _hint_block(tone=tone, length=length, language=language)
+    rules_block = f"{extra.strip()}\n\n" if extra and extra.strip() else ""
     reshare_style = (
         f"For reshare commentary (action=repost_comment) only, apply this style: "
         f"{hints}\n\n"
@@ -152,6 +167,7 @@ def interactions_system(
         else ""
     )
     return (
+        f"{rules_block}"
         "You write short, natural LinkedIn interactions (comments and reshare "
         "commentary) reacting to a post. Each must be distinct and human, never "
         "templated or repetitive.\n\n"
@@ -174,7 +190,7 @@ def interactions_system(
         "When an item includes a persona=... field, write that text in that "
         "person's team voice and point of view, while still following every rule "
         "above.\n\n"
-        f"{reshare_style}{extra or ''}\n\n"
+        f"{reshare_style}"
         f"Produce exactly {count} texts for the numbered items below, and respond "
         'with a single JSON object: {"texts": ["...", ...]} indexed to those item '
         "numbers.\n\n"
