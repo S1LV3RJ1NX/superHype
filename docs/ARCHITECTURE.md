@@ -176,6 +176,7 @@ erDiagram
     campaigns ||--o{ audit_log : logs
     posts ||--o{ audit_log : logs
     users ||--o{ audit_log : actor
+    users ||--o{ content_rules : updates
 
     teams {
         uuid id PK
@@ -209,6 +210,8 @@ erDiagram
         text link
         string link_placement "first_comment|body"
         text self_comment "optional author follow-up"
+        text custom_rules "per-campaign generation rules"
+        bool apply_global_rules "inject the global content rules"
         uuid image_asset_id FK
         text image_url
         string status
@@ -250,6 +253,12 @@ erDiagram
         jsonb detail
         timestamptz created_at
     }
+    content_rules {
+        uuid id PK
+        text body "global generation rules (Markdown)"
+        uuid updated_by FK
+        timestamptz updated_at
+    }
 ```
 
 Notable points:
@@ -257,8 +266,14 @@ Notable points:
 - `teams` carries a `persona` (voice guidance). A user's team persona is injected
   into the generation prompts so a distribute campaign reads in each participant's
   team voice rather than one uniform tone. Teams are seeded (see `app/seed.py`) and
-  membership on `users.team_id` also drives onboarding (some teams auto-grant the
-  editor role) and the founder-first ordering of distribute cross-engagement.
+  membership on `users.team_id` drives onboarding and the founder-first ordering of
+  distribute cross-engagement. Team selection does not change a user's role;
+  everyone joins as a viewer and an admin grants editor via `PATCH /v1/users/{id}`.
+- `content_rules` is a singleton document (one row) holding the admin-editable
+  global generation rules. Its `body` (Markdown) is injected into every campaign's
+  generation prompts. Combined per campaign with `campaigns.custom_rules` and gated
+  by `campaigns.apply_global_rules`; see section 8. Edited only by admins through
+  `GET`/`PUT /v1/content-rules`.
 - `posts.action` is one of `post`, `comment`, `like`, `repost_comment`, or
   `self_comment`. A `self_comment` is the author's own follow-up ("link in the
   comments") on their own post: it is a tracked row targeting the poster row (via
@@ -366,6 +381,8 @@ stateDiagram-v2
     review --> publishing
     publishing --> completed
     publishing --> failed
+    publishing --> paused
+    paused --> publishing
     completed --> [*]
     failed --> [*]
 ```
@@ -390,10 +407,23 @@ stateDiagram-v2
   show it.
 - `check_completion` moves a `publishing` campaign to `completed` once every post
   is terminal.
-- `delete_campaign` removes an un-launched campaign (`draft`, `review`, or
-  `failed`) along with its posts and audit rows; the FKs carry no ON DELETE rule,
-  so the children are cleared first and a final `campaign_deleted` audit row is
-  written with a null campaign_id. Restricted to the creator or an admin.
+- Pause and resume: a launched campaign can be paused (`publishing -> paused`) and
+  resumed (`paused -> publishing`). The worker jobs no-op while a campaign is
+  `paused`, so deferred publishes and DMs stop; resume re-enqueues the outstanding
+  work. Restricted to the creator or an admin.
+- Reset: `reset_for_rerun` is an admin override outside the `TRANSITIONS` matrix
+  that rewinds a launched campaign from any state (publishing, paused, completed,
+  failed) back to `review`, wiping each post's publish artifacts while keeping the
+  plan. Because the campaign is back in `review`, the worker guards drop any jobs
+  still deferred from the previous run, and the reset endpoint also enqueues
+  `flush_campaign_jobs` to clear them from the queue, so nothing stale fires on the
+  next launch. Restricted to the creator or an admin.
+- `delete_campaign` removes a campaign along with its posts and audit rows; the FKs
+  carry no ON DELETE rule, so the children are cleared first and a final
+  `campaign_deleted` audit row is written with a null campaign_id. A plain creator
+  can only delete an un-launched campaign (`draft`, `review`, or `failed`); an admin
+  may delete in any state (cleanup, pilot resets). Deletion also cancels any
+  still-queued jobs so nothing stale fires.
 
 RBAC for campaigns: amplify create, launch, and generate are open to any role;
 distribute create and generate require editor or above. The fine ownership rules
@@ -431,6 +461,12 @@ SDK, and never a hardcoded model name.
 - Tone and length hints govern distribute variation bodies and reshare commentary
   (`repost_comment`) only. Comments are written from the pasted post content and
   ignore the tone/length presets, so they read as genuine reactions.
+- Content rules: `build_plan` composes the effective rules once per generation via
+  `_effective_rules` and threads them into both `generate_variations` and
+  `generate_interactions` as the prompt `extra`. The order is the global
+  `content_rules` body (unless `campaigns.apply_global_rules` is false), then the
+  campaign's `custom_rules`, each under a labeled header. Empty rules resolve to no
+  extra text, so a fresh install with no global rules generates exactly as before.
 
 ## 9. Worker and publishing pipeline
 

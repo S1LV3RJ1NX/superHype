@@ -34,6 +34,41 @@
 
 ---
 
+## Features
+
+- **Two advocacy workflows.** Amplify points a roster at one existing post (each
+  does a like, a comment, and a reshare). Distribute turns a seed into a distinct
+  on-voice post per participant, then has everyone like and comment on everyone
+  else's post, with an optional author self-comment ("link in the comments").
+- **Per-persona AI generation.** Drafts distinct post variations and varied
+  interaction text tuned to each participant's team voice, with a comment-quality
+  floor and a hard ban on buzzwords, generic praise, and em dashes.
+- **Content rules.** An admin-editable global rules document (Markdown) is
+  injected into every campaign's generation; campaign creators can add
+  campaign-specific rules and toggle whether the global rules apply.
+- **Human-in-the-loop approval.** Everyone approves, edits, or skips their own
+  actions, from the web app or a bundled Slack DM (one approve/skip for everything
+  they owe a campaign). Nothing publishes without them.
+- **Slack loop.** Bundled approve/skip at launch, a bundled mark-all-done for the
+  assisted like and comment step, deferred reminders, and a reconnect prompt on a
+  stale token.
+- **Official API only.** Every action runs on each member's own consented
+  LinkedIn account (`w_member_social`); tokens are Fernet-encrypted at rest.
+  Comments and likes run assisted-manual until the Community Management API is
+  enabled.
+- **Authentic pacing.** Approved posts publish on a randomized stagger with
+  per-account spacing and daily caps, so a coordinated push never reads as a bot
+  pod. Publishing is idempotent and never double-posts on retry.
+- **Campaign controls.** Pause and resume a launched campaign, reset it to re-run,
+  and (admins) delete; queued jobs are flushed so nothing stale fires.
+- **Onboarding and roles.** Google login (company domain only), team selection,
+  and a mandatory LinkedIn connect step. Cumulative roles (viewer, editor, admin)
+  with fine-grained ownership; participants see and edit only their own posts.
+- **Leaderboard.** Ranks members by a weighted contribution score over an optional
+  date window.
+- **Audit trail.** Every externally triggered mutation writes an append-only audit
+  row.
+
 ## Why I built this
 
 Startups do not lose because the product is bad. They lose because nobody hears
@@ -102,7 +137,8 @@ people who actually built the thing, without the spam.
 2. **Pick participants and generate.** Choose the people or teams; the backend
    expands each into the concrete actions for that workflow (no manual row
    assignment) and the model drafts the on-voice variations and interaction
-   text. Every draft stays editable.
+   text, applying your global and per-campaign content rules. Every draft stays
+   editable.
 3. **Approve and publish on a stagger.** Each person approves, edits, or skips
    their own post; approved work goes out through LinkedIn's official
    `/rest/posts` API on a randomized schedule.
@@ -171,7 +207,9 @@ fire on a cadence rather than once per launch.
 - [x] Google auth, onboarding, users, teams and personas
 - [x] LinkedIn connection and provider (posts, reshares, images, video)
 - [x] Generation (per-persona post variations and interaction text)
+- [x] Content rules (admin-editable global rules + per-campaign rules and toggle)
 - [x] Campaign lifecycle and worker (amplify + distribute, ARQ jobs)
+- [x] Campaign controls (pause/resume, reset to re-run, admin delete, queue flush)
 - [x] Self-comment ("link in the comments") as a tracked, assisted step
 - [x] Assisted-manual comments and likes (until Community Management API access lands)
 - [x] Leaderboard
