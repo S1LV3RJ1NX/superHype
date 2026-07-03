@@ -28,9 +28,38 @@ class PostRepository(BaseRepository[Post]):
     model = Post
 
     async def paginate_for_campaign(
-        self, db: AsyncSession, *, params: PageParams, campaign_id: uuid.UUID
+        self,
+        db: AsyncSession,
+        *,
+        params: PageParams,
+        campaign_id: uuid.UUID,
+        user_id: uuid.UUID | None = None,
     ) -> Page[Post]:
+        """Paginate a campaign's posts, optionally scoped to one author.
+
+        Admins and the campaign creator pass no user_id and see every post; a
+        plain participant passes their own id and sees only their own rows.
+        """
+        if user_id is not None:
+            return await self.paginate(
+                db, params=params, campaign_id=campaign_id, user_id=user_id
+            )
         return await self.paginate(db, params=params, campaign_id=campaign_id)
+
+    async def exists_for_campaign_user(
+        self, db: AsyncSession, campaign_id: uuid.UUID, user_id: uuid.UUID
+    ) -> bool:
+        """True if the user owns at least one post in the campaign (membership gate).
+
+        Backs the list-posts access check without loading every row: a plain
+        participant may view a campaign only if they own a post in it.
+        """
+        stmt = (
+            select(Post.id)
+            .where(Post.campaign_id == campaign_id, Post.user_id == user_id)
+            .limit(1)
+        )
+        return (await db.execute(stmt)).first() is not None
 
     async def list_for_campaign(
         self, db: AsyncSession, campaign_id: uuid.UUID

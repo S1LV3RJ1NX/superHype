@@ -129,6 +129,50 @@ async def test_non_creator_non_owner_cannot_edit_post(client, as_role):
     assert resp.status_code == 403
 
 
+async def test_participant_sees_only_own_posts(client, as_role):
+    # A plain participant (not admin, not creator) lists only their own posts and
+    # comments, never a teammate's; the creator still sees the whole plan.
+    async with as_role("editor", email="a@test.local") as a:
+        a_id = a.id
+    async with as_role("editor", email="b@test.local") as b:
+        b_id = b.id
+
+    async with as_role("editor", email="lead@test.local") as creator:
+        created = await client.post("/v1/campaigns", json=_amplify_payload())
+        cid = created.json()["id"]
+        await client.post(
+            f"/v1/campaigns/{cid}/plan",
+            json={"participant_ids": [str(a_id), str(b_id)]},
+        )
+        # Creator sees everyone's posts.
+        all_items = (await client.get(f"/v1/campaigns/{cid}/posts")).json()["items"]
+        owners = {p["user_id"] for p in all_items}
+        assert owners == {str(a_id), str(b_id)}
+        assert creator.id not in {a_id, b_id}
+
+    # Participant A sees only their own rows (reuse the same user_id so the
+    # fixture re-attaches the existing row instead of inserting a duplicate).
+    async with as_role("editor", email="a@test.local", user_id=a_id):
+        mine = (await client.get(f"/v1/campaigns/{cid}/posts")).json()["items"]
+    assert mine
+    assert {p["user_id"] for p in mine} == {str(a_id)}
+
+
+async def test_non_participant_cannot_list_posts(client, as_role):
+    async with as_role("editor", email="member@test.local") as member:
+        member_id = member.id
+    async with as_role("editor", email="owner@test.local"):
+        created = await client.post("/v1/campaigns", json=_amplify_payload())
+        cid = created.json()["id"]
+        await client.post(
+            f"/v1/campaigns/{cid}/plan",
+            json={"participant_ids": [str(member_id)]},
+        )
+    async with as_role("editor", email="stranger@test.local"):
+        resp = await client.get(f"/v1/campaigns/{cid}/posts")
+    assert resp.status_code == 403
+
+
 async def test_approve_requires_reconnect_without_account(client, as_role):
     # A reshare publishes under the owner's token, so the reconnect gate applies
     # (unlike an assisted comment or like, which needs no token).

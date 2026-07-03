@@ -91,12 +91,15 @@ async def list_posts(
     campaign = await campaign_repo.get(db, campaign_id)
     if campaign is None:
         raise HTTPException(404, "Campaign not found.")
+    # Admins and the creator see the whole plan; a plain participant sees only
+    # their own posts and comments (the rows they can act on), never teammates'.
+    scope_user_id: uuid.UUID | None = None
     if not (_is_admin(user) or campaign.created_by == user.id):
-        posts = await post_repo.list_for_campaign(db, campaign_id)
-        if not any(p.user_id == user.id for p in posts):
+        if not await post_repo.exists_for_campaign_user(db, campaign_id, user.id):
             raise HTTPException(403, "You do not have access to this campaign.")
+        scope_user_id = user.id
     page = await post_repo.paginate_for_campaign(
-        db, params=params, campaign_id=campaign_id
+        db, params=params, campaign_id=campaign_id, user_id=scope_user_id
     )
     return Page[PostOut](
         items=[PostOut.model_validate(p) for p in page.items],

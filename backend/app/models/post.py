@@ -15,6 +15,7 @@ class Post(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_posts_campaign_id", "campaign_id"),
         Index("ix_posts_user_id", "user_id"),
         Index("ix_posts_campaign_id_status", "campaign_id", "status"),
+        Index("ix_posts_campaign_id_user_id", "campaign_id", "user_id"),
         Index("ix_posts_user_id_status", "user_id", "status"),
         Index("ix_posts_external_id", "external_id"),
         Index("ix_posts_target_post_id", "target_post_id"),
