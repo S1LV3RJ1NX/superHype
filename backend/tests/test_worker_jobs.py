@@ -175,6 +175,31 @@ async def test_generate_drafts_failure_marks_failed(db, env, monkeypatch):
         assert refreshed.status == "failed"
 
 
+async def test_generate_drafts_non_generation_error_marks_failed(db, env, monkeypatch):
+    # A non-GenerationError failure (e.g. a DB error inside build_plan) must still
+    # move the campaign out of "generating" so the UI does not poll forever.
+    monkeypatch.setattr(
+        cs_mod,
+        "build_plan",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+    user = await _user(db)
+    c = Campaign(
+        title="C", type="amplify", status="generating", seed_urn="urn:li:activity:1"
+    )
+    db.add(c)
+    await db.commit()
+
+    await jobs_mod.generate_drafts(
+        env["ctx"],
+        str(c.id),
+        [{"user_id": str(user.id), "action": "comment"}],
+    )
+    async with env["maker"]() as s:
+        refreshed = await s.get(Campaign, c.id)
+        assert refreshed.status == "failed"
+
+
 async def test_launch_campaign_stagger_and_enqueue(db, env):
     user_a = await _user(db)
     user_b = await _user(db)

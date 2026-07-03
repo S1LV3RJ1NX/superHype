@@ -37,7 +37,6 @@ from app.repositories.user_repo import user_repo
 from app.schemas.post import Assignment
 from app.services import campaign_service, slack_service
 from app.services.engagement_service import engagement_ask
-from app.services.generation_service import GenerationError
 from app.storage import db_asset_store
 
 log = get_logger(__name__)
@@ -65,7 +64,11 @@ async def generate_drafts(
                 db, cid, parsed, generate=True, regenerate=regenerate
             )
             await db.commit()
-        except GenerationError as exc:
+        except Exception as exc:
+            # Any failure (LLM GenerationError, a DB IntegrityError, anything
+            # unexpected) must move the campaign out of "generating"; otherwise it
+            # is stuck there forever and the UI polls without end. Roll back the
+            # failed unit of work, then flip it to "failed" and audit the reason.
             await db.rollback()
             campaign = await campaign_repo.get(db, cid)
             if campaign is not None and campaign.status == "generating":
@@ -77,7 +80,11 @@ async def generate_drafts(
                     detail={"error": str(exc)[:200]},
                 )
                 await db.commit()
-            log.warning("job.generate_drafts.failed", campaign_id=campaign_id)
+            log.warning(
+                "job.generate_drafts.failed",
+                campaign_id=campaign_id,
+                error=str(exc)[:200],
+            )
 
 
 async def launch_campaign(ctx: dict, campaign_id: str) -> None:

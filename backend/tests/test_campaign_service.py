@@ -295,6 +295,45 @@ async def test_build_plan_keeps_scheduled_posts(db):
     assert statuses == ["pending", "scheduled"]
 
 
+async def test_build_plan_detaches_audit_before_deleting_pending(db):
+    # After a reset, a rewound pending post can still be referenced by an audit
+    # row from the previous run. A rebuild (adding a participant) must detach that
+    # reference so the pending delete does not trip fk_audit_log_post_id_posts.
+    from app.repositories import audit_repo
+
+    u = await _user(db)
+    c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:9")
+    pending = Post(
+        campaign_id=c.id,
+        user_id=u.id,
+        action="comment",
+        status="pending",
+        idempotency_key="old:pending",
+    )
+    db.add(pending)
+    await db.flush()
+    audit = await audit_repo.record(
+        db,
+        action="engagement_requested",
+        campaign_id=c.id,
+        post_id=pending.id,
+    )
+
+    # Would raise IntegrityError without the detach.
+    await campaign_service.build_plan(
+        db,
+        c.id,
+        [Assignment(user_id=u.id, action="comment", body="fresh")],
+        generate=False,
+    )
+
+    await db.refresh(audit)
+    assert audit.post_id is None
+    assert audit.campaign_id == c.id
+    statuses = sorted(p.status for p in await post_repo.list_for_campaign(db, c.id))
+    assert statuses == ["pending"]
+
+
 async def test_build_plan_incremental_only_generates_new(db, monkeypatch):
     # Re-planning after adding a participant generates text only for the new
     # person; the existing person's body is preserved (no gateway call, no

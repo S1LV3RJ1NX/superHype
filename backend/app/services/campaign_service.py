@@ -386,6 +386,10 @@ async def build_plan(
 
     preserved = {} if regenerate else await _preserved_bodies(db, campaign, campaign_id)
 
+    # Detach any audit rows that still point at the pending posts (e.g. after a
+    # reset, which rewinds rather than deletes) so the rebuild's hard-delete does
+    # not trip fk_audit_log_post_id_posts.
+    await audit_repo.detach_pending_posts(db, campaign_id)
     await post_repo.delete_pending_for_campaign(db, campaign_id)
 
     post_assignments = [a for a in assignments if a.action == "post"]
