@@ -3,6 +3,7 @@
 from app.models.asset import Asset
 from app.models.audit_log import AuditLog
 from app.models.campaign import Campaign
+from app.models.content_rule import ContentRule
 from app.models.post import Post
 from app.models.slack_identity import SlackIdentity
 from app.models.social_account import SocialAccount
@@ -13,6 +14,7 @@ __all__ = [
     "Asset",
     "AuditLog",
     "Campaign",
+    "ContentRule",
     "Post",
     "SlackIdentity",
     "SocialAccount",

@@ -7,6 +7,7 @@ from app.views import (
     auth,
     campaigns,
     connections,
+    content_rules,
     leaderboard,
     posts,
     slack,
@@ -19,6 +20,7 @@ api_router.include_router(assets.router)
 api_router.include_router(auth.router)
 api_router.include_router(campaigns.router)
 api_router.include_router(connections.router)
+api_router.include_router(content_rules.router)
 api_router.include_router(leaderboard.router)
 api_router.include_router(posts.router)
 api_router.include_router(slack.router)

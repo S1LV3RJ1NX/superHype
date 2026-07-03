@@ -8,7 +8,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -45,6 +45,12 @@ class Campaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         String(16), nullable=False, default="en", server_default="en"
     )
     extra_instructions: Mapped[str | None] = mapped_column(Text)
+    # Per-campaign generation rules the creator writes; applied on top of the
+    # global content rules (unless apply_global_rules is off) during generation.
+    custom_rules: Mapped[str | None] = mapped_column(Text)
+    apply_global_rules: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true"
+    )
 
     # Shared campaign media, applied to every generated post. image_url is an
     # external URL; image_asset_id points at an uploaded asset (image or video).

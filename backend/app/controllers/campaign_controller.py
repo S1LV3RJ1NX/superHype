@@ -142,6 +142,8 @@ async def create_campaign(
         length=body.length,
         language=body.language,
         extra_instructions=body.extra_instructions,
+        custom_rules=body.custom_rules,
+        apply_global_rules=body.apply_global_rules,
         image_url=body.image_url,
         image_asset_id=body.image_asset_id,
         image_alt=body.image_alt,

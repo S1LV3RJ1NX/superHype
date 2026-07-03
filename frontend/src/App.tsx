@@ -3,13 +3,14 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "@/auth/AuthContext";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import { AuthCallback } from "@/pages/AuthCallback";
-import { Connections } from "@/pages/Connections";
-import { Landing } from "@/pages/Landing";
-import { Leaderboard } from "@/pages/Leaderboard";
-import { LinkedInCallback } from "@/pages/LinkedInCallback";
 import { CampaignDetail } from "@/pages/CampaignDetail";
 import { CampaignEditor } from "@/pages/CampaignEditor";
 import { Campaigns } from "@/pages/Campaigns";
+import { Connections } from "@/pages/Connections";
+import { ContentRules } from "@/pages/ContentRules";
+import { Landing } from "@/pages/Landing";
+import { Leaderboard } from "@/pages/Leaderboard";
+import { LinkedInCallback } from "@/pages/LinkedInCallback";
 import { Onboarding } from "@/pages/Onboarding";
 import { Profile } from "@/pages/Profile";
 import { Teams } from "@/pages/Teams";
@@ -107,6 +108,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <Leaderboard />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app/content-rules"
+          element={
+            <ProtectedRoute>
+              <ContentRules />
             </ProtectedRoute>
           }
         />

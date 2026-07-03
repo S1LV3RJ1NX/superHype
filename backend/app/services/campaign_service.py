@@ -15,6 +15,7 @@ from app.models.campaign import Campaign
 from app.models.post import Post
 from app.repositories import audit_repo
 from app.repositories.campaign_repo import campaign_repo
+from app.repositories.content_rule_repo import content_rule_repo
 from app.repositories.post_repo import post_repo
 from app.repositories.social_account_repo import social_account_repo
 from app.repositories.team_repo import team_repo
@@ -26,6 +27,26 @@ from app.services.generation_service import (
 )
 
 log = get_logger(__name__)
+
+
+def _effective_rules(global_body: str | None, campaign: Campaign) -> str | None:
+    """Combine the global content rules with the campaign's own rules for the LLM.
+
+    The org-wide rules lead (unless the campaign opted out with
+    apply_global_rules=False), then the campaign-specific rules, then any legacy
+    extra_instructions. Each block is labeled so the model can tell them apart.
+    Returns None when nothing applies, so the prompt stays clean.
+    """
+    parts: list[str] = []
+    if campaign.apply_global_rules and global_body and global_body.strip():
+        parts.append(
+            "Organization content rules (always apply):\n" + global_body.strip()
+        )
+    if campaign.custom_rules and campaign.custom_rules.strip():
+        parts.append("Campaign-specific rules:\n" + campaign.custom_rules.strip())
+    if campaign.extra_instructions and campaign.extra_instructions.strip():
+        parts.append(campaign.extra_instructions.strip())
+    return "\n\n".join(parts) or None
 
 
 class TransitionError(Exception):
@@ -170,6 +191,7 @@ async def _resolve_interaction_texts(
     persona_by_user: dict[uuid.UUID, str],
     *,
     generate: bool,
+    extra: str | None = None,
     preserved: list[str | None] | None = None,
 ) -> list[str]:
     """Produce one text per interaction, aligned to input order.
@@ -229,7 +251,7 @@ async def _resolve_interaction_texts(
             tone=campaign.tone,
             length=campaign.length,
             language=campaign.language,
-            extra=campaign.extra_instructions,
+            extra=extra,
         )
         for pos, j in enumerate(idxs):
             texts[j] = out[pos] if pos < len(out) else ""
@@ -407,8 +429,13 @@ async def build_plan(
     # Team persona per acting user, so generated comments and reposts read in that
     # team's voice. Only needed when we actually call the LLM.
     persona_by_user: dict[uuid.UUID, str] = {}
+    effective_rules: str | None = None
     if generate:
         persona_by_user = await _personas_by_user(db, [a.user_id for a in assignments])
+        # Global content rules (unless the campaign opted out) plus the campaign's
+        # own rules, applied to every generated self-post, comment, and reshare.
+        global_body = await content_rule_repo.get_body(db)
+        effective_rules = _effective_rules(global_body, campaign)
 
     # Variation bodies must be resolved before interactions: a distribute comment
     # is written from the body of the post it reacts to, so the poster rows have
@@ -440,7 +467,7 @@ async def build_plan(
                     tone=campaign.tone,
                     length=campaign.length,
                     language=campaign.language,
-                    extra=campaign.extra_instructions,
+                    extra=effective_rules,
                     persona=persona or None,
                 )
                 for pos, idx in enumerate(idxs):
@@ -485,6 +512,7 @@ async def build_plan(
         poster_rows,
         persona_by_user,
         generate=generate,
+        extra=effective_rules,
         preserved=preserved_interactions,
     )
 

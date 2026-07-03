@@ -20,6 +20,8 @@ class CampaignOut(BaseModel):
     length: str | None
     language: str
     extra_instructions: str | None
+    custom_rules: str | None
+    apply_global_rules: bool
     image_url: str | None
     image_asset_id: uuid.UUID | None
     image_alt: str | None
@@ -66,6 +68,8 @@ class CampaignCreate(BaseModel):
     length: str | None = None
     language: str = "en"
     extra_instructions: str | None = None
+    custom_rules: str | None = None
+    apply_global_rules: bool = True
     image_url: str | None = None
     image_asset_id: uuid.UUID | None = None
     image_alt: str | None = None
@@ -85,6 +89,8 @@ class CampaignUpdate(BaseModel):
     length: str | None = None
     language: str | None = None
     extra_instructions: str | None = None
+    custom_rules: str | None = None
+    apply_global_rules: bool | None = None
     image_url: str | None = None
     image_asset_id: uuid.UUID | None = None
     image_alt: str | None = None

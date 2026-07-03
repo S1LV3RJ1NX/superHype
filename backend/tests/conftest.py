@@ -23,6 +23,7 @@ from app.core.security import create_access_token
 from app.models.asset import Asset
 from app.models.audit_log import AuditLog
 from app.models.campaign import Campaign
+from app.models.content_rule import ContentRule
 from app.models.post import Post
 from app.models.slack_identity import SlackIdentity
 from app.models.social_account import SocialAccount
@@ -39,6 +40,7 @@ _SQLITE_TABLES = [
     AuditLog.__table__,
     SocialAccount.__table__,
     SlackIdentity.__table__,
+    ContentRule.__table__,
 ]
 
 

@@ -2,6 +2,7 @@ import {
   Link2,
   LogOut,
   Megaphone,
+  ScrollText,
   Trophy,
   UsersRound,
   Users,
@@ -19,6 +20,12 @@ const NAV = [
   { label: "Leaderboard", icon: Trophy, href: "/app/leaderboard" },
   { label: "Teams", icon: UsersRound, href: "/app/teams", adminOnly: true },
   { label: "Users", icon: Users, href: "/app/users", adminOnly: true },
+  {
+    label: "Content Rules",
+    icon: ScrollText,
+    href: "/app/content-rules",
+    adminOnly: true,
+  },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

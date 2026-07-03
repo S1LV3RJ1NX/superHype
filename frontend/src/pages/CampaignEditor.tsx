@@ -27,6 +27,8 @@ interface Campaign {
   image_url: string | null;
   image_asset_id: string | null;
   self_comment: string | null;
+  custom_rules: string | null;
+  apply_global_rules: boolean;
   created_by: string | null;
 }
 
@@ -55,6 +57,8 @@ function fieldsFromCampaign(c: Campaign): CampaignFieldsValue {
     imageUrl: c.image_url ?? "",
     imageAssetId: c.image_asset_id ?? "",
     selfComment: c.self_comment ?? "",
+    campaignRules: c.custom_rules ?? "",
+    applyGlobalRules: c.apply_global_rules ?? true,
   };
 }
 

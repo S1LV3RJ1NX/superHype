@@ -228,6 +228,82 @@ async def test_build_plan_distribute_comment_uses_target_body_and_persona(
     assert comment_row.body == "a thoughtful comment"
 
 
+async def test_build_plan_composes_global_and_campaign_rules(db, monkeypatch):
+    # Global content rules plus the campaign's own rules both reach generation.
+    from app.repositories.content_rule_repo import content_rule_repo
+
+    await content_rule_repo.set_body(db, "GLOBAL RULE BODY", actor_id=None)
+    poster = await _user(db)
+    fan = await _user(db)
+    c = await _campaign(
+        db,
+        ctype="distribute",
+        seed_content="seed text",
+        custom_rules="CAMPAIGN RULE BODY",
+        apply_global_rules=True,
+    )
+
+    captured: dict = {}
+
+    async def fake_variations(seed, n, **kw):
+        captured["variations_extra"] = kw.get("extra")
+        return ["HERO"]
+
+    async def fake_interactions(target_text, items, **kw):
+        captured["interactions_extra"] = kw.get("extra")
+        return ["a comment"]
+
+    monkeypatch.setattr(campaign_service, "generate_variations", fake_variations)
+    monkeypatch.setattr(campaign_service, "generate_interactions", fake_interactions)
+
+    await campaign_service.build_plan(
+        db,
+        c.id,
+        [
+            Assignment(user_id=poster.id, action="post"),
+            Assignment(user_id=fan.id, action="comment", target_post_index=0),
+        ],
+        generate=True,
+    )
+
+    for key in ("variations_extra", "interactions_extra"):
+        assert "GLOBAL RULE BODY" in (captured[key] or "")
+        assert "CAMPAIGN RULE BODY" in (captured[key] or "")
+
+
+async def test_build_plan_apply_global_rules_off_excludes_global(db, monkeypatch):
+    # With the toggle off, only the campaign's own rules are sent, never global.
+    from app.repositories.content_rule_repo import content_rule_repo
+
+    await content_rule_repo.set_body(db, "GLOBAL RULE BODY", actor_id=None)
+    fan = await _user(db)
+    c = await _campaign(
+        db,
+        ctype="amplify",
+        seed_urn="urn:li:activity:1",
+        custom_rules="CAMPAIGN RULE BODY",
+        apply_global_rules=False,
+    )
+
+    captured: dict = {}
+
+    async def fake_interactions(target_text, items, **kw):
+        captured["extra"] = kw.get("extra")
+        return ["a comment"]
+
+    monkeypatch.setattr(campaign_service, "generate_interactions", fake_interactions)
+
+    await campaign_service.build_plan(
+        db,
+        c.id,
+        [Assignment(user_id=fan.id, action="comment")],
+        generate=True,
+    )
+
+    assert "GLOBAL RULE BODY" not in (captured["extra"] or "")
+    assert "CAMPAIGN RULE BODY" in (captured["extra"] or "")
+
+
 async def test_build_plan_sets_unique_idempotency_keys(db):
     u = await _user(db)
     c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:9")

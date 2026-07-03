@@ -43,6 +43,8 @@ export interface CampaignFieldsValue {
   imageUrl: string;
   imageAssetId: string;
   selfComment: string;
+  campaignRules: string;
+  applyGlobalRules: boolean;
 }
 
 export function emptyCampaignFields(): CampaignFieldsValue {
@@ -56,6 +58,8 @@ export function emptyCampaignFields(): CampaignFieldsValue {
     imageUrl: "",
     imageAssetId: "",
     selfComment: "",
+    campaignRules: "",
+    applyGlobalRules: true,
   };
 }
 
@@ -73,6 +77,8 @@ export function campaignFieldsToPayload(v: CampaignFieldsValue) {
     image_url: v.imageUrl || null,
     image_asset_id: v.imageAssetId || null,
     self_comment: v.selfComment || null,
+    custom_rules: v.campaignRules || null,
+    apply_global_rules: v.applyGlobalRules,
   };
 }
 
@@ -280,6 +286,31 @@ export function CampaignFields({
           {type === "distribute" ? " and the generated posts" : ""}. Comments are
           written from the post content you pasted above.
         </Hint>
+
+        <Field label="Campaign rules (optional)">
+          <textarea
+            value={value.campaignRules}
+            onChange={(e) => onChange({ campaignRules: e.target.value })}
+            rows={3}
+            placeholder="Rules that apply only to this campaign, e.g. mention the new pricing page, keep it under 150 words."
+            className="input"
+          />
+          <label className="mt-2 flex items-center gap-2 text-sm text-ink">
+            <input
+              type="checkbox"
+              checked={value.applyGlobalRules}
+              onChange={(e) => onChange({ applyGlobalRules: e.target.checked })}
+              className="h-4 w-4 rounded border-border text-clay focus:ring-ring"
+            />
+            Apply the global content rules to this campaign
+          </label>
+          <div className="mt-2">
+            <Hint>
+              Campaign rules are added on top of the org-wide global content rules
+              during generation. Uncheck to use only this campaign's rules.
+            </Hint>
+          </div>
+        </Field>
 
         {type === "distribute" && (
           <>
