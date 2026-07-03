@@ -7,10 +7,10 @@
 # untouched.
 #
 # Usage (from anywhere in the repo):
-#   make -C tfy-deploy deploy-eo                     # backend, worker, frontend in eo/
+#   make -C tfy-deploy deploy-eo                     # frontend, backend, worker in eo/
 #   make -C tfy-deploy deploy-eo SVC=backend         # a single service
 #   make -C tfy-deploy deploy ENV=eo SHA=<sha>       # pin an environment and commit
-#   make -C tfy-deploy deploy-eo DELAY=90            # wait longer after backend
+#   make -C tfy-deploy deploy-eo DELAY=90            # change the pause after backend
 #   make -C tfy-deploy TFY=echo DELAY=0 deploy-eo    # dry run (print the tfy commands)
 
 .DEFAULT_GOAL := help
@@ -18,21 +18,23 @@
 SHA ?= $(shell git rev-parse HEAD)
 TFY ?= tfy
 ENV ?= eo
-SVC ?= backend worker frontend
+# Order matters: frontend first, then backend, then worker. Backend and worker
+# build the same ./backend image, so deploying backend before the worker (with
+# a pause between them) lets that image finish building and get cached, so the
+# worker reuses it instead of triggering a second identical build.
+SVC ?= frontend backend worker
 RENDER := .rendered
-# Backend and worker build the same ./backend image. Deploy backend first, then
-# pause so its image finishes building and is cached, so the worker reuses it
-# instead of triggering a second identical build. Set DELAY=0 to skip (e.g. dry
-# runs, or when deploying a single service).
-DELAY ?= 60
+# Pause after backend so its shared image is cached before the worker deploys.
+# Set DELAY=0 to skip (e.g. dry runs, or when deploying a single service).
+DELAY ?= 120
 
 .PHONY: help deploy deploy-eo check-pushed
 
 help: ## List available commands
 	@echo "Deploy super-hype at ref $(SHA)"
-	@echo "  make deploy-eo              Deploy backend, worker, and frontend in eo/"
+	@echo "  make deploy-eo              Deploy frontend, backend, and worker in eo/"
 	@echo "  make deploy-eo SVC=backend  Deploy a single service"
-	@echo "  make deploy-eo DELAY=90     Change the pause after backend (default 60s)"
+	@echo "  make deploy-eo DELAY=90     Change the pause after backend (default 120s)"
 	@echo "  make deploy ENV=<env>       Deploy another environment directory"
 
 deploy-eo: ## Deploy the eo environment (all services, or SVC=<name>)
