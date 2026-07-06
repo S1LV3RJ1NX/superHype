@@ -183,6 +183,60 @@ async def test_build_plan_copies_media_and_self_comment(db):
     assert self_comment_row.target_post_id == post_row.id
 
 
+async def test_build_plan_rotates_media_across_posters(db):
+    # A distribute campaign with a media pool assigns one item per poster by even
+    # rotation (media[i % n]), so the pool spreads across authors deterministically.
+    from app.models.asset import Asset
+    from app.repositories.campaign_media_repo import campaign_media_repo
+
+    assets = []
+    for _ in range(3):
+        a = Asset(content_type="image/png", size_bytes=3, data=b"abc")
+        db.add(a)
+        assets.append(a)
+    await db.flush()
+    c = await _campaign(db, ctype="distribute", seed_content="seed")
+    await campaign_media_repo.replace_for_campaign(
+        db, c.id, [(a.id, None) for a in assets]
+    )
+
+    posters = [await _user(db) for _ in range(5)]
+    rows = await campaign_service.build_plan(
+        db,
+        c.id,
+        [
+            Assignment(user_id=p.id, action="post", body=f"body-{i}")
+            for i, p in enumerate(posters)
+        ],
+        generate=False,
+    )
+    post_rows = [r for r in rows if r.action == "post"]
+    assigned = [r.image_asset_id for r in post_rows]
+    expected = [assets[i % 3].id for i in range(5)]
+    assert assigned == expected
+
+
+async def test_build_plan_empty_media_pool_falls_back_to_legacy_asset(db):
+    # With no pool, the poster inherits the campaign's single legacy image_asset_id.
+    from app.models.asset import Asset
+
+    poster = await _user(db)
+    asset = Asset(content_type="image/png", size_bytes=3, data=b"abc")
+    db.add(asset)
+    await db.flush()
+    c = await _campaign(
+        db, ctype="distribute", seed_content="seed", image_asset_id=asset.id
+    )
+    rows = await campaign_service.build_plan(
+        db,
+        c.id,
+        [Assignment(user_id=poster.id, action="post", body="A")],
+        generate=False,
+    )
+    post_row = next(r for r in rows if r.action == "post")
+    assert post_row.image_asset_id == asset.id
+
+
 async def test_build_plan_distribute_comment_uses_target_body_and_persona(
     db, monkeypatch
 ):

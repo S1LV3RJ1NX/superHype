@@ -14,9 +14,11 @@ from app.config import settings
 from app.core.deps import ROLE_HIERARCHY
 from app.core.engagement import is_assisted
 from app.core.linkedin_urn import resolve_post_urn
+from app.core.safe_fetch import media_kind
 from app.models.campaign import Campaign
 from app.models.user import User
 from app.repositories import audit_repo
+from app.repositories.campaign_media_repo import campaign_media_repo
 from app.repositories.campaign_repo import campaign_repo
 from app.repositories.post_repo import post_repo
 from app.repositories.social_account_repo import social_account_repo
@@ -24,6 +26,8 @@ from app.schemas.campaign import (
     ApprovalReadiness,
     CampaignCreate,
     CampaignDetail,
+    CampaignMediaIn,
+    CampaignMediaOut,
     CampaignOut,
     CampaignUpdate,
 )
@@ -31,6 +35,7 @@ from app.schemas.common import Page, PageParams
 from app.schemas.post import PlanRequest, PostOut
 from app.services import campaign_service
 from app.services.campaign_service import TransitionError
+from app.storage import db_asset_store
 from app.workers import queue
 
 
@@ -107,12 +112,54 @@ async def _can_view(db: AsyncSession, campaign: Campaign, user: User) -> bool:
     return any(p.user_id == user.id for p in posts)
 
 
+async def _validate_media(db: AsyncSession, media: list[CampaignMediaIn]) -> None:
+    """Reject media whose asset is unknown or not an accepted image/video.
+
+    The FK would catch a missing asset with a 500 at flush; validating here gives
+    a clean 422 and blocks non-media assets from ever entering a campaign's pool.
+    """
+    asset_ids = [m.asset_id for m in media]
+    types = await db_asset_store.content_types(db, asset_ids)
+    for aid in asset_ids:
+        ctype = types.get(aid)
+        if ctype is None or media_kind(ctype) is None:
+            raise HTTPException(422, "One or more media assets are missing or invalid.")
+
+
+async def _persist_media(
+    db: AsyncSession, campaign: Campaign, media: list[CampaignMediaIn]
+) -> None:
+    await _validate_media(db, media)
+    await campaign_media_repo.replace_for_campaign(
+        db, campaign.id, [(m.asset_id, m.alt) for m in media]
+    )
+    # Once a client manages media through the pool, the pool is the single source
+    # of truth, so clear the legacy single-asset columns. Otherwise build_plan's
+    # fallback would re-attach a removed image: emptying the pool on a campaign
+    # that was backfilled from the old image_asset_id would otherwise resurrect it.
+    campaign.image_asset_id = None
+    campaign.image_alt = None
+    campaign.image_url = None
+    await db.flush()
+
+
+async def _campaign_out(db: AsyncSession, campaign: Campaign) -> CampaignOut:
+    """Serialize a campaign, attaching its ordered media pool."""
+    out = CampaignOut.model_validate(campaign)
+    rows = await campaign_media_repo.list_for_campaign(db, campaign.id)
+    out.media = [CampaignMediaOut.model_validate(r) for r in rows]
+    return out
+
+
 async def list_campaigns(
     db: AsyncSession, params: PageParams, user: User
 ) -> Page[CampaignOut]:
     page = await campaign_repo.paginate_for_user(
         db, params=params, user_id=user.id, is_admin=_is_admin(user)
     )
+    # The list view does not render media, so it is left empty here rather than
+    # firing a media query per campaign (avoids N+1). The detail/create/update
+    # endpoints populate it via _campaign_out.
     return Page[CampaignOut](
         items=[CampaignOut.model_validate(c) for c in page.items],
         next_cursor=page.next_cursor,
@@ -155,6 +202,8 @@ async def create_campaign(
         status="draft",
         created_by=actor.id,
     )
+    if body.media is not None:
+        await _persist_media(db, campaign, body.media)
     await audit_repo.record(
         db,
         actor_id=actor.id,
@@ -164,7 +213,7 @@ async def create_campaign(
     )
     await db.commit()
     await db.refresh(campaign)
-    return CampaignOut.model_validate(campaign)
+    return await _campaign_out(db, campaign)
 
 
 async def get_campaign(
@@ -175,6 +224,8 @@ async def get_campaign(
         raise HTTPException(403, "You do not have access to this campaign.")
     counts = await campaign_repo.count_by_status(db, campaign_id)
     detail = CampaignDetail.model_validate(campaign)
+    rows = await campaign_media_repo.list_for_campaign(db, campaign_id)
+    detail.media = [CampaignMediaOut.model_validate(r) for r in rows]
     detail.counts = counts
     detail.post_count = sum(counts.values())
     return detail
@@ -224,6 +275,10 @@ async def update_campaign(
         raise HTTPException(409, "Campaign can only be edited before it is launched.")
 
     updates = body.model_dump(exclude_unset=True)
+    # media lives in its own table (not a campaign column), so pull it out of the
+    # column updates and persist it separately when the caller sent it.
+    media_provided = "media" in updates
+    updates.pop("media", None)
     if "seed_url" in updates:
         updates["seed_urn"] = await resolve_post_urn(updates["seed_url"])
     # The type is locked on edit; validate the effective (merged) source material
@@ -238,8 +293,11 @@ async def update_campaign(
         seed_url=updates.get("seed_url", campaign.seed_url),
         seed_urn=updates.get("seed_urn", campaign.seed_urn),
     )
-    if updates:
-        await campaign_repo.update(db, campaign, **updates)
+    if updates or media_provided:
+        if updates:
+            await campaign_repo.update(db, campaign, **updates)
+        if media_provided:
+            await _persist_media(db, campaign, body.media or [])
         # JSON-safe detail for the audit_log JSONB: model_dump(mode="json")
         # renders UUIDs (e.g. image_asset_id) and datetimes as strings, which the
         # raw `updates` dict does not. seed_content is dropped (bulky, not useful
@@ -257,7 +315,7 @@ async def update_campaign(
         )
         await db.commit()
         await db.refresh(campaign)
-    return CampaignOut.model_validate(campaign)
+    return await _campaign_out(db, campaign)
 
 
 _DELETABLE_STATUSES = ("draft", "review", "failed")
@@ -337,7 +395,7 @@ async def generate(
         regenerate=body.regenerate,
     )
     await db.refresh(campaign)
-    return CampaignOut.model_validate(campaign)
+    return await _campaign_out(db, campaign)
 
 
 async def launch(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> CampaignOut:
@@ -358,7 +416,7 @@ async def launch(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> Campa
 
     await queue.enqueue_job("launch_campaign", str(campaign_id))
     await db.refresh(campaign)
-    return CampaignOut.model_validate(campaign)
+    return await _campaign_out(db, campaign)
 
 
 async def reset(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> CampaignOut:
@@ -387,7 +445,7 @@ async def reset(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> Campai
     )
 
     await db.refresh(campaign)
-    return CampaignOut.model_validate(campaign)
+    return await _campaign_out(db, campaign)
 
 
 async def pause(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> CampaignOut:
@@ -406,7 +464,7 @@ async def pause(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> Campai
         raise HTTPException(409, "Only a launched campaign can be paused.") from None
     await db.commit()
     await db.refresh(campaign)
-    return CampaignOut.model_validate(campaign)
+    return await _campaign_out(db, campaign)
 
 
 async def resume(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> CampaignOut:
@@ -422,4 +480,4 @@ async def resume(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> Campa
 
     await queue.enqueue_job("resume_campaign", str(campaign_id))
     await db.refresh(campaign)
-    return CampaignOut.model_validate(campaign)
+    return await _campaign_out(db, campaign)

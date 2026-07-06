@@ -6,6 +6,18 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class CampaignMediaIn(BaseModel):
+    asset_id: uuid.UUID
+    alt: str | None = None
+
+
+class CampaignMediaOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_id: uuid.UUID
+    alt: str | None
+
+
 class CampaignOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -25,6 +37,9 @@ class CampaignOut(BaseModel):
     image_url: str | None
     image_asset_id: uuid.UUID | None
     image_alt: str | None
+    # Ordered media pool for distribute campaigns; each poster is assigned one
+    # item by even rotation at plan build. Empty for campaigns with no media.
+    media: list[CampaignMediaOut] = []
     link: str | None
     link_placement: str
     self_comment: str | None
@@ -73,6 +88,7 @@ class CampaignCreate(BaseModel):
     image_url: str | None = None
     image_asset_id: uuid.UUID | None = None
     image_alt: str | None = None
+    media: list[CampaignMediaIn] | None = Field(default=None, max_length=50)
     link: str | None = None
     link_placement: str = "first_comment"
     self_comment: str | None = None
@@ -94,6 +110,7 @@ class CampaignUpdate(BaseModel):
     image_url: str | None = None
     image_asset_id: uuid.UUID | None = None
     image_alt: str | None = None
+    media: list[CampaignMediaIn] | None = Field(default=None, max_length=50)
     link: str | None = None
     link_placement: str | None = None
     self_comment: str | None = None

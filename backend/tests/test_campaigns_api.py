@@ -184,6 +184,171 @@ async def test_patch_campaign_with_media_writes_json_safe_audit(client, as_role,
     assert resp.json()["image_asset_id"] == str(asset.id)
 
 
+async def _make_asset(db, content_type: str = "image/png"):
+    from app.models.asset import Asset
+
+    asset = Asset(content_type=content_type, size_bytes=3, data=b"abc")
+    db.add(asset)
+    await db.commit()
+    return asset
+
+
+async def test_create_distribute_with_media_pool_roundtrip(client, as_role, db):
+    a1 = await _make_asset(db)
+    a2 = await _make_asset(db)
+    async with as_role("editor"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json={
+                "title": "Dist",
+                "type": "distribute",
+                "seed_content": "seed",
+                "media": [
+                    {"asset_id": str(a1.id), "alt": "first"},
+                    {"asset_id": str(a2.id), "alt": None},
+                ],
+            },
+        )
+        assert resp.status_code == 201
+        cid = resp.json()["id"]
+        media = resp.json()["media"]
+        assert [m["asset_id"] for m in media] == [str(a1.id), str(a2.id)]
+        assert media[0]["alt"] == "first"
+
+        # GET returns the same ordered pool.
+        detail = await client.get(f"/v1/campaigns/{cid}")
+    assert [m["asset_id"] for m in detail.json()["media"]] == [str(a1.id), str(a2.id)]
+
+
+async def test_update_campaign_replaces_media_pool(client, as_role, db):
+    a1 = await _make_asset(db)
+    a2 = await _make_asset(db)
+    a3 = await _make_asset(db)
+    async with as_role("editor"):
+        created = await client.post(
+            "/v1/campaigns",
+            json={
+                "title": "Dist",
+                "type": "distribute",
+                "seed_content": "seed",
+                "media": [{"asset_id": str(a1.id)}, {"asset_id": str(a2.id)}],
+            },
+        )
+        cid = created.json()["id"]
+        # Replace the whole pool with a single, different asset.
+        resp = await client.patch(
+            f"/v1/campaigns/{cid}",
+            json={"media": [{"asset_id": str(a3.id)}]},
+        )
+    assert resp.status_code == 200
+    assert [m["asset_id"] for m in resp.json()["media"]] == [str(a3.id)]
+
+
+async def test_patch_empty_media_clears_legacy_image(client, as_role, db):
+    # A campaign backfilled from the old single image_asset_id column, then
+    # emptied via the pool UI, must not resurrect that image through build_plan's
+    # legacy fallback. Clearing the pool clears the legacy columns too.
+    import uuid as _uuid
+
+    from sqlalchemy import select
+
+    from app.models.campaign import Campaign
+
+    a1 = await _make_asset(db)
+    async with as_role("editor"):
+        created = await client.post(
+            "/v1/campaigns",
+            json={
+                "title": "Dist",
+                "type": "distribute",
+                "seed_content": "seed",
+                "image_asset_id": str(a1.id),
+            },
+        )
+        cid = created.json()["id"]
+
+        # Simulate a campaign whose only media lived in the legacy column.
+        row = await db.get(Campaign, _uuid.UUID(cid))
+        assert row is not None
+        assert row.image_asset_id == a1.id
+
+        # Emptying the pool through the gallery UI sends media: [].
+        resp = await client.patch(f"/v1/campaigns/{cid}", json={"media": []})
+        assert resp.status_code == 200
+        assert resp.json()["media"] == []
+
+    # Drop the identity-map copy loaded by db.get above so the re-read reflects
+    # the committed state written by the request handler.
+    db.expire_all()
+    refreshed = await db.scalar(select(Campaign).where(Campaign.id == _uuid.UUID(cid)))
+    assert refreshed is not None
+    assert refreshed.image_asset_id is None
+    assert refreshed.image_alt is None
+    assert refreshed.image_url is None
+
+
+async def test_create_campaign_rejects_unknown_media(client, as_role):
+    import uuid as _uuid
+
+    async with as_role("editor"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json={
+                "title": "Dist",
+                "type": "distribute",
+                "seed_content": "seed",
+                "media": [{"asset_id": str(_uuid.uuid4())}],
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_create_campaign_rejects_non_media_asset(client, as_role, db):
+    # An uploaded asset that is not an accepted image/video cannot enter the pool.
+    text_asset = await _make_asset(db, content_type="text/plain")
+    async with as_role("editor"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json={
+                "title": "Dist",
+                "type": "distribute",
+                "seed_content": "seed",
+                "media": [{"asset_id": str(text_asset.id)}],
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_delete_campaign_cascades_media(client, as_role, db):
+    from sqlalchemy import func, select
+
+    from app.models.campaign_media import CampaignMedia
+
+    a1 = await _make_asset(db)
+    async with as_role("editor"):
+        created = await client.post(
+            "/v1/campaigns",
+            json={
+                "title": "Dist",
+                "type": "distribute",
+                "seed_content": "seed",
+                "media": [{"asset_id": str(a1.id)}],
+            },
+        )
+        cid = created.json()["id"]
+        resp = await client.delete(f"/v1/campaigns/{cid}")
+        assert resp.status_code == 204
+
+    import uuid as _uuid
+
+    remaining = await db.scalar(
+        select(func.count())
+        .select_from(CampaignMedia)
+        .where(CampaignMedia.campaign_id == _uuid.UUID(cid))
+    )
+    assert remaining == 0
+
+
 async def test_patch_campaign_blocked_after_launch(client, as_role, db):
     from app.models.campaign import Campaign
 

@@ -38,5 +38,18 @@ class DBAssetStore:
             raise KeyError(asset_id)
         return row.data, row.content_type
 
+    async def content_types(
+        self, db: AsyncSession, asset_ids: list[uuid.UUID]
+    ) -> dict[uuid.UUID, str]:
+        """Return {asset_id: content_type} for the given ids (bytes not loaded).
+
+        Missing ids are simply absent from the result, so callers can detect
+        unknown assets without fetching the large bytes column.
+        """
+        if not asset_ids:
+            return {}
+        stmt = select(Asset.id, Asset.content_type).where(Asset.id.in_(asset_ids))
+        return {row.id: row.content_type for row in (await db.execute(stmt)).all()}
+
 
 db_asset_store = DBAssetStore()

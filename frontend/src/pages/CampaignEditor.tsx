@@ -26,6 +26,7 @@ interface Campaign {
   length: string | null;
   image_url: string | null;
   image_asset_id: string | null;
+  media: { asset_id: string; alt: string | null }[];
   self_comment: string | null;
   custom_rules: string | null;
   apply_global_rules: boolean;
@@ -55,7 +56,13 @@ function fieldsFromCampaign(c: Campaign): CampaignFieldsValue {
       : [],
     length: c.length ?? "",
     imageUrl: c.image_url ?? "",
-    imageAssetId: c.image_asset_id ?? "",
+    // Prefer the media pool; fall back to a one-item list from the legacy single
+    // asset for campaigns created before the pool existed.
+    mediaAssetIds: c.media?.length
+      ? c.media.map((m) => m.asset_id)
+      : c.image_asset_id
+        ? [c.image_asset_id]
+        : [],
     selfComment: c.self_comment ?? "",
     campaignRules: c.custom_rules ?? "",
     applyGlobalRules: c.apply_global_rules ?? true,

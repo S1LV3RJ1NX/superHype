@@ -14,6 +14,7 @@ from app.logger import get_logger
 from app.models.campaign import Campaign
 from app.models.post import Post
 from app.repositories import audit_repo
+from app.repositories.campaign_media_repo import campaign_media_repo
 from app.repositories.campaign_repo import campaign_repo
 from app.repositories.content_rule_repo import content_rule_repo
 from app.repositories.post_repo import post_repo
@@ -78,10 +79,11 @@ async def delete_campaign(
 ) -> None:
     """Delete a campaign and everything that references it.
 
-    The FKs from posts and audit_log to campaigns have no ON DELETE rule, so the
-    children are removed first. The final `campaign_deleted` audit row carries a
-    null campaign_id (the row is gone) with the identity in `detail`. The caller
-    owns the commit.
+    The FKs from posts and audit_log to campaigns have no ON DELETE rule, so those
+    children are removed first (campaign_media cascades, but is cleared explicitly
+    too so the delete works the same under the SQLite test engine). The final
+    `campaign_deleted` audit row carries a null campaign_id (the row is gone) with
+    the identity in `detail`. The caller owns the commit.
     """
     detail = {
         "id": str(campaign.id),
@@ -90,6 +92,7 @@ async def delete_campaign(
     }
     await audit_repo.delete_for_campaign(db, campaign.id)
     await post_repo.delete_all_for_campaign(db, campaign.id)
+    await campaign_media_repo.delete_for_campaign(db, campaign.id)
     await campaign_repo.delete(db, campaign)
     await audit_repo.record(
         db,
@@ -419,6 +422,12 @@ async def build_plan(
     # The ordered author list backs slot -> target-user resolution for keys.
     ordered = [a.user_id for a in post_assignments]
 
+    # Campaign media pool (distribute): each poster is assigned one item by even
+    # rotation (media[slot % n]), so a large campaign spreads several images or
+    # videos across authors instead of repeating one. When the pool is empty we
+    # fall back to the legacy single image_asset_id / image_url on the campaign.
+    media_pool = await campaign_media_repo.list_for_campaign(db, campaign_id)
+
     # Resolve each participant's LinkedIn account once.
     account_by_user: dict[uuid.UUID, uuid.UUID | None] = {}
     for a in assignments:
@@ -481,6 +490,15 @@ async def build_plan(
     poster_rows: list[Post] = []
     for idx, a in enumerate(post_assignments):
         row_id = uuid.uuid4()
+        if media_pool:
+            m = media_pool[idx % len(media_pool)]
+            row_image_asset_id: uuid.UUID | None = m.asset_id
+            row_image_alt = m.alt
+            row_image_url: str | None = None
+        else:
+            row_image_asset_id = campaign.image_asset_id
+            row_image_alt = campaign.image_alt
+            row_image_url = campaign.image_url
         row = Post(
             id=row_id,
             campaign_id=campaign_id,
@@ -493,9 +511,9 @@ async def build_plan(
             angle=a.angle,
             lang=campaign.language,
             link=campaign.link,
-            image_url=campaign.image_url,
-            image_asset_id=campaign.image_asset_id,
-            image_alt=campaign.image_alt,
+            image_url=row_image_url,
+            image_asset_id=row_image_asset_id,
+            image_alt=row_image_alt,
             status="pending",
             idempotency_key=f"{campaign_id}:post:{a.user_id}:{row_id}",
         )

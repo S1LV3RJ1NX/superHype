@@ -42,7 +42,9 @@ export interface CampaignFieldsValue {
   tones: string[];
   length: string;
   imageUrl: string;
-  imageAssetId: string;
+  // Ordered pool of uploaded media asset ids. Each distribute participant is
+  // assigned one by rotation at plan build. Order is the rotation order.
+  mediaAssetIds: string[];
   selfComment: string;
   campaignRules: string;
   applyGlobalRules: boolean;
@@ -57,7 +59,7 @@ export function emptyCampaignFields(): CampaignFieldsValue {
     tones: [],
     length: "",
     imageUrl: "",
-    imageAssetId: "",
+    mediaAssetIds: [],
     selfComment: "",
     campaignRules: "",
     applyGlobalRules: true,
@@ -74,9 +76,9 @@ export function campaignFieldsToPayload(v: CampaignFieldsValue) {
     seed_content: v.seedContent || null,
     tone: v.tones.join(", ") || null,
     length: v.length || null,
-    // image_url is carried through untouched; media is now set via image_asset_id.
+    // image_url is carried through untouched; media is now the ordered pool.
     image_url: v.imageUrl || null,
-    image_asset_id: v.imageAssetId || null,
+    media: v.mediaAssetIds.map((id) => ({ asset_id: id, alt: null })),
     self_comment: v.selfComment || null,
     custom_rules: v.campaignRules || null,
     apply_global_rules: v.applyGlobalRules,
@@ -315,14 +317,16 @@ export function CampaignFields({
         {type === "distribute" && (
           <>
             <Field label="Campaign media (optional)">
-              <MediaUpload
-                assetId={value.imageAssetId}
-                onChange={(id) => onChange({ imageAssetId: id })}
+              <MediaGallery
+                assetIds={value.mediaAssetIds}
+                onChange={(ids) => onChange({ mediaAssetIds: ids })}
               />
               <div className="mt-2">
                 <Hint>
-                  One image or short video applied to every generated post. PNG,
-                  JPEG, GIF, WebP, or MP4/MOV.
+                  Add one or more images, GIFs, or videos. Each participant is
+                  assigned one by rotation, so a large campaign spreads media
+                  across people instead of repeating a single file. PNG, JPEG,
+                  GIF, WebP, or MP4/MOV.
                 </Hint>
               </div>
             </Field>
@@ -348,90 +352,113 @@ export function CampaignFields({
   );
 }
 
-function MediaUpload({
+// One preview tile in the media gallery. Loads its own preview from the asset
+// API (the asset is already uploaded), so the gallery only tracks asset ids.
+function MediaThumb({
   assetId,
-  onChange,
+  onRemove,
+  disabled,
 }: {
   assetId: string;
-  onChange: (id: string) => void;
+  onRemove: () => void;
+  disabled?: boolean;
 }) {
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [url, setUrl] = useState<string | null>(null);
   const [kind, setKind] = useState<"image" | "video">("image");
-  const [busy, setBusy] = useState(false);
-  // True while the preview for an already-attached asset (edit mode) is loading,
-  // so we show a spinner instead of flashing the empty "upload" state.
-  const [hydrating, setHydrating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const objectUrlRef = useRef<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const urlRef = useRef<string | null>(null);
 
-  const setObjectUrl = (url: string | null) => {
-    if (objectUrlRef.current) {
-      URL.revokeObjectURL(objectUrlRef.current);
-    }
-    objectUrlRef.current = url;
-    setPreviewUrl(url);
-  };
-
-  // Load a preview for an already-attached asset (edit mode) that has no local
-  // file yet. Skipped once a fresh file provides its own object URL.
   useEffect(() => {
     let cancelled = false;
-    if (assetId && !objectUrlRef.current) {
-      setHydrating(true);
-      fetchAssetObjectUrl(assetId)
-        .then(({ url, contentType }) => {
-          if (cancelled) {
-            URL.revokeObjectURL(url);
-            return;
-          }
-          setKind(contentType.startsWith("video/") ? "video" : "image");
-          setObjectUrl(url);
-        })
-        .catch(() => {
-          /* preview is best-effort */
-        })
-        .finally(() => {
-          if (!cancelled) setHydrating(false);
-        });
-    }
+    fetchAssetObjectUrl(assetId)
+      .then(({ url, contentType }) => {
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        urlRef.current = url;
+        setKind(contentType.startsWith("video/") ? "video" : "image");
+        setUrl(url);
+      })
+      .catch(() => {
+        /* preview is best-effort */
+      });
     return () => {
       cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assetId]);
-
-  useEffect(() => {
-    return () => {
-      if (objectUrlRef.current) {
-        URL.revokeObjectURL(objectUrlRef.current);
+      if (urlRef.current) {
+        URL.revokeObjectURL(urlRef.current);
+        urlRef.current = null;
       }
     };
-  }, []);
+  }, [assetId]);
 
-  const handleFile = async (file: File) => {
+  return (
+    <div className="relative h-24 w-24">
+      {url ? (
+        kind === "video" ? (
+          <video
+            src={url}
+            controls
+            className="h-24 w-24 rounded-md border border-border object-cover"
+          />
+        ) : (
+          <img
+            src={url}
+            alt="Campaign media preview"
+            className="h-24 w-24 rounded-md border border-border object-cover"
+          />
+        )
+      ) : (
+        <div className="flex h-24 w-24 items-center justify-center rounded-md border border-border bg-sand/40">
+          <Loader2 className="h-5 w-5 animate-spin text-muted-ink" />
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={onRemove}
+        disabled={disabled}
+        aria-label="Remove media"
+        className="absolute -right-2 -top-2 rounded-full border border-border bg-paper p-1 text-muted-ink shadow-sm hover:bg-sand disabled:opacity-50"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
+function MediaGallery({
+  assetIds,
+  onChange,
+}: {
+  assetIds: string[];
+  onChange: (ids: string[]) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleFiles = async (files: FileList) => {
     setError(null);
-    setKind(file.type.startsWith("video/") ? "video" : "image");
-    setObjectUrl(URL.createObjectURL(file));
     setBusy(true);
     try {
-      const { id } = await uploadAsset(file);
-      onChange(id);
+      const uploaded: string[] = [];
+      // Upload sequentially so an early failure does not leave a half-added set.
+      for (const file of Array.from(files)) {
+        const { id } = await uploadAsset(file);
+        uploaded.push(id);
+      }
+      onChange([...assetIds, ...uploaded]);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Upload failed");
-      setObjectUrl(null);
     } finally {
       setBusy(false);
+      if (inputRef.current) {
+        inputRef.current.value = "";
+      }
     }
   };
 
-  const clear = () => {
-    setObjectUrl(null);
-    setError(null);
-    onChange("");
-    if (inputRef.current) {
-      inputRef.current.value = "";
-    }
+  const removeAt = (idx: number) => {
+    onChange(assetIds.filter((_, i) => i !== idx));
   };
 
   return (
@@ -440,71 +467,36 @@ function MediaUpload({
         ref={inputRef}
         type="file"
         accept={ACCEPTED_MEDIA}
+        multiple
         className="hidden"
         onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) void handleFile(file);
+          const files = e.target.files;
+          if (files && files.length) void handleFiles(files);
         }}
       />
-      {!previewUrl && hydrating ? (
-        <div className="flex h-28 w-28 items-center justify-center rounded-md border border-border bg-sand/40">
-          <Loader2 className="h-5 w-5 animate-spin text-muted-ink" />
-        </div>
-      ) : previewUrl ? (
-        <div className="flex items-start gap-3">
-          {kind === "video" ? (
-            <video
-              src={previewUrl}
-              controls
-              className="h-28 w-28 rounded-md border border-border object-cover"
-            />
-          ) : (
-            <img
-              src={previewUrl}
-              alt="Campaign media preview"
-              className="h-28 w-28 rounded-md border border-border object-cover"
-            />
-          )}
-          <div className="flex flex-col gap-2">
-            <button
-              type="button"
-              onClick={() => inputRef.current?.click()}
-              disabled={busy}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
-            >
-              {busy ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <Upload className="h-3.5 w-3.5" />
-              )}
-              Replace
-            </button>
-            <button
-              type="button"
-              onClick={clear}
-              disabled={busy}
-              className="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
-            >
-              <X className="h-3.5 w-3.5" />
-              Remove
-            </button>
-          </div>
-        </div>
-      ) : (
+      <div className="flex flex-wrap items-center gap-3">
+        {assetIds.map((id, idx) => (
+          <MediaThumb
+            key={id}
+            assetId={id}
+            disabled={busy}
+            onRemove={() => removeAt(idx)}
+          />
+        ))}
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
           disabled={busy}
-          className="inline-flex items-center gap-2 rounded-md border border-dashed border-border px-4 py-3 text-sm text-muted-ink hover:bg-sand disabled:opacity-50"
+          className="inline-flex h-24 w-24 flex-col items-center justify-center gap-1 rounded-md border border-dashed border-border text-xs text-muted-ink hover:bg-sand disabled:opacity-50"
         >
           {busy ? (
-            <Loader2 className="h-4 w-4 animate-spin" />
+            <Loader2 className="h-5 w-5 animate-spin" />
           ) : (
-            <Upload className="h-4 w-4" />
+            <Upload className="h-5 w-5" />
           )}
-          {busy ? "Uploading..." : "Upload image or video"}
+          {busy ? "Uploading" : "Add media"}
         </button>
-      )}
+      </div>
       {error && <p className="mt-2 text-xs text-fail">{error}</p>}
     </div>
   );
