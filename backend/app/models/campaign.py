@@ -21,6 +21,8 @@ class Campaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         Index("ix_campaigns_status", "status"),
         # Backs keyset pagination on (created_at, id).
         Index("ix_campaigns_created_at", "created_at"),
+        # Backs the due-campaign poll and the events-calendar range query.
+        Index("ix_campaigns_scheduled_at", "scheduled_at"),
     )
 
     title: Mapped[str] = mapped_column(Text, nullable=False)
@@ -77,6 +79,11 @@ class Campaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     stagger_max_seconds: Mapped[int] = mapped_column(
         Integer, nullable=False, default=1800, server_default="1800"
     )
+    # Optional scheduled auto-launch. When set, the campaign blocks that whole
+    # calendar day (company timezone) for everyone else, and a worker poll
+    # launches it once the time arrives (if it is ready). Cleared on manual launch
+    # and when a schedule is missed.
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     launched_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     launched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

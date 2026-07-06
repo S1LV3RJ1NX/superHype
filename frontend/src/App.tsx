@@ -8,6 +8,7 @@ import { CampaignEditor } from "@/pages/CampaignEditor";
 import { Campaigns } from "@/pages/Campaigns";
 import { Connections } from "@/pages/Connections";
 import { ContentRules } from "@/pages/ContentRules";
+import { Events } from "@/pages/Events";
 import { Landing } from "@/pages/Landing";
 import { Leaderboard } from "@/pages/Leaderboard";
 import { LinkedInCallback } from "@/pages/LinkedInCallback";
@@ -116,6 +117,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <ContentRules />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/app/events"
+          element={
+            <ProtectedRoute>
+              <Events />
             </ProtectedRoute>
           }
         />

@@ -1,4 +1,5 @@
 import {
+  CalendarDays,
   Link2,
   LogOut,
   Megaphone,
@@ -16,6 +17,7 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { label: "Campaigns", icon: Megaphone, href: "/app/campaigns" },
+  { label: "Events", icon: CalendarDays, href: "/app/events" },
   { label: "Connectors", icon: Link2, href: "/app/connections" },
   { label: "Leaderboard", icon: Trophy, href: "/app/leaderboard" },
   { label: "Teams", icon: UsersRound, href: "/app/teams", adminOnly: true },

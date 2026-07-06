@@ -70,3 +70,11 @@ class Post(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     retries: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default="0"
     )
+    # Single-flight publish lease. A worker claims this (sets it to now + TTL)
+    # before making any provider call, so a recovery job (or a second replica) can
+    # never run a body-publish or comment concurrently and double-post. The TTL is
+    # the crash backstop: a worker killed mid-publish lets the lease expire, then
+    # reconciliation re-drives safely.
+    publish_leased_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )

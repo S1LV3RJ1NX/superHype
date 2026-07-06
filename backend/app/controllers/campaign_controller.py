@@ -5,7 +5,7 @@ the fine-grained authorization the route-level role gate cannot.
 """
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +15,11 @@ from app.core.deps import ROLE_HIERARCHY
 from app.core.engagement import is_assisted
 from app.core.linkedin_urn import resolve_post_urn
 from app.core.safe_fetch import media_kind
+from app.core.scheduling import (
+    local_date_range_utc,
+    local_day_bounds_utc,
+    normalize_scheduled_at,
+)
 from app.models.campaign import Campaign
 from app.models.user import User
 from app.repositories import audit_repo
@@ -22,6 +27,7 @@ from app.repositories.campaign_media_repo import campaign_media_repo
 from app.repositories.campaign_repo import campaign_repo
 from app.repositories.post_repo import post_repo
 from app.repositories.social_account_repo import social_account_repo
+from app.repositories.user_repo import user_repo
 from app.schemas.campaign import (
     ApprovalReadiness,
     CampaignCreate,
@@ -30,6 +36,7 @@ from app.schemas.campaign import (
     CampaignMediaOut,
     CampaignOut,
     CampaignUpdate,
+    ScheduleEntry,
 )
 from app.schemas.common import Page, PageParams
 from app.schemas.post import PlanRequest, PostOut
@@ -96,6 +103,48 @@ def _require_resolvable_amplify_target(
             "That post URL could not be read as a LinkedIn post. Paste the full "
             "post URL (the one with an activity id) or a lnkd.in share link.",
         )
+
+
+async def _validate_schedule(
+    db: AsyncSession,
+    scheduled_at: datetime,
+    actor: User,
+    *,
+    campaign_id: uuid.UUID | None = None,
+) -> datetime:
+    """Validate a requested launch time and return it normalized to UTC.
+
+    Enforces two rules: the time must be in the future, and no other campaign may
+    already occupy that company-local calendar day (one launch per day, drafts
+    included). Raises 422 for a past time and a structured 409 schedule_conflict
+    otherwise. The blocking campaign is only named (title and id) when the actor
+    could view it anyway; other campaigns stay a generic "already taken" so the
+    conflict check cannot be used to probe titles the API would 403.
+    """
+    normalized = normalize_scheduled_at(scheduled_at)
+    if normalized <= datetime.now(UTC):
+        raise HTTPException(422, "The scheduled time must be in the future.")
+    start, end = local_day_bounds_utc(normalized)
+    clashes = await campaign_repo.find_scheduled_between(
+        db, start, end, exclude_id=campaign_id
+    )
+    if clashes:
+        other = clashes[0]
+        detail: dict[str, str] = {
+            "code": "schedule_conflict",
+            "message": (
+                "That day is already taken by another campaign. Only one "
+                "campaign can be scheduled per day."
+            ),
+        }
+        if await _can_view(db, other, actor):
+            detail["message"] = (
+                f'That day is already taken by "{other.title}". Only one '
+                "campaign can be scheduled per day."
+            )
+            detail["campaign_id"] = str(other.id)
+        raise HTTPException(status_code=409, detail=detail)
+    return normalized
 
 
 async def _load_or_404(db: AsyncSession, campaign_id: uuid.UUID) -> Campaign:
@@ -166,6 +215,51 @@ async def list_campaigns(
     )
 
 
+async def schedule_feed(
+    db: AsyncSession, start: date, end: date, user: User
+) -> list[ScheduleEntry]:
+    """Scheduled/launched campaigns in a company-local date range, for the calendar.
+
+    Every authenticated user sees which days are taken (that is the point of the
+    one-per-day rule), but campaign details follow the same visibility as the rest
+    of the API: only the creator, a participant, or an admin sees the title and
+    creator name. Everything else is redacted to a generic reserved entry. The
+    range is capped so a single request cannot scan an unbounded window.
+    """
+    if end < start:
+        raise HTTPException(422, "The end date must not be before the start date.")
+    if (end - start).days > 92:
+        raise HTTPException(422, "The date range is too large (max 92 days).")
+    range_start, range_end = local_date_range_utc(start, end)
+    campaigns = await campaign_repo.find_scheduled_between(db, range_start, range_end)
+    if _is_admin(user):
+        viewable = {c.id for c in campaigns}
+    else:
+        participant_of = await post_repo.campaign_ids_with_user(
+            db, [c.id for c in campaigns], user.id
+        )
+        viewable = {
+            c.id for c in campaigns if c.created_by == user.id or c.id in participant_of
+        }
+    creator_ids = [
+        c.created_by for c in campaigns if c.created_by is not None and c.id in viewable
+    ]
+    names = {
+        u.id: u.name for u in await user_repo.list_by_ids(db, list(set(creator_ids)))
+    }
+    entries: list[ScheduleEntry] = []
+    for c in campaigns:
+        entry = ScheduleEntry.model_validate(c)
+        if c.id in viewable:
+            entry.creator_name = names.get(c.created_by) if c.created_by else None
+        else:
+            entry.title = "Reserved"
+            entry.creator_name = None
+            entry.can_view = False
+        entries.append(entry)
+    return entries
+
+
 async def create_campaign(
     db: AsyncSession, body: CampaignCreate, actor: User
 ) -> CampaignOut:
@@ -176,6 +270,11 @@ async def create_campaign(
     seed_urn = await resolve_post_urn(body.seed_url)
     _require_resolvable_amplify_target(
         body.type, seed_url=body.seed_url, seed_urn=seed_urn
+    )
+    scheduled_at = (
+        await _validate_schedule(db, body.scheduled_at, actor)
+        if body.scheduled_at is not None
+        else None
     )
     campaign = await campaign_repo.create(
         db,
@@ -199,6 +298,7 @@ async def create_campaign(
         self_comment=body.self_comment,
         stagger_min_seconds=body.stagger_min_seconds,
         stagger_max_seconds=body.stagger_max_seconds,
+        scheduled_at=scheduled_at,
         status="draft",
         created_by=actor.id,
     )
@@ -281,6 +381,12 @@ async def update_campaign(
     updates.pop("media", None)
     if "seed_url" in updates:
         updates["seed_urn"] = await resolve_post_urn(updates["seed_url"])
+    # Setting a schedule validates future + one-per-day; clearing (null) is always
+    # allowed pre-launch and just frees the day.
+    if updates.get("scheduled_at") is not None:
+        updates["scheduled_at"] = await _validate_schedule(
+            db, updates["scheduled_at"], actor, campaign_id=campaign_id
+        )
     # The type is locked on edit; validate the effective (merged) source material
     # so a campaign can never be saved into a state that cannot generate anything.
     _require_source_material(
@@ -405,16 +511,21 @@ async def launch(db: AsyncSession, campaign_id: uuid.UUID, actor: User) -> Campa
     if campaign.status != "review":
         raise HTTPException(409, "Campaign must be in review to launch.")
 
-    from datetime import UTC, datetime
-
     campaign.launched_by = actor.id
     campaign.launched_at = datetime.now(UTC)
+    # A manual launch consumes any schedule, freeing the day it held.
+    campaign.scheduled_at = None
     await audit_repo.record(
         db, actor_id=actor.id, action="campaign_launched", campaign_id=campaign_id
     )
     await db.commit()
 
-    await queue.enqueue_job("launch_campaign", str(campaign_id))
+    # Same fixed job id as the scheduled auto-launch path, so the cron's resweep
+    # (which re-drives stamped-but-still-review campaigns) dedupes against this
+    # enqueue instead of firing a second fan-out in the commit-to-run window.
+    await queue.enqueue_job(
+        "launch_campaign", str(campaign_id), _job_id=f"launch:{campaign_id}"
+    )
     await db.refresh(campaign)
     return await _campaign_out(db, campaign)
 

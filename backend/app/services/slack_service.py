@@ -418,6 +418,48 @@ async def notify_engagements(
         )
 
 
+async def notify_schedule_missed(
+    db: AsyncSession,
+    client: SlackClient,
+    campaign: Campaign,
+    user: User,
+    reason: str,
+) -> None:
+    """DM the creator that their scheduled campaign did not auto-launch.
+
+    Fired by the poll when a due campaign is not ready (still draft/generating) or
+    is overdue beyond the catch-up grace window. The day is freed either way, so
+    the message points them back to reschedule or launch manually.
+    """
+    identity = await resolve_identity(db, client, user)
+    if identity is None:
+        log.info(
+            "slack.notify_schedule_missed.no_identity",
+            user_id=str(user.id),
+            campaign_id=str(campaign.id),
+        )
+        return
+    channel = identity.slack_dm_channel or identity.slack_user_id
+    portal_url = f"{settings.FRONTEND_URL}/app/campaigns/{campaign.id}"
+    if reason == "grace_exceeded":
+        why = "it could not launch within the catch-up window"
+    else:
+        why = "it was not ready (still in draft or generating)"
+    text = (
+        f'Your scheduled campaign "{campaign.title}" did not auto-launch because '
+        f"{why}. The day is free again, so reschedule it or launch it manually "
+        f"once it is ready: {portal_url}"
+    )
+    try:
+        await client.post_message(channel, text=text)
+    except SlackError as exc:
+        log.warning(
+            "slack.notify_schedule_missed.send_failed",
+            user_id=str(user.id),
+            error=str(exc),
+        )
+
+
 async def notify_reconnect(db: AsyncSession, client: SlackClient, user: User) -> None:
     """DM a person that their LinkedIn token went stale, with a reconnect link."""
     identity = await resolve_identity(db, client, user)

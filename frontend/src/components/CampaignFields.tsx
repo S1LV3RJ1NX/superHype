@@ -48,6 +48,9 @@ export interface CampaignFieldsValue {
   selfComment: string;
   campaignRules: string;
   applyGlobalRules: boolean;
+  // Native datetime-local string ("YYYY-MM-DDTHH:MM") for the scheduled launch,
+  // or "" when the campaign is launched manually. Read in the team timezone.
+  scheduledAt: string;
 }
 
 export function emptyCampaignFields(): CampaignFieldsValue {
@@ -63,6 +66,7 @@ export function emptyCampaignFields(): CampaignFieldsValue {
     selfComment: "",
     campaignRules: "",
     applyGlobalRules: true,
+    scheduledAt: "",
   };
 }
 
@@ -82,7 +86,23 @@ export function campaignFieldsToPayload(v: CampaignFieldsValue) {
     self_comment: v.selfComment || null,
     custom_rules: v.campaignRules || null,
     apply_global_rules: v.applyGlobalRules,
+    // A naive datetime-local value is read by the backend in the team timezone.
+    scheduled_at: v.scheduledAt || null,
   };
+}
+
+// Format an ISO datetime (UTC from the API) as the "YYYY-MM-DDTHH:MM" a native
+// datetime-local input expects, in the browser's local time (which matches the
+// team timezone for an internal tool). Returns "" for a null/blank input.
+export function isoToDateTimeLocal(iso: string | null | undefined): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}`
+  );
 }
 
 // Mirrors the backend parse_post_urn: a LinkedIn feed link resolves to an
@@ -289,6 +309,34 @@ export function CampaignFields({
           {type === "distribute" ? " and the generated posts" : ""}. Comments are
           written from the post content you pasted above.
         </Hint>
+
+        <Field label="Schedule launch (optional)">
+          <div className="flex items-center gap-2">
+            <input
+              type="datetime-local"
+              value={value.scheduledAt}
+              onChange={(e) => onChange({ scheduledAt: e.target.value })}
+              className="input"
+            />
+            {value.scheduledAt && (
+              <button
+                type="button"
+                onClick={() => onChange({ scheduledAt: "" })}
+                className="rounded-md border border-border bg-sand/40 px-3 py-1.5 text-xs text-muted-ink hover:bg-sand"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <div className="mt-2">
+            <Hint>
+              Pick a date and time to auto-launch this campaign (it must be in
+              review by then). Only one campaign can be scheduled per day across
+              the team, so the chosen day is reserved even while this stays a
+              draft. Leave empty to launch manually.
+            </Hint>
+          </div>
+        </Field>
 
         <Field label="Campaign rules (optional)">
           <MarkdownEditor

@@ -5,6 +5,7 @@ Launch is gated to the creator or an admin. There is no admin campaign sign-off.
 """
 
 import uuid
+from datetime import date
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from app.schemas.campaign import (
     CampaignDetail,
     CampaignOut,
     CampaignUpdate,
+    ScheduleEntry,
 )
 from app.schemas.common import Page, PageParams
 from app.schemas.post import PlanRequest, PostOut
@@ -42,6 +44,16 @@ async def create_campaign(
     actor: User = Depends(get_current_user),
 ) -> CampaignOut:
     return await campaign_controller.create_campaign(db, body, actor)
+
+
+@router.get("/schedule", response_model=list[ScheduleEntry])
+async def schedule_feed(
+    start: date,
+    end: date,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+) -> list[ScheduleEntry]:
+    return await campaign_controller.schedule_feed(db, start, end, user)
 
 
 @router.get("/{campaign_id}", response_model=CampaignDetail)

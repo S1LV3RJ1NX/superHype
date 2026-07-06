@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import {
   type CampaignFieldsValue,
   emptyCampaignFields,
+  isoToDateTimeLocal,
 } from "@/components/CampaignFields";
 import { CampaignWizard } from "@/components/CampaignWizard";
 import { type LockedPost, type RosterUser } from "@/components/PlanBuilder";
@@ -30,6 +31,7 @@ interface Campaign {
   self_comment: string | null;
   custom_rules: string | null;
   apply_global_rules: boolean;
+  scheduled_at: string | null;
   created_by: string | null;
 }
 
@@ -66,6 +68,7 @@ function fieldsFromCampaign(c: Campaign): CampaignFieldsValue {
     selfComment: c.self_comment ?? "",
     campaignRules: c.custom_rules ?? "",
     applyGlobalRules: c.apply_global_rules ?? true,
+    scheduledAt: isoToDateTimeLocal(c.scheduled_at),
   };
 }
 

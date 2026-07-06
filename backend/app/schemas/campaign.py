@@ -46,6 +46,7 @@ class CampaignOut(BaseModel):
     status: str
     stagger_min_seconds: int
     stagger_max_seconds: int
+    scheduled_at: datetime | None
     created_by: uuid.UUID | None
     launched_by: uuid.UUID | None
     launched_at: datetime | None
@@ -94,6 +95,7 @@ class CampaignCreate(BaseModel):
     self_comment: str | None = None
     stagger_min_seconds: int = 600
     stagger_max_seconds: int = 1800
+    scheduled_at: datetime | None = None
 
 
 class CampaignUpdate(BaseModel):
@@ -116,3 +118,25 @@ class CampaignUpdate(BaseModel):
     self_comment: str | None = None
     stagger_min_seconds: int | None = None
     stagger_max_seconds: int | None = None
+    scheduled_at: datetime | None = None
+
+
+class ScheduleEntry(BaseModel):
+    """One scheduled/launched campaign for the events calendar feed.
+
+    Campaigns the requester cannot view (not the creator, a participant, or an
+    admin) are redacted before serialization: title becomes a generic placeholder,
+    creator_name is dropped, and can_view is False so the UI renders the day as
+    taken without linking into a campaign the API would 403.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    title: str
+    type: str
+    status: str
+    scheduled_at: datetime | None
+    launched_at: datetime | None
+    creator_name: str | None = None
+    can_view: bool = True

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.engagement import is_assisted
 from app.core.safe_fetch import fetch_image, media_kind
+from app.core.scheduling import ensure_utc
 from app.db.session import async_session_factory
 from app.integrations.slack import build_slack_client
 from app.logger import get_logger
@@ -43,6 +44,10 @@ log = get_logger(__name__)
 
 MAX_RETRIES = 5
 _DEPENDENCY_DEFER_SECONDS = 30
+# When another worker holds the publish lease, retry this soon rather than drop
+# the work: brief so a lost holder (crash) is picked up quickly once its lease
+# expires, but long enough not to hot-loop while a healthy holder publishes.
+_LEASE_CONTENTION_DEFER_SECONDS = 15
 
 
 def _provider() -> LinkedInProvider:
@@ -604,6 +609,21 @@ async def publish_post(ctx: dict, post_id: str) -> None:
                 )
                 return
 
+        # Single-flight lease: claim the post before any provider call so a lost
+        # job's recovery (or a second worker replica) can never publish this body
+        # or comment concurrently and double-post. If another run holds the lease,
+        # re-enqueue shortly rather than dropping the work and let that run finish.
+        # The lease is committed so it is immediately visible to other workers.
+        if not await post_repo.try_acquire_publish_lease(
+            db, pid, now=datetime.now(UTC), ttl_seconds=settings.PUBLISH_LEASE_SECONDS
+        ):
+            await db.commit()
+            await ctx["redis"].enqueue_job(
+                "publish_post", post_id, _defer_by=_LEASE_CONTENTION_DEFER_SECONDS
+            )
+            return
+        await db.commit()
+
         try:
             # Phase 1: publish the body. external_id is committed before we touch
             # the first comment, so a later failure can never re-publish it.
@@ -736,6 +756,17 @@ async def publish_post(ctx: dict, post_id: str) -> None:
                 await ctx["redis"].enqueue_job(
                     "publish_post", post_id, _defer_by=backoff
                 )
+        finally:
+            # Always free the lease so the next attempt (a backoff retry here, a
+            # later re-approval, or a reconcile re-drive) can re-acquire at once;
+            # the TTL is only the crash backstop. Best effort: releasing must not
+            # mask the attempt's real outcome. The handlers above leave the session
+            # clean (commit or rollback), so this runs in its own small unit.
+            try:
+                await post_repo.release_publish_lease(db, pid)
+                await db.commit()
+            except Exception:
+                await db.rollback()
 
 
 async def send_reminders(ctx: dict, campaign_id: str) -> None:
@@ -783,6 +814,258 @@ async def send_reminders(ctx: dict, campaign_id: str) -> None:
                     )
     finally:
         await client.aclose()
+
+
+async def _notify_schedule_missed(campaign: Campaign, reason: str) -> None:
+    """Best-effort Slack DM to a campaign's creator that its schedule was missed.
+
+    Runs after the miss is already committed and audited, so a Slack outage never
+    blocks freeing the day or processing the rest of the tick.
+    """
+    if campaign.created_by is None:
+        return
+    client = build_slack_client()
+    if client is None:
+        return
+    try:
+        async with async_session_factory() as db:
+            user = await user_repo.get(db, campaign.created_by)
+            if user is None:
+                return
+            await slack_service.notify_schedule_missed(
+                db, client, campaign, user, reason
+            )
+    except Exception as exc:
+        log.warning(
+            "launch_due_campaigns.notify_failed",
+            campaign_id=str(campaign.id),
+            error=str(exc)[:200],
+        )
+    finally:
+        await client.aclose()
+
+
+async def _process_due_campaign(
+    ctx: dict, campaign_id: uuid.UUID, now: datetime, grace: timedelta
+) -> None:
+    """Launch one due campaign, or mark it missed, in its own transaction.
+
+    Due-ness and readiness are re-read inside the transaction so a stale scan
+    entry (already launched by a prior tick or another replica) is a no-op. The
+    launch stamp is a conditional write that a losing racer skips, so no campaign
+    is ever launched twice.
+    """
+    missed: tuple[Campaign, str] | None = None
+    async with async_session_factory() as db:
+        campaign = await campaign_repo.get(db, campaign_id)
+        if (
+            campaign is None
+            or campaign.scheduled_at is None
+            or campaign.launched_at is not None
+        ):
+            return
+
+        overdue = now - ensure_utc(campaign.scheduled_at)
+        if overdue > grace:
+            reason = "grace_exceeded"
+        elif campaign.status != "review":
+            reason = "not_ready"
+        else:
+            reason = ""
+
+        if reason:
+            # Missed: free the day and audit it. The Slack DM happens after commit.
+            campaign.scheduled_at = None
+            await audit_repo.record(
+                db,
+                action="campaign_schedule_missed",
+                campaign_id=campaign.id,
+                detail={"reason": reason},
+            )
+            await db.commit()
+            missed = (campaign, reason)
+        else:
+            # Ready and within grace: conditionally stamp the launch. A second tick
+            # or replica that already stamped loses the race and returns False.
+            won = await campaign_repo.stamp_launched_if_unlaunched(
+                db, campaign.id, launched_by=campaign.created_by, now=now
+            )
+            if not won:
+                await db.rollback()
+                return
+            await audit_repo.record(
+                db,
+                action="campaign_launched",
+                campaign_id=campaign.id,
+                detail={"scheduled": True},
+            )
+            await db.commit()
+            # Fixed job id dedupes a re-enqueue after a crash between commit and
+            # enqueue (the resweep re-runs this safely while still in review).
+            await ctx["redis"].enqueue_job(
+                "launch_campaign", str(campaign.id), _job_id=f"launch:{campaign.id}"
+            )
+
+    if missed is not None:
+        await _notify_schedule_missed(missed[0], missed[1])
+
+
+async def launch_due_campaigns(ctx: dict) -> None:
+    """Cron poll: auto-launch campaigns whose scheduled time has arrived.
+
+    Reads due-ness from Postgres (not Redis-deferred jobs), so a restarted worker
+    catches up on everything that came due while it was down. Each campaign is
+    processed in isolation, so one bad campaign cannot block the others, and the
+    scan is idempotent, so a failed tick simply redoes itself next minute.
+    """
+    now = datetime.now(UTC)
+    grace = timedelta(seconds=settings.SCHEDULE_GRACE_SECONDS)
+    async with async_session_factory() as db:
+        due = await campaign_repo.find_due_for_launch(db, now)
+        # Resweep: stamped-but-still-review campaigns are ones whose launch_campaign
+        # enqueue was lost to a crash. Re-enqueue with the same job id (a no-op if
+        # it is already queued or running).
+        stamped = await campaign_repo.find_stamped_unlaunched(db, now - grace)
+
+    for campaign in due:
+        try:
+            await _process_due_campaign(ctx, campaign.id, now, grace)
+        except Exception as exc:
+            log.warning(
+                "launch_due_campaigns.campaign_failed",
+                campaign_id=str(campaign.id),
+                error=str(exc)[:200],
+            )
+
+    for campaign in stamped:
+        try:
+            await ctx["redis"].enqueue_job(
+                "launch_campaign", str(campaign.id), _job_id=f"launch:{campaign.id}"
+            )
+        except Exception as exc:
+            log.warning(
+                "launch_due_campaigns.reenqueue_failed",
+                campaign_id=str(campaign.id),
+                error=str(exc)[:200],
+            )
+
+
+# Buffer added to a campaign's stagger window before a still-pending participant
+# is treated as a lost notify: the notify is deferred up to stagger_max after
+# launch, so we wait a little past that before re-driving.
+_NOTIFY_STAGGER_SLACK_SECONDS = 60
+
+
+def _campaign_stagger_max(campaign: Campaign) -> int:
+    """Effective max notify stagger for a campaign (the test override wins)."""
+    stagger_min = (
+        settings.STAGGER_OVERRIDE_MIN_SECONDS
+        if settings.STAGGER_OVERRIDE_MIN_SECONDS is not None
+        else campaign.stagger_min_seconds
+    )
+    stagger_max = (
+        settings.STAGGER_OVERRIDE_MAX_SECONDS
+        if settings.STAGGER_OVERRIDE_MAX_SECONDS is not None
+        else campaign.stagger_max_seconds
+    )
+    return int(max(stagger_min, stagger_max))
+
+
+async def _reconcile_one(
+    ctx: dict, campaign_id: uuid.UUID, now: datetime, stalled_before: datetime
+) -> None:
+    """Re-drive one publishing campaign's stuck work, idempotently.
+
+    Read-then-enqueue against durable Postgres state: everything is re-enqueued
+    with a fixed job id so repeated ticks dedupe, and every re-driven action is
+    idempotent (the publish lease, notify's pending->scheduled move, reminders'
+    outstanding-only bucketing) so recovery can never double-act.
+    """
+    redis = ctx["redis"]
+    async with async_session_factory() as db:
+        campaign = await campaign_repo.get(db, campaign_id)
+        if campaign is None or campaign.status != "publishing":
+            return
+
+        # Fully settled but never completed (a crash between the last publish and
+        # its inline completion check): settle it now and stop.
+        if await post_repo.all_terminal(db, campaign_id):
+            await campaign_service.check_completion(db, campaign_id)
+            await db.commit()
+            return
+
+        posts = await post_repo.list_for_campaign(db, campaign_id)
+        launched_at = (
+            ensure_utc(campaign.launched_at)
+            if campaign.launched_at is not None
+            else None
+        )
+        stagger_max = _campaign_stagger_max(campaign)
+
+    # 1) Stalled approved posts: the publish_post job was lost. Re-enqueue with a
+    #    fixed job id (dedupes ticks); the publish lease makes a re-drive safe even
+    #    if a deferred job somehow survived.
+    for post in posts:
+        if post.status == "approved" and ensure_utc(post.updated_at) < stalled_before:
+            await redis.enqueue_job(
+                "publish_post", str(post.id), _job_id=f"publish:{post.id}"
+            )
+
+    # 2) Still-pending posts on a launched campaign past its stagger window: the
+    #    participant's staggered notify was lost. Re-notify once per user;
+    #    notify_participant is idempotent (pending -> scheduled, DM best effort).
+    if launched_at is not None and now >= launched_at + timedelta(
+        seconds=stagger_max + _NOTIFY_STAGGER_SLACK_SECONDS
+    ):
+        pending_users = {post.user_id for post in posts if post.status == "pending"}
+        for uid in pending_users:
+            await redis.enqueue_job(
+                "notify_participant",
+                str(campaign_id),
+                str(uid),
+                _job_id=f"notify:{campaign_id}:{uid}",
+            )
+
+    # 3) Lost reminders: outstanding approval/engagement work past the reminder
+    #    window. send_reminders is registered with keep_result equal to the
+    #    reminder window, so this fixed job id no-ops while a reminder is queued,
+    #    running, or ran within the window: at most one nudge per window, not one
+    #    per tick.
+    outstanding = any(post.status in ("scheduled", "action_required") for post in posts)
+    if (
+        launched_at is not None
+        and outstanding
+        and now >= launched_at + timedelta(seconds=settings.REMINDER_DELAY_SECONDS)
+    ):
+        await redis.enqueue_job(
+            "send_reminders", str(campaign_id), _job_id=f"remind:{campaign_id}"
+        )
+
+
+async def reconcile_campaigns(ctx: dict) -> None:
+    """Fail-safe cron: recover campaign work lost to a crash or Redis eviction.
+
+    Every deferred job lives only in Redis, so a lost one strands durable state:
+    an approved post never publishes, a pending participant is never asked, a
+    fully-published campaign hangs in publishing. This reads that stuck state from
+    Postgres (the source of truth) and re-drives it idempotently. Each campaign is
+    isolated so one bad campaign never blocks the rest, and the scan is idempotent
+    so a failed tick simply redoes itself next interval.
+    """
+    now = datetime.now(UTC)
+    stalled_before = now - timedelta(seconds=settings.RECONCILE_STALLED_SECONDS)
+    async with async_session_factory() as db:
+        campaigns = await campaign_repo.list_by_status(db, "publishing")
+
+    for campaign in campaigns:
+        try:
+            await _reconcile_one(ctx, campaign.id, now, stalled_before)
+        except Exception as exc:
+            log.warning(
+                "reconcile_campaigns.campaign_failed",
+                campaign_id=str(campaign.id),
+                error=str(exc)[:200],
+            )
 
 
 async def request_reconnect(ctx: dict, account_id: str) -> None:

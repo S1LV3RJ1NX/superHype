@@ -1,7 +1,7 @@
 """Post repository: all DB access for campaign posts and interactions."""
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from sqlalchemy import CursorResult, case, delete, func, or_, select, update
@@ -60,6 +60,23 @@ class PostRepository(BaseRepository[Post]):
             .limit(1)
         )
         return (await db.execute(stmt)).first() is not None
+
+    async def campaign_ids_with_user(
+        self, db: AsyncSession, campaign_ids: list[uuid.UUID], user_id: uuid.UUID
+    ) -> set[uuid.UUID]:
+        """Of the given campaigns, the ones where the user owns at least one post.
+
+        Batched membership check (one query for a whole page of campaigns) backing
+        per-user visibility in the schedule feed, mirroring exists_for_campaign_user.
+        """
+        if not campaign_ids:
+            return set()
+        stmt = (
+            select(Post.campaign_id)
+            .where(Post.campaign_id.in_(campaign_ids), Post.user_id == user_id)
+            .distinct()
+        )
+        return {row[0] for row in (await db.execute(stmt)).all()}
 
     async def list_for_campaign(
         self, db: AsyncSession, campaign_id: uuid.UUID
@@ -313,6 +330,69 @@ class PostRepository(BaseRepository[Post]):
         stmt = select(Post.status).where(Post.campaign_id == campaign_id)
         statuses = [row[0] for row in (await db.execute(stmt)).all()]
         return bool(statuses) and all(s in _TERMINAL for s in statuses)
+
+    async def list_stalled_approved(
+        self, db: AsyncSession, campaign_id: uuid.UUID, older_than: datetime
+    ) -> list[Post]:
+        """Approved posts idle since before `older_than` (a likely lost publish job).
+
+        A healthy publish settles or fails fast; an approved post whose row has
+        not changed for a while almost certainly had its publish_post job lost
+        (Redis eviction, a worker killed before it could re-enqueue its backoff).
+        Reconciliation re-drives these; the publish lease keeps that safe even in
+        the rare case a deferred job is still alive.
+        """
+        stmt = select(Post).where(
+            Post.campaign_id == campaign_id,
+            Post.status == "approved",
+            Post.updated_at < older_than,
+        )
+        return list((await db.execute(stmt)).scalars().all())
+
+    async def try_acquire_publish_lease(
+        self,
+        db: AsyncSession,
+        post_id: uuid.UUID,
+        *,
+        now: datetime,
+        ttl_seconds: int,
+    ) -> bool:
+        """Claim the single-flight publish lease; return True if we won.
+
+        Conditional write (WHERE the lease is unset or expired) so only one worker
+        holds it at a time. A losing racer skips publishing, guaranteeing no
+        double body-publish or double comment across concurrent jobs or replicas.
+        The caller commits.
+        """
+        until = now + timedelta(seconds=ttl_seconds)
+        result = cast(
+            CursorResult,
+            await db.execute(
+                update(Post)
+                .where(
+                    Post.id == post_id,
+                    or_(
+                        Post.publish_leased_until.is_(None),
+                        Post.publish_leased_until < now,
+                    ),
+                )
+                .values(publish_leased_until=until)
+                # Compare the lease in SQL, not against the session's in-memory
+                # objects (a loaded row's naive/aware datetime would clash).
+                .execution_options(synchronize_session=False)
+            ),
+        )
+        return (result.rowcount or 0) > 0
+
+    async def release_publish_lease(self, db: AsyncSession, post_id: uuid.UUID) -> None:
+        """Clear the publish lease so the next attempt can re-acquire immediately."""
+        await db.execute(
+            update(Post)
+            .where(Post.id == post_id)
+            .values(publish_leased_until=None)
+            .execution_options(synchronize_session=False)
+        )
+        await db.flush()
 
 
 post_repo = PostRepository()

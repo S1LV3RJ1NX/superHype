@@ -6,6 +6,7 @@ optional.
 """
 
 from functools import lru_cache
+from zoneinfo import ZoneInfo
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -99,6 +100,28 @@ class Settings(BaseSettings):
     # few hours; drop it for a quick local check of the reminder path.
     REMINDER_DELAY_SECONDS: int = 6 * 60 * 60
 
+    # Fail-safe reconciliation. A worker holds the single-flight publish lease for
+    # this long before it expires; it must exceed the slowest publish call (media
+    # upload + post + first comment) so a healthy job never loses its own lease,
+    # while still freeing a crashed job's lease reasonably fast.
+    PUBLISH_LEASE_SECONDS: int = 600
+    # An approved post whose row has not changed in this long is treated as a lost
+    # publish job and re-driven by the reconcile poll. Longer than the largest
+    # publish backoff (60 * 2**4 = 960s), so reconcile never pre-empts a retry
+    # that is still legitimately scheduled; the lease would make that race safe,
+    # but pre-empting would consume the final retry early.
+    RECONCILE_STALLED_SECONDS: int = 1200
+
+    # Scheduled auto-launch. Company timezone that defines a scheduling "day", so
+    # the one-campaign-per-day rule and the events calendar align with the team's
+    # local calendar rather than UTC.
+    SCHEDULE_TIMEZONE: str = "Asia/Kolkata"
+    # How far past its scheduled time a campaign may still auto-launch on
+    # catch-up (covers deploys and short worker outages). Anything overdue by more
+    # than this is not launched at the wrong time; it is treated as missed and the
+    # creator is nudged to reschedule.
+    SCHEDULE_GRACE_SECONDS: int = 60 * 60
+
     # Uploaded campaign video cap. Short clips only; bytes still live in the DB
     # asset store for now, so keep this modest until object storage lands.
     MAX_VIDEO_BYTES: int = 64 * 1024 * 1024
@@ -160,6 +183,11 @@ class Settings(BaseSettings):
             for name in self.FOUNDER_TEAM_NAMES.split(",")
             if name.strip()
         }
+
+    @property
+    def schedule_tz(self) -> ZoneInfo:
+        """Company timezone used for the scheduling day boundary."""
+        return ZoneInfo(self.SCHEDULE_TIMEZONE)
 
 
 @lru_cache

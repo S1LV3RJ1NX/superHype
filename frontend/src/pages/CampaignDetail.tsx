@@ -2,6 +2,7 @@ import { type ReactNode, useCallback, useEffect, useState } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
+  CalendarClock,
   Check,
   Copy,
   ExternalLink,
@@ -37,6 +38,7 @@ interface Campaign {
   seed_content: string | null;
   created_by: string | null;
   launched_at: string | null;
+  scheduled_at: string | null;
   post_count: number;
   counts: Record<string, number>;
 }
@@ -482,6 +484,16 @@ export function CampaignDetail() {
         <div className="mt-2 flex items-start justify-between">
           <div>
             <h1 className="font-serif text-2xl text-ink">{campaign.title}</h1>
+            {campaign.scheduled_at && !campaign.launched_at && (
+              <span className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-clay/30 bg-clay/10 px-2.5 py-0.5 text-xs font-medium text-clay">
+                <CalendarClock className="h-3.5 w-3.5" />
+                Scheduled for{" "}
+                {new Date(campaign.scheduled_at).toLocaleString(undefined, {
+                  dateStyle: "medium",
+                  timeStyle: "short",
+                })}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex rounded-full bg-sand px-2.5 py-0.5 text-xs font-medium capitalize text-muted-ink">
