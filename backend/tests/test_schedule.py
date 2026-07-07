@@ -25,7 +25,11 @@ pytestmark = pytest.mark.asyncio
 _SEED_URL = "https://www.linkedin.com/feed/update/urn:li:activity:7123456789012345678/"
 
 
-def amplify(title: str = "A", scheduled_at: str | None = None) -> dict:
+def amplify(
+    title: str = "A",
+    scheduled_at: str | None = None,
+    schedule_timezone: str | None = None,
+) -> dict:
     body = {
         "title": title,
         "type": "amplify",
@@ -34,6 +38,8 @@ def amplify(title: str = "A", scheduled_at: str | None = None) -> dict:
     }
     if scheduled_at is not None:
         body["scheduled_at"] = scheduled_at
+    if schedule_timezone is not None:
+        body["schedule_timezone"] = schedule_timezone
     return body
 
 
@@ -139,6 +145,114 @@ async def test_schedule_feed_returns_range(client, as_role):
     titles = {e["title"] for e in entries}
     assert titles == {"June A", "June B"}
     assert all(e["creator_name"] for e in entries)
+
+
+async def test_naive_time_read_in_campaign_timezone(client, as_role):
+    # A naive datetime-local value is interpreted in the campaign's chosen zone
+    # (9am US Pacific in June = PDT, UTC-7) and stored as UTC.
+    async with as_role("editor"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json=amplify(
+                "PT", "2035-06-15T09:00:00", schedule_timezone="America/Los_Angeles"
+            ),
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["schedule_timezone"] == "America/Los_Angeles"
+    # 09:00 PDT == 16:00 UTC. SQLite drops the tzinfo in tests, so compare the
+    # stored UTC wall-clock (naive) rather than the offset marker.
+    stored = datetime.fromisoformat(body["scheduled_at"]).replace(tzinfo=None)
+    assert stored == datetime(2035, 6, 15, 16, 0)
+
+
+async def test_conflict_uses_company_day_across_timezones(client, as_role):
+    # Two campaigns entered in different timezones that both land on the same
+    # company (IST) calendar day still collide, because the day boundary is the
+    # company timezone regardless of each campaign's own zone.
+    async with as_role("editor"):
+        first = await client.post(
+            "/v1/campaigns",
+            json=amplify(
+                "LA", "2035-11-20T09:00:00", schedule_timezone="America/Los_Angeles"
+            ),
+        )
+        assert first.status_code == 201  # 17:00 UTC -> 22:30 IST, Nov 20 IST
+        second = await client.post(
+            "/v1/campaigns",
+            json=amplify("IN", "2035-11-20T18:00:00", schedule_timezone="Asia/Kolkata"),
+        )
+    assert second.status_code == 409  # 12:30 UTC -> 18:00 IST, same Nov 20 IST
+
+
+async def test_unknown_timezone_rejected(client, as_role):
+    async with as_role("editor"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json=amplify("Bad", "2035-06-15T09:00:00", schedule_timezone="Mars/Phobos"),
+        )
+    assert resp.status_code == 422
+
+
+async def test_update_unknown_timezone_rejected(client, as_role):
+    async with as_role("editor"):
+        created = await client.post("/v1/campaigns", json=amplify("A"))
+        cid = created.json()["id"]
+        resp = await client.patch(
+            f"/v1/campaigns/{cid}",
+            json={
+                "scheduled_at": "2035-06-15T09:00:00",
+                "schedule_timezone": "Mars/Phobos",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_update_scheduled_at_uses_stored_timezone(client, as_role):
+    # Set a PT timezone first, then PATCH only the time (no tz in the body): the
+    # new naive time must be read in the campaign's stored timezone, not the
+    # company default.
+    async with as_role("editor"):
+        created = await client.post(
+            "/v1/campaigns",
+            json=amplify(
+                "PT", "2035-06-15T09:00:00", schedule_timezone="America/Los_Angeles"
+            ),
+        )
+        cid = created.json()["id"]
+        updated = await client.patch(
+            f"/v1/campaigns/{cid}",
+            json={"scheduled_at": "2035-06-16T09:00:00"},
+        )
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["schedule_timezone"] == "America/Los_Angeles"
+    # 09:00 PDT == 16:00 UTC (SQLite drops tzinfo in tests).
+    stored = datetime.fromisoformat(body["scheduled_at"]).replace(tzinfo=None)
+    assert stored == datetime(2035, 6, 16, 16, 0)
+
+
+async def test_update_changing_timezone_reinterprets_time(client, as_role):
+    # Changing the timezone alongside the time reinterprets the wall-clock in the
+    # new zone.
+    async with as_role("editor"):
+        created = await client.post(
+            "/v1/campaigns",
+            json=amplify("A", "2035-06-15T09:00:00", schedule_timezone="Asia/Kolkata"),
+        )
+        cid = created.json()["id"]
+        updated = await client.patch(
+            f"/v1/campaigns/{cid}",
+            json={
+                "scheduled_at": "2035-06-15T09:00:00",
+                "schedule_timezone": "America/Los_Angeles",
+            },
+        )
+    assert updated.status_code == 200
+    body = updated.json()
+    assert body["schedule_timezone"] == "America/Los_Angeles"
+    stored = datetime.fromisoformat(body["scheduled_at"]).replace(tzinfo=None)
+    assert stored == datetime(2035, 6, 15, 16, 0)
 
 
 async def test_schedule_feed_caps_range(client, as_role):

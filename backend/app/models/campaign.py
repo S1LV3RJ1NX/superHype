@@ -84,6 +84,12 @@ class Campaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # launches it once the time arrives (if it is ready). Cleared on manual launch
     # and when a schedule is missed.
     scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # IANA timezone the creator entered scheduled_at in (e.g. America/Los_Angeles).
+    # Only used to interpret the wall-clock input at save time; storage is UTC and
+    # firing is a pure UTC comparison. None means the company default
+    # (settings.SCHEDULE_TIMEZONE). The one-per-day conflict and the events
+    # calendar always use the company timezone, not this.
+    schedule_timezone: Mapped[str | None] = mapped_column(String(64))
     created_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     launched_by: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id"))
     launched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

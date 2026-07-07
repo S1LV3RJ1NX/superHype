@@ -39,6 +39,7 @@ interface Campaign {
   created_by: string | null;
   launched_at: string | null;
   scheduled_at: string | null;
+  schedule_timezone: string | null;
   post_count: number;
   counts: Record<string, number>;
 }
@@ -491,6 +492,14 @@ export function CampaignDetail() {
                 {new Date(campaign.scheduled_at).toLocaleString(undefined, {
                   dateStyle: "medium",
                   timeStyle: "short",
+                  // Show the time in the campaign's own timezone with its
+                  // abbreviation, so it reads the same wherever it is opened.
+                  ...(campaign.schedule_timezone
+                    ? {
+                        timeZone: campaign.schedule_timezone,
+                        timeZoneName: "short",
+                      }
+                    : {}),
                 })}
               </span>
             )}

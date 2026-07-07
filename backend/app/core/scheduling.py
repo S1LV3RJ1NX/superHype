@@ -6,8 +6,20 @@ local calendar. Storage is always tz-aware UTC.
 """
 
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from app.config import settings
+
+
+def resolve_schedule_tz(tz_name: str | None) -> ZoneInfo:
+    """Return the ZoneInfo for a campaign's timezone, or the company default.
+
+    Raises ZoneInfoNotFoundError for an unknown IANA name so the caller can turn
+    it into a clean 422 rather than a 500.
+    """
+    if tz_name is None:
+        return settings.schedule_tz
+    return ZoneInfo(tz_name)
 
 
 def ensure_utc(dt: datetime) -> datetime:
@@ -21,14 +33,15 @@ def ensure_utc(dt: datetime) -> datetime:
     return dt.astimezone(UTC)
 
 
-def normalize_scheduled_at(dt: datetime) -> datetime:
+def normalize_scheduled_at(dt: datetime, tz_name: str | None = None) -> datetime:
     """Coerce an incoming schedule time to tz-aware UTC.
 
-    A naive datetime (what a browser ``datetime-local`` field yields) is read as
-    company-local time; an aware one is respected. Either way we store UTC.
+    A naive datetime (what a browser ``datetime-local`` field yields) is read in
+    the campaign's chosen timezone (``tz_name``), or the company default when
+    unset; an aware one is respected. Either way we store UTC.
     """
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=settings.schedule_tz)
+        dt = dt.replace(tzinfo=resolve_schedule_tz(tz_name))
     return dt.astimezone(UTC)
 
 

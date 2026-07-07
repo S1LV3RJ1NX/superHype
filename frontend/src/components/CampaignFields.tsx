@@ -24,6 +24,28 @@ export const LENGTH_OPTIONS = [
   "Long (~120 words)",
 ] as const;
 
+// The company timezone that defines the shared one-per-day boundary and the
+// events calendar. Mirrors the backend SCHEDULE_TIMEZONE default; the per-campaign
+// timezone below only changes when a campaign fires, not which day it reserves.
+export const COMPANY_TIMEZONE = "Asia/Kolkata";
+
+// Curated IANA zones offered for a scheduled launch. Value is the IANA name sent
+// to the backend; label is what the creator sees.
+export const SCHEDULE_TIMEZONE_OPTIONS: { value: string; label: string }[] = [
+  { value: "Asia/Kolkata", label: "India (IST)" },
+  { value: "America/Los_Angeles", label: "US Pacific (PT)" },
+  { value: "America/Denver", label: "US Mountain (MT)" },
+  { value: "America/Chicago", label: "US Central (CT)" },
+  { value: "America/New_York", label: "US Eastern (ET)" },
+  { value: "Europe/London", label: "UK (GMT/BST)" },
+  { value: "Europe/Berlin", label: "Central Europe (CET)" },
+  { value: "Asia/Dubai", label: "Gulf (GST)" },
+  { value: "Asia/Singapore", label: "Singapore (SGT)" },
+  { value: "Asia/Tokyo", label: "Japan (JST)" },
+  { value: "Australia/Sydney", label: "Sydney (AET)" },
+  { value: "UTC", label: "UTC" },
+];
+
 // "publishing" reads as "Active" in the UI: the campaign is launched and posts
 // are flowing out as people approve.
 const CAMPAIGN_STATUS_LABEL: Record<string, string> = {
@@ -49,8 +71,11 @@ export interface CampaignFieldsValue {
   campaignRules: string;
   applyGlobalRules: boolean;
   // Native datetime-local string ("YYYY-MM-DDTHH:MM") for the scheduled launch,
-  // or "" when the campaign is launched manually. Read in the team timezone.
+  // or "" when the campaign is launched manually. Read in scheduleTimezone.
   scheduledAt: string;
+  // IANA timezone the scheduledAt wall-clock is entered in. Defaults to the
+  // company timezone so behavior is unchanged unless the creator picks another.
+  scheduleTimezone: string;
 }
 
 export function emptyCampaignFields(): CampaignFieldsValue {
@@ -67,6 +92,7 @@ export function emptyCampaignFields(): CampaignFieldsValue {
     campaignRules: "",
     applyGlobalRules: true,
     scheduledAt: "",
+    scheduleTimezone: COMPANY_TIMEZONE,
   };
 }
 
@@ -86,23 +112,81 @@ export function campaignFieldsToPayload(v: CampaignFieldsValue) {
     self_comment: v.selfComment || null,
     custom_rules: v.campaignRules || null,
     apply_global_rules: v.applyGlobalRules,
-    // A naive datetime-local value is read by the backend in the team timezone.
+    // A naive datetime-local value is read by the backend in schedule_timezone.
     scheduled_at: v.scheduledAt || null,
+    schedule_timezone: v.scheduledAt ? v.scheduleTimezone : null,
   };
 }
 
 // Format an ISO datetime (UTC from the API) as the "YYYY-MM-DDTHH:MM" a native
-// datetime-local input expects, in the browser's local time (which matches the
-// team timezone for an internal tool). Returns "" for a null/blank input.
-export function isoToDateTimeLocal(iso: string | null | undefined): string {
+// datetime-local input expects. With a tz it renders the wall-clock in that IANA
+// zone (so a campaign scheduled in PT shows its PT time regardless of the
+// viewer's browser); without one it falls back to the browser's local time.
+// Returns "" for a null/blank input.
+export function isoToDateTimeLocal(
+  iso: string | null | undefined,
+  tz?: string,
+): string {
   if (!iso) return "";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
+  if (tz) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: tz,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    }).formatToParts(d);
+    const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+    // Some engines emit "24" for midnight; normalize to "00".
+    const hour = get("hour") === "24" ? "00" : get("hour");
+    return `${get("year")}-${get("month")}-${get("day")}T${hour}:${get("minute")}`;
+  }
   const pad = (n: number) => String(n).padStart(2, "0");
   return (
     `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
     `T${pad(d.getHours())}:${pad(d.getMinutes())}`
   );
+}
+
+// Interpret a naive "YYYY-MM-DDTHH:MM" wall-clock as a time in the given IANA
+// zone and return the absolute instant. JS has no native "parse in zone", so we
+// measure the zone's UTC offset at that time by rendering one instant in both
+// UTC and the target zone and diffing them. Both renderings are reparsed with
+// new Date() in the viewer's own zone, so the viewer's offset cancels out (a
+// raw-millis baseline would leave the viewer offset in the result and be wrong
+// for any non-UTC browser). Mirrors the backend's normalize_scheduled_at.
+// Returns null for an unparseable input.
+function zonedWallClockToInstant(wall: string, tz: string): Date | null {
+  const m = wall.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/);
+  if (!m) return null;
+  const [, y, mo, d, h, mi] = m.map(Number);
+  const asUtc = Date.UTC(y, mo - 1, d, h, mi);
+  const guess = new Date(asUtc);
+  const utcStr = guess.toLocaleString("en-US", { timeZone: "UTC" });
+  const tzStr = guess.toLocaleString("en-US", { timeZone: tz });
+  const offset = new Date(utcStr).getTime() - new Date(tzStr).getTime();
+  return new Date(asUtc + offset);
+}
+
+// The company-timezone calendar day a picked time reserves on the shared
+// calendar, as a short label (e.g. "Jun 16"), or null when it cannot be
+// computed. Display-only: the backend 409 conflict is the source of truth.
+export function reservedCompanyDayLabel(
+  scheduledAt: string,
+  tz: string,
+): string | null {
+  if (!scheduledAt) return null;
+  const instant = zonedWallClockToInstant(scheduledAt, tz);
+  if (!instant || Number.isNaN(instant.getTime())) return null;
+  return new Intl.DateTimeFormat(undefined, {
+    timeZone: COMPANY_TIMEZONE,
+    month: "short",
+    day: "numeric",
+  }).format(instant);
 }
 
 // Mirrors the backend parse_post_urn: a LinkedIn feed link resolves to an
@@ -151,6 +235,18 @@ export function CampaignFields({
   lockType?: boolean;
 }) {
   const { type } = value;
+
+  // Only surface the reserved-day note when the chosen timezone would land the
+  // launch on a different company-calendar day than the one the creator typed.
+  const reservedDay =
+    value.scheduledAt && value.scheduleTimezone !== COMPANY_TIMEZONE
+      ? reservedCompanyDayLabel(value.scheduledAt, value.scheduleTimezone)
+      : null;
+  const typedDay = reservedCompanyDayLabel(value.scheduledAt, COMPANY_TIMEZONE);
+  const reservedDayHint =
+    reservedDay && reservedDay !== typedDay
+      ? `Reserves ${reservedDay} on the shared calendar (company time, ${COMPANY_TIMEZONE}).`
+      : null;
 
   return (
     <div>
@@ -311,13 +407,27 @@ export function CampaignFields({
         </Hint>
 
         <Field label="Schedule launch (optional)">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <input
               type="datetime-local"
               value={value.scheduledAt}
               onChange={(e) => onChange({ scheduledAt: e.target.value })}
               className="input"
             />
+            {value.scheduledAt && (
+              <select
+                value={value.scheduleTimezone}
+                onChange={(e) => onChange({ scheduleTimezone: e.target.value })}
+                className="input w-auto"
+                aria-label="Schedule timezone"
+              >
+                {SCHEDULE_TIMEZONE_OPTIONS.map((tz) => (
+                  <option key={tz.value} value={tz.value}>
+                    {tz.label}
+                  </option>
+                ))}
+              </select>
+            )}
             {value.scheduledAt && (
               <button
                 type="button"
@@ -331,10 +441,13 @@ export function CampaignFields({
           <div className="mt-2">
             <Hint>
               Pick a date and time to auto-launch this campaign (it must be in
-              review by then). Only one campaign can be scheduled per day across
-              the team, so the chosen day is reserved even while this stays a
-              draft. Leave empty to launch manually.
+              review by then), in the timezone you choose. Only one campaign can
+              be scheduled per day across the team, so the chosen day is reserved
+              even while this stays a draft. Leave empty to launch manually.
             </Hint>
+            {reservedDayHint && (
+              <p className="mt-1 text-xs text-clay">{reservedDayHint}</p>
+            )}
           </div>
         </Field>
 

@@ -6,6 +6,7 @@ the fine-grained authorization the route-level role gate cannot.
 
 import uuid
 from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfoNotFoundError
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,7 @@ from app.core.scheduling import (
     local_date_range_utc,
     local_day_bounds_utc,
     normalize_scheduled_at,
+    resolve_schedule_tz,
 )
 from app.models.campaign import Campaign
 from app.models.user import User
@@ -105,23 +107,38 @@ def _require_resolvable_amplify_target(
         )
 
 
+def _validate_timezone(tz_name: str | None) -> None:
+    """Reject an unknown IANA timezone with a clean 422 instead of a 500."""
+    if tz_name is None:
+        return
+    try:
+        resolve_schedule_tz(tz_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise HTTPException(422, f'Unknown timezone "{tz_name}".') from exc
+
+
 async def _validate_schedule(
     db: AsyncSession,
     scheduled_at: datetime,
     actor: User,
     *,
+    tz_name: str | None = None,
     campaign_id: uuid.UUID | None = None,
 ) -> datetime:
     """Validate a requested launch time and return it normalized to UTC.
 
-    Enforces two rules: the time must be in the future, and no other campaign may
-    already occupy that company-local calendar day (one launch per day, drafts
-    included). Raises 422 for a past time and a structured 409 schedule_conflict
-    otherwise. The blocking campaign is only named (title and id) when the actor
-    could view it anyway; other campaigns stay a generic "already taken" so the
-    conflict check cannot be used to probe titles the API would 403.
+    The wall-clock input is read in the campaign's chosen timezone (``tz_name``),
+    or the company default when unset. Enforces two rules: the time must be in the
+    future, and no other campaign may already occupy that company-local calendar
+    day (one launch per day, drafts included). The conflict day boundary always
+    uses the company timezone, not tz_name, so the shared calendar stays
+    consistent no matter which timezone a creator entered. Raises 422 for a past
+    time and a structured 409 schedule_conflict otherwise. The blocking campaign
+    is only named (title and id) when the actor could view it anyway; other
+    campaigns stay a generic "already taken" so the conflict check cannot be used
+    to probe titles the API would 403.
     """
-    normalized = normalize_scheduled_at(scheduled_at)
+    normalized = normalize_scheduled_at(scheduled_at, tz_name)
     if normalized <= datetime.now(UTC):
         raise HTTPException(422, "The scheduled time must be in the future.")
     start, end = local_day_bounds_utc(normalized)
@@ -271,8 +288,11 @@ async def create_campaign(
     _require_resolvable_amplify_target(
         body.type, seed_url=body.seed_url, seed_urn=seed_urn
     )
+    _validate_timezone(body.schedule_timezone)
     scheduled_at = (
-        await _validate_schedule(db, body.scheduled_at, actor)
+        await _validate_schedule(
+            db, body.scheduled_at, actor, tz_name=body.schedule_timezone
+        )
         if body.scheduled_at is not None
         else None
     )
@@ -299,6 +319,7 @@ async def create_campaign(
         stagger_min_seconds=body.stagger_min_seconds,
         stagger_max_seconds=body.stagger_max_seconds,
         scheduled_at=scheduled_at,
+        schedule_timezone=body.schedule_timezone,
         status="draft",
         created_by=actor.id,
     )
@@ -381,11 +402,19 @@ async def update_campaign(
     updates.pop("media", None)
     if "seed_url" in updates:
         updates["seed_urn"] = await resolve_post_urn(updates["seed_url"])
+    if "schedule_timezone" in updates:
+        _validate_timezone(updates["schedule_timezone"])
     # Setting a schedule validates future + one-per-day; clearing (null) is always
-    # allowed pre-launch and just frees the day.
+    # allowed pre-launch and just frees the day. The time is read in the effective
+    # timezone: the one being set now, else the campaign's existing one.
     if updates.get("scheduled_at") is not None:
+        tz_name = updates.get("schedule_timezone", campaign.schedule_timezone)
         updates["scheduled_at"] = await _validate_schedule(
-            db, updates["scheduled_at"], actor, campaign_id=campaign_id
+            db,
+            updates["scheduled_at"],
+            actor,
+            tz_name=tz_name,
+            campaign_id=campaign_id,
         )
     # The type is locked on edit; validate the effective (merged) source material
     # so a campaign can never be saved into a state that cannot generate anything.

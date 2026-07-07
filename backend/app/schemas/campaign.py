@@ -47,6 +47,7 @@ class CampaignOut(BaseModel):
     stagger_min_seconds: int
     stagger_max_seconds: int
     scheduled_at: datetime | None
+    schedule_timezone: str | None
     created_by: uuid.UUID | None
     launched_by: uuid.UUID | None
     launched_at: datetime | None
@@ -96,6 +97,7 @@ class CampaignCreate(BaseModel):
     stagger_min_seconds: int = 600
     stagger_max_seconds: int = 1800
     scheduled_at: datetime | None = None
+    schedule_timezone: str | None = Field(default=None, max_length=64)
 
 
 class CampaignUpdate(BaseModel):
@@ -119,6 +121,7 @@ class CampaignUpdate(BaseModel):
     stagger_min_seconds: int | None = None
     stagger_max_seconds: int | None = None
     scheduled_at: datetime | None = None
+    schedule_timezone: str | None = Field(default=None, max_length=64)
 
 
 class ScheduleEntry(BaseModel):
