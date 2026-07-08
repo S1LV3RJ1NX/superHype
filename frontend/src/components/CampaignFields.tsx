@@ -414,20 +414,18 @@ export function CampaignFields({
               onChange={(e) => onChange({ scheduledAt: e.target.value })}
               className="input"
             />
-            {value.scheduledAt && (
-              <select
-                value={value.scheduleTimezone}
-                onChange={(e) => onChange({ scheduleTimezone: e.target.value })}
-                className="input w-auto"
-                aria-label="Schedule timezone"
-              >
-                {SCHEDULE_TIMEZONE_OPTIONS.map((tz) => (
-                  <option key={tz.value} value={tz.value}>
-                    {tz.label}
-                  </option>
-                ))}
-              </select>
-            )}
+            <select
+              value={value.scheduleTimezone}
+              onChange={(e) => onChange({ scheduleTimezone: e.target.value })}
+              className="input w-auto"
+              aria-label="Schedule timezone"
+            >
+              {SCHEDULE_TIMEZONE_OPTIONS.map((tz) => (
+                <option key={tz.value} value={tz.value}>
+                  {tz.label}
+                </option>
+              ))}
+            </select>
             {value.scheduledAt && (
               <button
                 type="button"
