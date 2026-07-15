@@ -60,19 +60,20 @@ class FakeSlackClient:
 # --- db helpers ------------------------------------------------------------
 
 
-async def _user(db, email: str | None = None) -> User:
-    u = User(email=email or f"{uuid.uuid4().hex}@corp.com", role="editor")
+async def _user(db, email: str | None = None, name: str | None = None) -> User:
+    u = User(email=email or f"{uuid.uuid4().hex}@corp.com", role="editor", name=name)
     db.add(u)
     await db.flush()
     return u
 
 
-async def _launched_campaign(db) -> Campaign:
+async def _launched_campaign(db, *, type="amplify", seed_url=None) -> Campaign:
     c = Campaign(
         title="Launch week",
-        type="amplify",
+        type=type,
         status="publishing",
         seed_urn="urn:li:activity:1",
+        seed_url=seed_url,
         launched_at=datetime.now(UTC),
     )
     db.add(c)
@@ -89,6 +90,7 @@ async def _post(
     *,
     engagement_url=None,
     body=None,
+    target_post_id=None,
 ) -> Post:
     p = Post(
         campaign_id=campaign.id,
@@ -98,6 +100,7 @@ async def _post(
         idempotency_key=uuid.uuid4().hex,
         engagement_url=engagement_url,
         body=body,
+        target_post_id=target_post_id,
     )
     db.add(p)
     await db.flush()
@@ -254,6 +257,107 @@ async def test_notify_participant_posts_bundled_card(db):
     assert values == {"post", "like", "comment"}
     # Every option starts ticked so approving with no changes lets everything go.
     assert checkboxes["options"] == checkboxes["initial_options"]
+    # The card spells out what each ask is before the checkboxes.
+    ask_section = next(
+        b
+        for b in blocks
+        if b["type"] == "section" and "What you are approving:" in b["text"]["text"]
+    )
+    assert "Publish your post" in ask_section["text"]["text"]
+    assert "Like the campaign post" in ask_section["text"]["text"]
+
+
+def _ask_text(blocks) -> str:
+    return next(
+        b["text"]["text"]
+        for b in blocks
+        if b["type"] == "section" and "What you are approving:" in b["text"]["text"]
+    )
+
+
+async def test_bundled_card_links_seed_post_for_amplify(db):
+    seed = "https://www.linkedin.com/feed/update/urn:li:activity:1/"
+    user = await _user(db, email="amp@corp.com")
+    campaign = await _launched_campaign(db, seed_url=seed)
+    posts = [
+        await _post(db, campaign, user, action="like"),
+        await _post(db, campaign, user, action="comment", body="Nice launch!"),
+        await _post(db, campaign, user, action="repost_comment", body="Big news."),
+    ]
+    await db.commit()
+
+    client = FakeSlackClient({"amp@corp.com": "U-AMP"})
+    await slack_service.notify_participant(db, client, campaign, user, posts)
+
+    text = _ask_text(client.messages[0][2])
+    # Every ask names the seed post as a compact <url|label> link, and the
+    # generated text the person would post is quoted.
+    assert f"• Like <{seed}|the campaign post>" in text
+    assert f'• Comment on <{seed}|the campaign post>: "Nice launch!"' in text
+    assert (
+        f'• Reshare <{seed}|the campaign post> with your comment: "Big news."' in text
+    )
+
+
+async def test_bundled_card_names_teammate_for_distribute(db):
+    author = await _user(db, email="nirali@corp.com", name="Nirali")
+    user = await _user(db, email="fan@corp.com")
+    campaign = await _launched_campaign(db, type="distribute")
+    target = await _post(
+        db, campaign, author, action="post", body="Shipping speed is a feature."
+    )
+    posts = [
+        await _post(db, campaign, user, action="like", target_post_id=target.id),
+        await _post(
+            db,
+            campaign,
+            user,
+            action="comment",
+            body="Loved this take.",
+            target_post_id=target.id,
+        ),
+    ]
+    await db.commit()
+
+    client = FakeSlackClient({"fan@corp.com": "U-FAN"})
+    await slack_service.notify_participant(db, client, campaign, user, posts)
+
+    text = _ask_text(client.messages[0][2])
+    assert '• Like Nirali\'s post ("Shipping speed is a feature.")' in text
+    assert (
+        '• Comment on Nirali\'s post ("Shipping speed is a feature."): '
+        '"Loved this take."'
+    ) in text
+
+
+async def test_bundled_card_truncates_long_bodies(db):
+    user = await _user(db, email="long@corp.com")
+    campaign = await _launched_campaign(db)
+    long_body = "word " * 100  # 500 chars once collapsed
+    posts = [await _post(db, campaign, user, action="post", body=long_body)]
+    await db.commit()
+
+    client = FakeSlackClient({"long@corp.com": "U-LONG"})
+    await slack_service.notify_participant(db, client, campaign, user, posts)
+
+    text = _ask_text(client.messages[0][2])
+    quoted = text.split('"')[1]
+    assert quoted.endswith("...")
+    assert len(quoted) <= 150
+
+
+async def test_bundled_card_caps_listed_asks(db):
+    user = await _user(db, email="many@corp.com")
+    campaign = await _launched_campaign(db)
+    posts = [await _post(db, campaign, user, action="like") for _ in range(11)]
+    await db.commit()
+
+    client = FakeSlackClient({"many@corp.com": "U-MANY"})
+    await slack_service.notify_participant(db, client, campaign, user, posts)
+
+    text = _ask_text(client.messages[0][2])
+    assert text.count("• ") == 8
+    assert "+3 more - review them in the portal." in text
 
 
 async def test_notify_participant_skips_without_identity(db):

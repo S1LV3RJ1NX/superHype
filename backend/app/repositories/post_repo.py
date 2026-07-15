@@ -78,6 +78,13 @@ class PostRepository(BaseRepository[Post]):
         )
         return {row[0] for row in (await db.execute(stmt)).all()}
 
+    async def list_by_ids(self, db: AsyncSession, ids: list[uuid.UUID]) -> list[Post]:
+        """Batch-load posts by id (e.g. the targets of a person's like/comment asks)."""
+        if not ids:
+            return []
+        stmt = select(Post).where(Post.id.in_(ids))
+        return list((await db.execute(stmt)).scalars().all())
+
     async def list_for_campaign(
         self, db: AsyncSession, campaign_id: uuid.UUID
     ) -> list[Post]:

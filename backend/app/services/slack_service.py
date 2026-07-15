@@ -137,6 +137,86 @@ async def resolve_identity(
     return identity
 
 
+# How many asks the approval card lists individually before collapsing into a
+# "+N more" line, and how long each quoted preview may run. The target post's
+# parenthetical gets a shorter budget so a line with both snippets stays scannable
+# (and eight full lines stay well inside Slack's 3000-char section limit).
+_MAX_ASK_LINES = 8
+_SNIPPET_LIMIT = 150
+_TARGET_SNIPPET_LIMIT = 80
+
+
+def _snippet(text: str, limit: int = _SNIPPET_LIMIT) -> str:
+    """One-line preview: collapse all whitespace and truncate with an ellipsis."""
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return flat[: limit - 3].rstrip() + "..."
+
+
+def _target_phrase(
+    post: Post,
+    campaign: Campaign,
+    target_posts: dict[uuid.UUID, Post],
+    author_names: dict[uuid.UUID, str],
+) -> str:
+    """Name the post an ask lands on, so the person knows what they authorize.
+
+    Distribute asks target a teammate's generated post (not on LinkedIn yet), so
+    show the teammate's name and a snippet of their post. Amplify asks target the
+    campaign's seed post, which is live, so link it.
+    """
+    target = target_posts.get(post.target_post_id) if post.target_post_id else None
+    if target is not None:
+        name = author_names.get(target.user_id) or "a teammate"
+        phrase = f"{name}'s post"
+        if target.body:
+            phrase += f' ("{_snippet(target.body, _TARGET_SNIPPET_LIMIT)}")'
+        return phrase
+    if campaign.seed_url:
+        return f"<{campaign.seed_url}|the campaign post>"
+    if campaign.seed_content:
+        preview = _snippet(campaign.seed_content, _TARGET_SNIPPET_LIMIT)
+        return f'the campaign post ("{preview}")'
+    return "the campaign post"
+
+
+def _ask_lines(
+    campaign: Campaign,
+    posts: list[Post],
+    target_posts: dict[uuid.UUID, Post],
+    author_names: dict[uuid.UUID, str],
+) -> list[str]:
+    """One bullet per ask: the action, its target post, and a preview of the text."""
+    lines: list[str] = []
+    for post in posts[:_MAX_ASK_LINES]:
+        if post.action == "post":
+            line = "Publish your post"
+            if post.body:
+                line += f': "{_snippet(post.body)}"'
+        elif post.action == "repost_comment":
+            target = _target_phrase(post, campaign, target_posts, author_names)
+            line = f"Reshare {target} with your comment"
+            if post.body:
+                line += f': "{_snippet(post.body)}"'
+        elif post.action == "comment":
+            target = _target_phrase(post, campaign, target_posts, author_names)
+            line = f"Comment on {target}"
+            if post.body:
+                line += f': "{_snippet(post.body)}"'
+        elif post.action == "like":
+            line = f"Like {_target_phrase(post, campaign, target_posts, author_names)}"
+        elif post.action == "self_comment":
+            line = "Add the link as a comment on your post"
+        else:
+            line = _ACTION_LABELS.get(post.action, post.action)
+        lines.append(f"• {line}")
+    extra = len(posts) - _MAX_ASK_LINES
+    if extra > 0:
+        lines.append(f"_+{extra} more - review them in the portal._")
+    return lines
+
+
 def _action_counts(posts: list[Post]) -> tuple[list[str], dict[str, int]]:
     """Distinct action keys in first-seen order, plus how many of each."""
     counts: dict[str, int] = {}
@@ -161,16 +241,22 @@ def _action_options(posts: list[Post]) -> list[dict[str, Any]]:
 
 
 def _bundle_blocks(
-    campaign: Campaign, posts: list[Post]
+    campaign: Campaign,
+    posts: list[Post],
+    target_posts: dict[uuid.UUID, Post] | None = None,
+    author_names: dict[uuid.UUID, str] | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Build the Block Kit payload (and text fallback) for the bundled ask.
 
-    The card lists each action as an opt-in checkbox (all ticked by default):
-    Approve lets the ticked actions through and skips the rest, so a person can
-    drop, say, the reshare while still approving the like and comment in one go.
+    The card first spells out what each ask actually is (which post it lands on
+    and a short preview of the text that would be posted as the person), then
+    lists each action as an opt-in checkbox (all ticked by default): Approve lets
+    the ticked actions through and skips the rest, so a person can drop, say, the
+    reshare while still approving the like and comment in one go.
     """
     portal_url = f"{settings.FRONTEND_URL}/app/campaigns/{campaign.id}"
     options = _action_options(posts)
+    ask_lines = _ask_lines(campaign, posts, target_posts or {}, author_names or {})
     text = f"You have {len(posts)} LinkedIn action(s) for {campaign.title}"
     blocks: list[dict[str, Any]] = [
         {
@@ -186,6 +272,13 @@ def _bundle_blocks(
                     "with, then Approve. Unticked actions are skipped. Open the "
                     "portal to review each item."
                 ),
+            },
+        },
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*What you are approving:*\n" + "\n".join(ask_lines),
             },
         },
         {
@@ -247,7 +340,16 @@ async def notify_participant(
         )
         return
     channel = identity.slack_dm_channel or identity.slack_user_id
-    blocks, text = _bundle_blocks(campaign, posts)
+    # Resolve the posts these asks land on (distribute targets a teammate's local
+    # variation post) and their authors' names, so the card can say whose post a
+    # like or comment is for instead of just "a teammate's post".
+    target_ids = list({p.target_post_id for p in posts if p.target_post_id})
+    target_posts = {p.id: p for p in await post_repo.list_by_ids(db, target_ids)}
+    author_ids = list({p.user_id for p in target_posts.values()})
+    author_names = {
+        u.id: u.name for u in await user_repo.list_by_ids(db, author_ids) if u.name
+    }
+    blocks, text = _bundle_blocks(campaign, posts, target_posts, author_names)
     try:
         await client.post_message(channel, text=text, blocks=blocks)
     except SlackError as exc:

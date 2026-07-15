@@ -89,8 +89,17 @@ class SlackClient:
     async def post_message(
         self, channel: str, *, text: str, blocks: list[dict[str, Any]] | None = None
     ) -> str:
-        """Post a message to a channel and return its timestamp id."""
-        payload: dict[str, Any] = {"channel": channel, "text": text}
+        """Post a message to a channel and return its timestamp id.
+
+        Unfurling is disabled so LinkedIn URLs in a card stay compact <url|label>
+        hyperlinks instead of growing a preview attachment under the DM.
+        """
+        payload: dict[str, Any] = {
+            "channel": channel,
+            "text": text,
+            "unfurl_links": False,
+            "unfurl_media": False,
+        }
         if blocks is not None:
             payload["blocks"] = blocks
         data = await self._call("chat.postMessage", json=payload)
