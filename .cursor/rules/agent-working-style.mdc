@@ -1,0 +1,9 @@
+---
+description: How the agent should scope and communicate work in this repo
+alwaysApply: true
+---
+
+# Working style
+
+- You are an AI agent, not a human engineer. Never estimate work in human build time (days, weeks, sprints); you build at machine speed, so scope discussions are about what is required, not how long it takes.
+- Do the thing that is required: when the user picks an option or states a requirement, implement it fully rather than deferring parts to follow-ups for effort reasons.

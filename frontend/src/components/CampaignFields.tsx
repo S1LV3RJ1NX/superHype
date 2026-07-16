@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AlertTriangle, Info, Loader2, Upload, X } from "lucide-react";
 
 import { MarkdownEditor } from "@/components/MarkdownEditor";
+import { LinkedInLogo, XLogo } from "@/components/PlatformLogos";
 import { ApiError, fetchAssetObjectUrl, uploadAsset } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -58,6 +59,7 @@ export function campaignStatusLabel(status: string): string {
 
 export interface CampaignFieldsValue {
   type: "amplify" | "distribute";
+  platform: "linkedin" | "x";
   title: string;
   seedUrl: string;
   seedContent: string;
@@ -81,6 +83,7 @@ export interface CampaignFieldsValue {
 export function emptyCampaignFields(): CampaignFieldsValue {
   return {
     type: "amplify",
+    platform: "linkedin",
     title: "",
     seedUrl: "",
     seedContent: "",
@@ -100,6 +103,7 @@ export function campaignFieldsToPayload(v: CampaignFieldsValue) {
   return {
     title: v.title,
     type: v.type,
+    platform: v.platform,
     // Distribute generates its own posts and never reads a URL, so a seed URL is
     // only meaningful for amplify.
     seed_url: v.type === "amplify" ? v.seedUrl || null : null,
@@ -223,6 +227,17 @@ function seedUrlLooksResolvable(raw: string): boolean {
   return /\d{17,}/.test(url);
 }
 
+// Client-side mirror of the backend parse_tweet_id: an X post link carries the
+// numeric tweet id in a /status/ segment (a bare id also works).
+function tweetUrlLooksResolvable(raw: string): boolean {
+  const url = raw.trim();
+  if (!url) return true;
+  if (/^\d{5,}$/.test(url)) return true;
+  return /(x\.com|twitter\.com)\/(i\/web\/|[^/]+\/)status(es)?\/\d{5,}/i.test(
+    url,
+  );
+}
+
 export function CampaignFields({
   value,
   onChange,
@@ -234,7 +249,8 @@ export function CampaignFields({
   isEditor: boolean;
   lockType?: boolean;
 }) {
-  const { type } = value;
+  const { type, platform } = value;
+  const onX = platform === "x";
 
   // Only surface the reserved-day note when the chosen timezone would land the
   // launch on a different company-calendar day than the one the creator typed.
@@ -253,6 +269,30 @@ export function CampaignFields({
       {!lockType && (
         <>
           <div className="flex gap-2">
+            <TypeToggle
+              active={platform === "linkedin"}
+              label="LinkedIn"
+              hint="Posts, reshares, comments, likes"
+              icon={
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#0A66C2]/10">
+                  <LinkedInLogo />
+                </span>
+              }
+              onClick={() => onChange({ platform: "linkedin" })}
+            />
+            <TypeToggle
+              active={platform === "x"}
+              label="X (Twitter)"
+              hint="Tweets, quote posts, replies, likes, bookmarks"
+              icon={
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-ink/10 text-ink">
+                  <XLogo />
+                </span>
+              }
+              onClick={() => onChange({ platform: "x" })}
+            />
+          </div>
+          <div className="mt-3 flex gap-2">
             <TypeToggle
               active={type === "amplify"}
               label="Amplify"
@@ -284,7 +324,7 @@ export function CampaignFields({
             className="input"
           />
         </Field>
-        {type === "amplify" && (
+        {type === "amplify" && !onX && (
           <Field label="Post to amplify" required>
             <input
               value={value.seedUrl}
@@ -327,6 +367,33 @@ export function CampaignFields({
               )}
           </Field>
         )}
+        {type === "amplify" && onX && (
+          <Field label="Post to amplify" required>
+            <input
+              value={value.seedUrl}
+              onChange={(e) => onChange({ seedUrl: e.target.value.trim() })}
+              placeholder="https://x.com/yourcompany/status/1790000000000000000"
+              className="input"
+            />
+            <div className="mt-1.5">
+              <Hint>
+                Open the post on X, hit the share icon, choose "Copy link", and
+                paste it here. Everyone will like, bookmark, reply to, and
+                quote-post this tweet.
+              </Hint>
+            </div>
+            {value.seedUrl.trim() !== "" &&
+              !tweetUrlLooksResolvable(value.seedUrl) && (
+                <div className="mt-2 flex items-start gap-2 rounded-md border border-pending/30 bg-pending/5 px-3 py-2 text-xs font-medium text-pending">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>
+                    This does not look like an X post link. Paste the tweet's
+                    full URL (x.com/.../status/...).
+                  </span>
+                </div>
+              )}
+          </Field>
+        )}
         <Field
           label={
             type === "amplify"
@@ -356,7 +423,7 @@ export function CampaignFields({
           )}
         </Field>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className={cn("grid gap-3", onX ? "grid-cols-1" : "grid-cols-2")}>
           <Field label="Tone">
             <div className="flex flex-wrap gap-1.5">
               {TONE_OPTIONS.map((option) => {
@@ -385,25 +452,33 @@ export function CampaignFields({
               })}
             </div>
           </Field>
-          <Field label="Length">
-            <select
-              value={value.length}
-              onChange={(e) => onChange({ length: e.target.value })}
-              className="input"
-            >
-              <option value="">No preference</option>
-              {LENGTH_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-          </Field>
+          {!onX && (
+            <Field label="Length">
+              <select
+                value={value.length}
+                onChange={(e) => onChange({ length: e.target.value })}
+                className="input"
+              >
+                <option value="">No preference</option>
+                {LENGTH_OPTIONS.map((option) => (
+                  <option key={option} value={option}>
+                    {option}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
         </div>
         <Hint>
-          Tone and length shape the reshare message
-          {type === "distribute" ? " and the generated posts" : ""}. Comments are
-          written from the post content you pasted above.
+          {onX
+            ? `Tone shapes the ${
+                type === "distribute"
+                  ? "generated tweets and interactions"
+                  : "quote posts and replies"
+              }. Everything stays under X's 280-character limit automatically.`
+            : `Tone and length shape the reshare message${
+                type === "distribute" ? " and the generated posts" : ""
+              }. Comments are written from the post content you pasted above.`}
         </Hint>
 
         <Field label="Schedule launch (optional)">
@@ -499,8 +574,9 @@ export function CampaignFields({
               />
               <div className="mt-2">
                 <Hint>
-                  The author posts this as a comment on their own post a short
-                  while after publishing (a natural "link in the comments").
+                  {onX
+                    ? 'The author posts this as a reply to their own tweet a short while after publishing (a natural "link in the replies").'
+                    : 'The author posts this as a comment on their own post a short while after publishing (a natural "link in the comments").'}
                 </Hint>
               </div>
             </Field>
@@ -665,12 +741,14 @@ function TypeToggle({
   active,
   label,
   hint,
+  icon,
   disabled,
   onClick,
 }: {
   active: boolean;
   label: string;
   hint: string;
+  icon?: ReactNode;
   disabled?: boolean;
   onClick: () => void;
 }) {
@@ -679,13 +757,16 @@ function TypeToggle({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "flex-1 rounded-md border px-4 py-3 text-left transition-colors",
+        "flex flex-1 items-center gap-3 rounded-md border px-4 py-3 text-left transition-colors",
         active ? "border-ink bg-paper" : "border-border bg-sand/40",
         disabled && "cursor-not-allowed opacity-50",
       )}
     >
-      <p className="text-sm font-medium text-ink">{label}</p>
-      <p className="text-xs text-muted-ink">{hint}</p>
+      {icon}
+      <span className="min-w-0">
+        <p className="text-sm font-medium text-ink">{label}</p>
+        <p className="text-xs text-muted-ink">{hint}</p>
+      </span>
     </button>
   );
 }

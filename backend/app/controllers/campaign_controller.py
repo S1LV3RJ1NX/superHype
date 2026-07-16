@@ -22,6 +22,7 @@ from app.core.scheduling import (
     normalize_scheduled_at,
     resolve_schedule_tz,
 )
+from app.core.x_urls import parse_tweet_id
 from app.models.campaign import Campaign
 from app.models.user import User
 from app.repositories import audit_repo
@@ -89,22 +90,40 @@ def _require_source_material(
         )
 
 
+async def _resolve_seed(platform: str, seed_url: str | None) -> str | None:
+    """Parse the seed URL into the platform's post id (URN or tweet id)."""
+    if platform == "x":
+        return parse_tweet_id(seed_url)
+    return await resolve_post_urn(seed_url)
+
+
 def _require_resolvable_amplify_target(
-    campaign_type: str, *, seed_url: str | None, seed_urn: str | None
+    campaign_type: str,
+    *,
+    platform: str,
+    seed_url: str | None,
+    seed_urn: str | None,
 ) -> None:
-    """Amplify acts on one live post, so its URL must parse to an activity URN.
+    """Amplify acts on one live post, so its URL must parse to a post id.
 
     ``_require_source_material`` only checks the URL is present; a string like
-    "test" passes that but resolves to no URN, leaving every like, comment, and
+    "test" passes that but resolves to no id, leaving every like, comment, and
     reshare with a null target that fails at launch. Reject it up front so a
     doomed campaign is never created.
     """
-    if campaign_type == "amplify" and (seed_url and seed_url.strip()) and not seed_urn:
+    if campaign_type != "amplify" or not (seed_url and seed_url.strip()) or seed_urn:
+        return
+    if platform == "x":
         raise HTTPException(
             422,
-            "That post URL could not be read as a LinkedIn post. Paste the full "
-            "post URL (the one with an activity id) or a lnkd.in share link.",
+            "That post URL could not be read as an X post. Paste the tweet's "
+            "full link (x.com/.../status/...).",
         )
+    raise HTTPException(
+        422,
+        "That post URL could not be read as a LinkedIn post. Paste the full "
+        "post URL (the one with an activity id) or a lnkd.in share link.",
+    )
 
 
 def _validate_timezone(tz_name: str | None) -> None:
@@ -284,9 +303,9 @@ async def create_campaign(
     _require_source_material(
         body.type, seed_url=body.seed_url, seed_content=body.seed_content
     )
-    seed_urn = await resolve_post_urn(body.seed_url)
+    seed_urn = await _resolve_seed(body.platform, body.seed_url)
     _require_resolvable_amplify_target(
-        body.type, seed_url=body.seed_url, seed_urn=seed_urn
+        body.type, platform=body.platform, seed_url=body.seed_url, seed_urn=seed_urn
     )
     _validate_timezone(body.schedule_timezone)
     scheduled_at = (
@@ -300,6 +319,7 @@ async def create_campaign(
         db,
         title=body.title,
         type=body.type,
+        platform=body.platform,
         raw_brief=body.raw_brief,
         seed_url=body.seed_url,
         seed_urn=seed_urn,
@@ -367,20 +387,25 @@ async def approval_readiness(
         raise HTTPException(403, "You do not have access to this campaign.")
 
     pending = await post_repo.list_pending_for_campaign_user(db, campaign_id, user.id)
-    requires_linkedin = any(not is_assisted(p.action) for p in pending)
+    requires_connection = any(not is_assisted(p.action, p.platform) for p in pending)
 
-    account = await social_account_repo.get_by_user(db, user.id)
+    account = await social_account_repo.get_by_user(
+        db, user.id, platform=campaign.platform
+    )
     connected = account is not None
-    needs_reconnect = requires_linkedin and (
+    buffer_hours = (
+        settings.X_RECONNECT_BUFFER_HOURS
+        if campaign.platform == "x"
+        else settings.LINKEDIN_RECONNECT_BUFFER_HOURS
+    )
+    needs_reconnect = requires_connection and (
         account is None
-        or account.requires_reconnect(
-            now=datetime.now(UTC),
-            buffer_hours=settings.LINKEDIN_RECONNECT_BUFFER_HOURS,
-        )
+        or account.requires_reconnect(now=datetime.now(UTC), buffer_hours=buffer_hours)
     )
     return ApprovalReadiness(
         pending_count=len(pending),
-        requires_linkedin=requires_linkedin,
+        platform=campaign.platform,
+        requires_connection=requires_connection,
         connected=connected,
         needs_reconnect=needs_reconnect,
     )
@@ -401,7 +426,9 @@ async def update_campaign(
     media_provided = "media" in updates
     updates.pop("media", None)
     if "seed_url" in updates:
-        updates["seed_urn"] = await resolve_post_urn(updates["seed_url"])
+        updates["seed_urn"] = await _resolve_seed(
+            campaign.platform, updates["seed_url"]
+        )
     if "schedule_timezone" in updates:
         _validate_timezone(updates["schedule_timezone"])
     # Setting a schedule validates future + one-per-day; clearing (null) is always
@@ -425,6 +452,7 @@ async def update_campaign(
     )
     _require_resolvable_amplify_target(
         campaign.type,
+        platform=campaign.platform,
         seed_url=updates.get("seed_url", campaign.seed_url),
         seed_urn=updates.get("seed_urn", campaign.seed_urn),
     )

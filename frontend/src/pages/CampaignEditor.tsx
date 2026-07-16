@@ -21,6 +21,7 @@ interface Campaign {
   id: string;
   title: string;
   type: string;
+  platform: string;
   status: string;
   seed_url: string | null;
   seed_content: string | null;
@@ -49,6 +50,7 @@ interface Post {
 function fieldsFromCampaign(c: Campaign): CampaignFieldsValue {
   return {
     type: c.type === "distribute" ? "distribute" : "amplify",
+    platform: c.platform === "x" ? "x" : "linkedin",
     title: c.title,
     seedUrl: c.seed_url ?? "",
     seedContent: c.seed_content ?? "",

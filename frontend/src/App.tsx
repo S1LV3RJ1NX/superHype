@@ -16,6 +16,7 @@ import { Onboarding } from "@/pages/Onboarding";
 import { Profile } from "@/pages/Profile";
 import { Teams } from "@/pages/Teams";
 import { Users } from "@/pages/Users";
+import { XCallback } from "@/pages/XCallback";
 
 export default function App() {
   return (
@@ -61,6 +62,14 @@ export default function App() {
           element={
             <ProtectedRoute>
               <LinkedInCallback />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/connections/x/callback"
+          element={
+            <ProtectedRoute>
+              <XCallback />
             </ProtectedRoute>
           }
         />

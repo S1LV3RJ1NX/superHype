@@ -33,6 +33,7 @@ interface Campaign {
   id: string;
   title: string;
   type: string;
+  platform: string;
   status: string;
   seed_urn: string | null;
   seed_content: string | null;
@@ -47,6 +48,7 @@ interface Campaign {
 interface Post {
   id: string;
   user_id: string;
+  platform: string;
   action: string;
   body: string | null;
   status: string;
@@ -63,9 +65,19 @@ interface Post {
 
 interface Readiness {
   pending_count: number;
-  requires_linkedin: boolean;
+  platform: string;
+  requires_connection: boolean;
   connected: boolean;
   needs_reconnect: boolean;
+}
+
+const PLATFORM_LABEL: Record<string, string> = {
+  linkedin: "LinkedIn",
+  x: "X",
+};
+
+function platformLabel(platform: string | null | undefined): string {
+  return PLATFORM_LABEL[platform ?? "linkedin"] ?? "LinkedIn";
 }
 
 export function CampaignDetail() {
@@ -190,16 +202,20 @@ export function CampaignDetail() {
   }, [id]);
 
   // Proactively send me through re-consent (no resume_post_id) so I land back
-  // here connected and ready to approve.
+  // here connected and ready to approve. The connector is the campaign's
+  // platform (linkedin or x).
   const reconnect = async () => {
+    const platform = readiness?.platform ?? campaign?.platform ?? "linkedin";
     setReconnecting(true);
     try {
       const { authorize_url } = await apiFetch<{ authorize_url: string }>(
-        `/v1/connections/linkedin/authorize`,
+        `/v1/connections/${platform}/authorize`,
       );
       window.location.href = authorize_url;
     } catch {
-      setError("Could not start LinkedIn reconnect. Please try again.");
+      setError(
+        `Could not start ${platformLabel(platform)} reconnect. Please try again.`,
+      );
       setReconnecting(false);
     }
   };
@@ -293,8 +309,9 @@ export function CampaignDetail() {
     setRefreshing(false);
   };
 
-  // Approve, but if the user's LinkedIn token needs re-consent, send them through
-  // the authorize flow carrying this post so the callback resumes the approve.
+  // Approve, but if the user's platform token needs re-consent, send them
+  // through the authorize flow carrying this post so the callback resumes the
+  // approve. The error detail names the platform (linkedin or x).
   const approvePost = async (postId: string) => {
     setError(null);
     startActing(postId);
@@ -306,19 +323,22 @@ export function CampaignDetail() {
       void refreshCampaign();
       void refreshReadiness();
     } catch (err) {
-      const code =
+      const detail =
         err instanceof ApiError
-          ? (err.detail as { code?: string } | undefined)?.code
+          ? (err.detail as { code?: string; platform?: string } | undefined)
           : undefined;
-      if (err instanceof ApiError && code === "linkedin_reconnect_required") {
+      if (err instanceof ApiError && detail?.code === "linkedin_reconnect_required") {
+        const platform = detail.platform ?? "linkedin";
         try {
           const { authorize_url } = await apiFetch<{ authorize_url: string }>(
-            `/v1/connections/linkedin/authorize?resume_post_id=${postId}`,
+            `/v1/connections/${platform}/authorize?resume_post_id=${postId}`,
           );
           window.location.href = authorize_url;
           return;
         } catch {
-          setError("Could not start LinkedIn reconnect. Please try again.");
+          setError(
+            `Could not start ${platformLabel(platform)} reconnect. Please try again.`,
+          );
         }
       } else {
         setError(err instanceof ApiError ? err.message : "Action failed");
@@ -505,6 +525,9 @@ export function CampaignDetail() {
             )}
           </div>
           <div className="flex items-center gap-2">
+            <span className="inline-flex rounded-full border border-border bg-paper px-2.5 py-0.5 text-xs font-medium text-muted-ink">
+              {platformLabel(campaign.platform)}
+            </span>
             <span className="inline-flex rounded-full bg-sand px-2.5 py-0.5 text-xs font-medium capitalize text-muted-ink">
               {campaign.type}
             </span>
@@ -692,13 +715,13 @@ export function CampaignDetail() {
                 <div className="flex-1">
                   <p className="text-sm font-medium text-ink">
                     {readiness.connected
-                      ? "Reconnect LinkedIn before approving"
-                      : "Connect LinkedIn before approving"}
+                      ? `Reconnect ${platformLabel(readiness.platform)} before approving`
+                      : `Connect ${platformLabel(readiness.platform)} before approving`}
                   </p>
                   <p className="mt-0.5 text-sm text-muted-ink">
                     {readiness.connected
-                      ? "Your LinkedIn access is expired or expiring soon, so approvals here would fail. Reconnect now to publish smoothly."
-                      : "You have posts here that publish under your LinkedIn. Connect your account so you can approve them."}
+                      ? `Your ${platformLabel(readiness.platform)} access is expired or expiring soon, so approvals here would fail. Reconnect now to publish smoothly.`
+                      : `You have posts here that publish under your ${platformLabel(readiness.platform)}. Connect your account so you can approve them.`}
                   </p>
                 </div>
                 <button
@@ -757,8 +780,9 @@ export function CampaignDetail() {
                   <span className="font-medium text-ink">{campaign.title}</span>{" "}
                   back to review. Every post returns to pending and its publish
                   results (links, timestamps) are cleared, so you can launch it
-                  again from the start. The plan and its text are kept. Posts that
-                  already went live on LinkedIn are not deleted there.
+                  again from the start. The plan and its text are kept. Posts
+                  that already went live on {platformLabel(campaign.platform)}{" "}
+                  are not deleted there.
                 </p>
               </div>
             </div>
@@ -838,7 +862,7 @@ function PostCard({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <span className="rounded bg-sand px-2 py-0.5 text-xs font-medium capitalize text-muted-ink">
-            {ACTION_LABEL[post.action] ?? post.action.replace("_", " ")}
+            {actionLabel(post.action, post.platform)}
           </span>
           <span className="text-sm text-ink">
             {owner?.name ?? owner?.email ?? "Unknown"}
@@ -847,7 +871,7 @@ function PostCard({
         <StatusBadge status={post.status} />
       </div>
 
-      {post.action !== "like" && (
+      {post.action !== "like" && post.action !== "bookmark" && (
         <div className="mt-2">
           {editing ? (
             <textarea
@@ -892,6 +916,7 @@ function PostCard({
         <div className="mt-3 flex flex-wrap gap-2">
           {canEditText &&
             post.action !== "like" &&
+            post.action !== "bookmark" &&
             (editing ? (
               <>
                 <SmallButton
@@ -1349,13 +1374,31 @@ function EngagementAsk({
   );
 }
 
-const ACTION_LABEL: Record<string, string> = {
-  like: "like",
-  comment: "comment",
-  repost_comment: "repost thought",
-  post: "post",
-  self_comment: "self comment",
+// Each platform's own vocabulary: a comment is a reply on X, a repost is a
+// quote post, and an X like carries a paired bookmark row.
+const ACTION_LABELS_BY_PLATFORM: Record<string, Record<string, string>> = {
+  linkedin: {
+    like: "like",
+    comment: "comment",
+    repost_comment: "repost thought",
+    post: "post",
+    self_comment: "self comment",
+  },
+  x: {
+    like: "like",
+    bookmark: "bookmark",
+    comment: "reply",
+    repost_comment: "quote post",
+    post: "post",
+    self_comment: "self reply",
+  },
 };
+
+function actionLabel(action: string, platform: string): string {
+  const labels =
+    ACTION_LABELS_BY_PLATFORM[platform] ?? ACTION_LABELS_BY_PLATFORM.linkedin;
+  return labels[action] ?? action.replace("_", " ");
+}
 
 const CAMPAIGN_STATUS_STYLES: Record<string, string> = {
   draft: "bg-sand text-muted-ink",

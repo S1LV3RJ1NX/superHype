@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.engagement import is_assisted
+from app.core.platforms import platform_label
 from app.models.post import Post
 from app.models.user import User
 from app.repositories import audit_repo
@@ -65,11 +66,12 @@ class LaunchRequiredError(ApprovalError):
 
 
 class ReconnectRequiredError(ApprovalError):
-    """A non-assisted action needs a live LinkedIn token that is missing or stale."""
+    """A non-assisted action needs a live platform token that is missing or stale."""
 
-    def __init__(self, post_id: uuid.UUID) -> None:
+    def __init__(self, post_id: uuid.UUID, platform: str = "linkedin") -> None:
         self.post_id = post_id
-        super().__init__("LinkedIn reconnect required.")
+        self.platform = platform
+        super().__init__(f"{platform_label(platform)} reconnect required.")
 
 
 class MixedCampaignError(ApprovalError):
@@ -129,17 +131,23 @@ async def _apply_approve(db: AsyncSession, post: Post, actor: User) -> bool:
     if campaign.launched_at is None:
         raise LaunchRequiredError()
 
-    # Assisted-manual comments and likes are done by the person in their own
-    # browser, not through our token, so they skip the account and reconnect
-    # gate entirely. Posts and reshares (and every action once Community
-    # Management API is enabled) still publish under the owner's token.
-    if not is_assisted(post.action):
-        account = await social_account_repo.get_by_user(db, post.user_id)
+    # Assisted-manual comments and likes (LinkedIn only) are done by the person
+    # in their own browser, not through our token, so they skip the account and
+    # reconnect gate entirely. Posts and reshares (and every X action, which is
+    # fully automated) still publish under the owner's token.
+    if not is_assisted(post.action, post.platform):
+        account = await social_account_repo.get_by_user(
+            db, post.user_id, platform=post.platform
+        )
+        buffer_hours = (
+            settings.X_RECONNECT_BUFFER_HOURS
+            if post.platform == "x"
+            else settings.LINKEDIN_RECONNECT_BUFFER_HOURS
+        )
         if account is None or account.requires_reconnect(
-            now=datetime.now(UTC),
-            buffer_hours=settings.LINKEDIN_RECONNECT_BUFFER_HOURS,
+            now=datetime.now(UTC), buffer_hours=buffer_hours
         ):
-            raise ReconnectRequiredError(post.id)
+            raise ReconnectRequiredError(post.id, post.platform)
 
         # Backfill the publishing account if the post was planned before the
         # owner connected, so the worker can resolve a live token.

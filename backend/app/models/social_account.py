@@ -60,10 +60,15 @@ class SocialAccount(UUIDPrimaryKeyMixin, Base):
 
         Standard Share-on-LinkedIn apps get no refresh token, so an expired or
         soon-to-expire access token (or one already marked stale) can only be
-        fixed by the member re-consenting.
+        fixed by the member re-consenting. An account holding a refresh token
+        (X with offline.access) is refreshed by the worker itself, so expiry
+        alone never forces re-consent there; only a dead refresh token (the
+        account marked stale on a 401) does.
         """
         if self.status != "active":
             return True
+        if self.refresh_token_enc is not None:
+            return False
         if self.expires_at is None:
             return True
         expires_at = self.expires_at

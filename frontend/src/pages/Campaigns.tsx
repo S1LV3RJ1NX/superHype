@@ -13,10 +13,16 @@ interface Campaign {
   id: string;
   title: string;
   type: string;
+  platform: string;
   status: string;
   created_at: string;
   created_by: string | null;
 }
+
+const PLATFORM_LABEL: Record<string, string> = {
+  linkedin: "LinkedIn",
+  x: "X",
+};
 
 const DELETABLE_STATUSES = ["draft", "review", "failed"];
 const EDITABLE_STATUSES = ["draft", "review"];
@@ -146,6 +152,7 @@ export function Campaigns() {
               <thead>
                 <tr className="border-b border-border bg-sand/50 text-left text-xs font-medium uppercase tracking-wider text-muted-ink">
                   <th className="px-4 py-3">Title</th>
+                  <th className="px-4 py-3">Platform</th>
                   <th className="px-4 py-3">Type</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3 text-right">Actions</th>
@@ -159,6 +166,9 @@ export function Campaigns() {
                     className="cursor-pointer border-b border-border last:border-b-0 hover:bg-sand/30"
                   >
                     <td className="px-4 py-3 font-medium text-ink">{c.title}</td>
+                    <td className="px-4 py-3 text-muted-ink">
+                      {PLATFORM_LABEL[c.platform] ?? "LinkedIn"}
+                    </td>
                     <td className="px-4 py-3 capitalize text-muted-ink">{c.type}</td>
                     <td className="px-4 py-3">
                       <StatusBadge status={c.status} />

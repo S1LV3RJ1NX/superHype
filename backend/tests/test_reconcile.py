@@ -72,7 +72,7 @@ async def env(engine, monkeypatch):
     monkeypatch.setattr(jobs_mod, "async_session_factory", maker)
     redis = _FakeRedis()
     provider = _StubProvider()
-    monkeypatch.setattr(jobs_mod, "_provider", lambda: provider)
+    monkeypatch.setattr(jobs_mod, "_provider", lambda platform="linkedin": provider)
     return {
         "maker": maker,
         "ctx": {"redis": redis},

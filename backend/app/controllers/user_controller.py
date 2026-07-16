@@ -18,6 +18,8 @@ async def _hydrate_one(db: AsyncSession, user: User) -> UserOut:
     out = UserOut.model_validate(user)
     status_map = await social_account_repo.map_status_for_users(db, [user.id])
     out.linkedin_status = status_map.get(user.id)
+    x_map = await social_account_repo.map_status_for_users(db, [user.id], platform="x")
+    out.x_status = x_map.get(user.id)
     if user.team_id is not None:
         names = await team_repo.names_for(db, [user.team_id])
         out.team_name = names.get(user.team_id)
@@ -30,12 +32,14 @@ async def list_users(
     page = await user_repo.paginate_search(db, params=params, search=search)
     user_ids = [u.id for u in page.items]
     status_map = await social_account_repo.map_status_for_users(db, user_ids)
+    x_map = await social_account_repo.map_status_for_users(db, user_ids, platform="x")
     team_ids = [u.team_id for u in page.items if u.team_id is not None]
     name_map = await team_repo.names_for(db, team_ids)
     items = []
     for u in page.items:
         out = UserOut.model_validate(u)
         out.linkedin_status = status_map.get(u.id)
+        out.x_status = x_map.get(u.id)
         if u.team_id is not None:
             out.team_name = name_map.get(u.team_id)
         items.append(out)

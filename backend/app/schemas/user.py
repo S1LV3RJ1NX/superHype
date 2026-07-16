@@ -20,6 +20,7 @@ class UserOut(BaseModel):
     team_id: uuid.UUID | None = None
     team_name: str | None = None
     linkedin_status: str | None = None
+    x_status: str | None = None
 
 
 class RoleUpdate(BaseModel):

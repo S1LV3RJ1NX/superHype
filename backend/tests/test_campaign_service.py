@@ -96,6 +96,52 @@ async def test_expand_amplify_empty_actions_excludes_participant(db):
     assert [a.action for a in out] == ["like"]
 
 
+async def test_expand_x_amplify_pairs_bookmark_with_like(db):
+    u = await _user(db)
+    c = await _campaign(db, ctype="amplify", platform="x", seed_urn="17900001")
+
+    out = await campaign_service.expand_participants(db, c, [u.id])
+
+    actions = [a.action for a in out]
+    # The bookmark rides directly after the like it pairs with.
+    assert actions == ["like", "bookmark", "comment", "repost_comment"]
+
+
+async def test_expand_x_amplify_no_bookmark_without_like(db):
+    u = await _user(db)
+    c = await _campaign(db, ctype="amplify", platform="x", seed_urn="17900001")
+
+    out = await campaign_service.expand_participants(
+        db, c, [u.id], actions_by_participant={u.id: ["comment"]}
+    )
+
+    assert [a.action for a in out] == ["comment"]
+
+
+async def test_expand_linkedin_never_gets_bookmarks(db):
+    u = await _user(db)
+    c = await _campaign(db, ctype="amplify", seed_urn="urn:li:activity:1")
+
+    out = await campaign_service.expand_participants(db, c, [u.id])
+
+    assert "bookmark" not in {a.action for a in out}
+
+
+async def test_expand_x_distribute_pairs_bookmarks_on_engagements(db):
+    u1 = await _user(db)
+    u2 = await _user(db)
+    c = await _campaign(db, ctype="distribute", platform="x", seed_content="seed")
+
+    out = await campaign_service.expand_participants(db, c, [u1.id, u2.id])
+
+    likes = [a for a in out if a.action == "like"]
+    bookmarks = [a for a in out if a.action == "bookmark"]
+    assert len(bookmarks) == len(likes) > 0
+    # Each bookmark targets the same post as a like by the same person.
+    like_keys = {(a.user_id, a.target_post_index) for a in likes}
+    assert {(a.user_id, a.target_post_index) for a in bookmarks} == like_keys
+
+
 async def test_expand_distribute_ignores_actions_map(db):
     poster = await _user(db)
     c = await _campaign(db, ctype="distribute", seed_content="seed")

@@ -29,9 +29,19 @@ pytestmark = pytest.mark.asyncio
 class _FakeRedis:
     def __init__(self) -> None:
         self.jobs: list[tuple] = []
+        self.kv: dict = {}
 
     async def enqueue_job(self, name, *args, **kwargs):
         self.jobs.append((name, args, kwargs))
+
+    async def set(self, key, value, nx=False, ex=None):
+        if nx and key in self.kv:
+            return None
+        self.kv[key] = value
+        return True
+
+    async def delete(self, key):
+        self.kv.pop(key, None)
 
 
 class _StubProvider:
@@ -64,6 +74,13 @@ class _StubProvider:
     async def delete_post(self, acct, urn):
         self.calls.append(("delete_post", urn))
 
+    async def bookmark(self, acct, target_urn):
+        self.calls.append(("bookmark", target_urn))
+
+    async def refresh(self, acct):
+        self.calls.append(("refresh",))
+        return {"access_token": "new", "refresh_token": "newr", "expires_in": 7200}
+
 
 @pytest_asyncio.fixture
 async def env(engine, monkeypatch):
@@ -71,7 +88,7 @@ async def env(engine, monkeypatch):
     monkeypatch.setattr(jobs_mod, "async_session_factory", maker)
     redis = _FakeRedis()
     provider = _StubProvider()
-    monkeypatch.setattr(jobs_mod, "_provider", lambda: provider)
+    monkeypatch.setattr(jobs_mod, "_provider", lambda platform="linkedin": provider)
     return {
         "maker": maker,
         "ctx": {"redis": redis},
@@ -1543,6 +1560,195 @@ async def test_request_reconnect_dms_account_owner(db, env, monkeypatch):
     assert notify_reconnect.await_count == 1
     assert str(notify_reconnect.await_args.args[2].id) == str(user.id)
     assert fake.closed
+
+
+async def _x_account(db, user, *, expires_at=None) -> SocialAccount:
+    acct = SocialAccount(
+        user_id=user.id,
+        platform="x",
+        external_urn="9000001",
+        display_name="T",
+        access_token_enc=encrypt("x-tok"),
+        refresh_token_enc=encrypt("x-refresh"),
+        scopes=["tweet.write"],
+        expires_at=expires_at,
+        status="active",
+    )
+    db.add(acct)
+    await db.flush()
+    return acct
+
+
+async def test_publish_x_comment_automated_despite_cm_disabled(db, env):
+    # X comments (replies) always go through the API: the assisted-manual mode
+    # is a LinkedIn-only workaround, so with COMMUNITY_MANAGEMENT_ENABLED off
+    # (the suite default) an X reply still calls the provider.
+    user = await _user(db)
+    acct = await _x_account(db, user)
+    c = Campaign(title="C", type="amplify", platform="x", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        platform="x",
+        action="comment",
+        body="nice one",
+        status="approved",
+        target_external_id="999",
+        idempotency_key="kx1",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    assert ("comment", "999", "nice one") in env["provider"].calls
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "published"
+
+
+async def test_publish_x_bookmark_dispatches(db, env):
+    user = await _user(db)
+    acct = await _x_account(db, user)
+    c = Campaign(title="C", type="amplify", platform="x", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        platform="x",
+        action="bookmark",
+        status="approved",
+        target_external_id="999",
+        idempotency_key="kx2",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    assert ("bookmark", "999") in env["provider"].calls
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "published"
+
+
+async def test_publish_x_without_account_names_platform(db, env):
+    user = await _user(db)
+    c = Campaign(title="C", type="amplify", platform="x", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=None,
+        platform="x",
+        action="repost_comment",
+        body="take",
+        status="approved",
+        target_external_id="999",
+        idempotency_key="kx3",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "failed"
+        assert "No connected X account." in (rp.error or "")
+
+
+async def test_ensure_fresh_token_refreshes_near_expiry(db, env):
+    # An X token expiring inside the refresh buffer is proactively rotated and
+    # the new pair persisted (X refresh tokens are single-use).
+    from app.core.crypto import decrypt
+
+    user = await _user(db)
+    acct = await _x_account(
+        db, user, expires_at=datetime.now(UTC) + timedelta(minutes=2)
+    )
+    await db.commit()
+
+    await jobs_mod._ensure_fresh_token(db, acct, env["redis"])
+
+    assert ("refresh",) in env["provider"].calls
+    assert decrypt(acct.access_token_enc) == "new"
+    assert decrypt(acct.refresh_token_enc) == "newr"
+    assert acct.expires_at > datetime.now(UTC) + timedelta(hours=1)
+    # The per-account refresh lock is released afterwards.
+    assert f"super-hype:token-refresh:{acct.id}" not in env["redis"].kv
+
+
+async def test_ensure_fresh_token_skips_when_healthy(db, env):
+    user = await _user(db)
+    acct = await _x_account(db, user, expires_at=datetime.now(UTC) + timedelta(hours=2))
+    await db.commit()
+
+    await jobs_mod._ensure_fresh_token(db, acct, env["redis"])
+
+    assert env["provider"].calls == []
+
+
+async def test_ensure_fresh_token_skips_without_refresh_token(db, env):
+    # LinkedIn accounts usually hold no refresh token: never attempt a refresh.
+    user = await _user(db)
+    acct = await _account(db, user)
+    acct.expires_at = datetime.now(UTC) + timedelta(minutes=2)
+    await db.commit()
+
+    await jobs_mod._ensure_fresh_token(db, acct, env["redis"])
+
+    assert env["provider"].calls == []
+
+
+async def test_ensure_fresh_token_serialized_by_account_lock(db, env, monkeypatch):
+    # X refresh tokens are single-use: while another job holds the per-account
+    # lock and commits a rotated pair, a waiting job must re-read that pair and
+    # skip its own refresh instead of burning the same stored token.
+    import asyncio
+
+    from app.core.crypto import decrypt, encrypt
+
+    monkeypatch.setattr(jobs_mod, "_TOKEN_REFRESH_WAIT_SECONDS", 0.01)
+    user = await _user(db)
+    acct = await _x_account(
+        db, user, expires_at=datetime.now(UTC) + timedelta(minutes=2)
+    )
+    await db.commit()
+
+    lock_key = f"super-hype:token-refresh:{acct.id}"
+    await env["redis"].set(lock_key, "1", nx=True)
+
+    async def _winner_commits_and_releases():
+        async with env["maker"]() as s:
+            other = await s.get(SocialAccount, acct.id)
+            other.access_token_enc = encrypt("winner")
+            other.expires_at = datetime.now(UTC) + timedelta(hours=2)
+            await s.commit()
+        await env["redis"].delete(lock_key)
+
+    winner = asyncio.create_task(_winner_commits_and_releases())
+    await jobs_mod._ensure_fresh_token(db, acct, env["redis"])
+    await winner
+
+    assert env["provider"].calls == []
+    assert decrypt(acct.access_token_enc) == "winner"
+
+
+async def test_provider_registry_routes_by_platform():
+    from app.providers.linkedin import linkedin_provider
+    from app.providers.x import x_provider
+
+    assert jobs_mod._provider("linkedin") is linkedin_provider
+    assert jobs_mod._provider("x") is x_provider
+    # Unknown platforms fall back to LinkedIn rather than crashing the worker.
+    assert jobs_mod._provider("unknown") is linkedin_provider
 
 
 async def test_publish_defers_on_daily_cap(db, env, cm_enabled):

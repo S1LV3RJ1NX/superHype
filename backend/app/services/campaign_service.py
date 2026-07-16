@@ -255,6 +255,7 @@ async def _resolve_interaction_texts(
             length=campaign.length,
             language=campaign.language,
             extra=extra,
+            platform=campaign.platform,
         )
         for pos, j in enumerate(idxs):
             texts[j] = out[pos] if pos < len(out) else ""
@@ -297,6 +298,11 @@ async def expand_participants(
     then likes and comments on up to DISTRIBUTE_MAX_ENGAGEMENT_TARGETS other
     members' posts, founder-authored posts first, so a big campaign cannot fan out
     quadratically (``actions_by_participant`` is ignored for distribute).
+
+    On X, every like is paired with a bookmark of the same target: bookmarks are
+    a strong ranking signal there, cost the participant nothing extra (they ride
+    the same approval), and X has an API for them. LinkedIn has no save API, so
+    LinkedIn campaigns never get bookmark rows.
     """
     # Dedupe while preserving order so poster slots are stable and predictable.
     seen: set[uuid.UUID] = set()
@@ -308,6 +314,7 @@ async def expand_participants(
     if not ordered:
         return []
 
+    pair_bookmarks = campaign.platform == "x"
     out: list[Assignment] = []
     if campaign.type == "amplify":
         for uid in ordered:
@@ -322,6 +329,8 @@ async def expand_participants(
             actions = [a for a in _AMPLIFY_ACTIONS if chosen is None or a in chosen]
             for action in actions:
                 out.append(Assignment(user_id=uid, action=action))
+                if action == "like" and pair_bookmarks:
+                    out.append(Assignment(user_id=uid, action="bookmark"))
         return out
 
     # Distribute: one authored post per member, in list order (slot = index).
@@ -336,6 +345,10 @@ async def expand_participants(
         others.sort(key=lambda j: 0 if is_founder.get(ordered[j], False) else 1)
         for j in others[:cap]:
             out.append(Assignment(user_id=uid, action="like", target_post_index=j))
+            if pair_bookmarks:
+                out.append(
+                    Assignment(user_id=uid, action="bookmark", target_post_index=j)
+                )
             out.append(Assignment(user_id=uid, action="comment", target_post_index=j))
     return out
 
@@ -428,11 +441,13 @@ async def build_plan(
     # fall back to the legacy single image_asset_id / image_url on the campaign.
     media_pool = await campaign_media_repo.list_for_campaign(db, campaign_id)
 
-    # Resolve each participant's LinkedIn account once.
+    # Resolve each participant's account on the campaign's platform once.
     account_by_user: dict[uuid.UUID, uuid.UUID | None] = {}
     for a in assignments:
         if a.user_id not in account_by_user:
-            acct = await social_account_repo.get_by_user(db, a.user_id)
+            acct = await social_account_repo.get_by_user(
+                db, a.user_id, platform=campaign.platform
+            )
             account_by_user[a.user_id] = acct.id if acct else None
 
     # Team persona per acting user, so generated comments and reposts read in that
@@ -478,6 +493,7 @@ async def build_plan(
                     language=campaign.language,
                     extra=effective_rules,
                     persona=persona or None,
+                    platform=campaign.platform,
                 )
                 for pos, idx in enumerate(idxs):
                     variation_bodies[idx] = bodies[pos] if pos < len(bodies) else ""
@@ -504,6 +520,7 @@ async def build_plan(
             campaign_id=campaign_id,
             user_id=a.user_id,
             social_account_id=account_by_user.get(a.user_id),
+            platform=campaign.platform,
             action="post",
             body=(
                 variation_bodies[idx] if idx < len(variation_bodies) else (a.body or "")
@@ -544,6 +561,7 @@ async def build_plan(
             campaign_id=campaign_id,
             user_id=a.user_id,
             social_account_id=account_by_user.get(a.user_id),
+            platform=campaign.platform,
             action=a.action,
             body=interaction_texts[i] if i < len(interaction_texts) else (a.body or ""),
             angle=a.angle,
@@ -569,6 +587,7 @@ async def build_plan(
                     campaign_id=campaign_id,
                     user_id=poster.user_id,
                     social_account_id=poster.social_account_id,
+                    platform=campaign.platform,
                     action="self_comment",
                     body=campaign.self_comment,
                     lang=campaign.language,

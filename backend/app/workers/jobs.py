@@ -5,8 +5,8 @@ and self-defers when an interaction's target post is not yet live, so the stagge
 window and human-paced approvals sequence correctly without a rigid phase lock.
 """
 
+import asyncio
 import random
-import re
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -14,7 +14,9 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core import crypto
 from app.core.engagement import is_assisted
+from app.core.platforms import platform_label
 from app.core.safe_fetch import fetch_image, media_kind
 from app.core.scheduling import ensure_utc
 from app.db.session import async_session_factory
@@ -23,13 +25,14 @@ from app.logger import get_logger
 from app.models.campaign import Campaign
 from app.models.post import Post
 from app.models.social_account import SocialAccount
-from app.providers.linkedin import (
-    LinkedInAPIError,
-    LinkedInAuthError,
-    LinkedInProvider,
-    LinkedInRateLimitError,
-    linkedin_provider,
+from app.providers.base import (
+    Provider,
+    ProviderAPIError,
+    ProviderAuthError,
+    ProviderRateLimitError,
 )
+from app.providers.linkedin import LinkedInAPIError, linkedin_provider
+from app.providers.x import x_provider
 from app.repositories import audit_repo
 from app.repositories.campaign_repo import campaign_repo
 from app.repositories.post_repo import post_repo
@@ -50,9 +53,15 @@ _DEPENDENCY_DEFER_SECONDS = 30
 _LEASE_CONTENTION_DEFER_SECONDS = 15
 
 
-def _provider() -> LinkedInProvider:
-    """Indirection so tests can monkeypatch the provider."""
-    return linkedin_provider
+_PROVIDERS: dict[str, Provider] = {
+    "linkedin": linkedin_provider,
+    "x": x_provider,
+}
+
+
+def _provider(platform: str = "linkedin") -> Provider:
+    """Provider for a platform. Indirection so tests can monkeypatch it."""
+    return _PROVIDERS.get(platform, linkedin_provider)
 
 
 async def generate_drafts(
@@ -328,11 +337,86 @@ async def _ensure_media_urn(db: AsyncSession, post: Post, acct: SocialAccount) -
         data, content_type = await fetch_image(post.image_url or "")
 
     if media_kind(content_type) == "video":
-        urn = await _provider().upload_video(acct, data)
+        urn = await _provider(post.platform).upload_video(acct, data)
     else:
-        urn = await _provider().upload_image(acct, data, alt=post.image_alt)
+        urn = await _provider(post.platform).upload_image(
+            acct, data, alt=post.image_alt
+        )
     post.image_asset_urn = urn
     await db.flush()
+
+
+# Refresh a token this close to expiry before publishing with it. X access
+# tokens live about two hours, so this fires on nearly every X publish; LinkedIn
+# accounts usually hold no refresh token and skip it entirely.
+_TOKEN_REFRESH_BUFFER_SECONDS = 600
+# One approval fans out into several concurrent publish jobs for the same
+# account, and X refresh tokens are single-use and rotated, so the refresh
+# itself is serialized per account with a Redis lock. Losers wait for the
+# winner, then re-read the rotated pair it committed instead of burning the
+# same stored refresh token.
+_TOKEN_REFRESH_LOCK_TTL_SECONDS = 60
+_TOKEN_REFRESH_WAIT_SECONDS = 0.5
+_TOKEN_REFRESH_MAX_WAITS = 60
+
+
+def _token_near_expiry(acct: SocialAccount) -> bool:
+    return acct.expires_at is not None and ensure_utc(acct.expires_at) - datetime.now(
+        UTC
+    ) <= timedelta(seconds=_TOKEN_REFRESH_BUFFER_SECONDS)
+
+
+async def _ensure_fresh_token(
+    db: AsyncSession, acct: SocialAccount, redis: Any
+) -> None:
+    """Proactively refresh a near-expiry token when a refresh token exists.
+
+    Commits immediately: X rotates the refresh token on every use, so the new
+    pair must survive even if the publish attempt afterwards rolls back;
+    otherwise the account would be left holding a burned refresh token. Raises
+    ProviderAuthError when the refresh token itself is dead, which the caller
+    handles like any stale-token failure (mark stale, ask to reconnect).
+    """
+    if acct.refresh_token_enc is None or acct.expires_at is None:
+        return
+    if not _token_near_expiry(acct):
+        return
+
+    lock_key = f"super-hype:token-refresh:{acct.id}"
+    acquired = False
+    for _ in range(_TOKEN_REFRESH_MAX_WAITS):
+        acquired = bool(
+            await redis.set(lock_key, "1", nx=True, ex=_TOKEN_REFRESH_LOCK_TTL_SECONDS)
+        )
+        if acquired:
+            break
+        await asyncio.sleep(_TOKEN_REFRESH_WAIT_SECONDS)
+    # If the lock never freed, the holder wedged past its TTL; proceed rather
+    # than dropping this publish, and let the re-check below limit the damage.
+    try:
+        # A concurrent job may have rotated the pair while we waited; re-read
+        # the row and skip if the token is fresh again.
+        await db.refresh(acct)
+        if acct.refresh_token_enc is None or not _token_near_expiry(acct):
+            return
+        data = await _provider(acct.platform).refresh(acct)
+        acct.access_token_enc = crypto.encrypt(data["access_token"])
+        if data.get("refresh_token"):
+            acct.refresh_token_enc = crypto.encrypt(data["refresh_token"])
+        if data.get("expires_in"):
+            acct.expires_at = datetime.now(UTC) + timedelta(
+                seconds=int(data["expires_in"])
+            )
+        await db.flush()
+        await db.commit()
+        log.info(
+            "publish_post.token_refreshed",
+            account_id=str(acct.id),
+            platform=acct.platform,
+        )
+    finally:
+        if acquired:
+            await redis.delete(lock_key)
 
 
 async def _dispatch(
@@ -342,7 +426,7 @@ async def _dispatch(
     campaign: Campaign,
     target_urn: str | None,
 ) -> str:
-    provider = _provider()
+    provider = _provider(post.platform)
     if post.action == "post":
         return await provider.publish(
             acct,
@@ -357,6 +441,9 @@ async def _dispatch(
         return await provider.comment(acct, target_urn, post.body or "")
     if post.action == "like":
         await provider.like(acct, target_urn)
+        return target_urn
+    if post.action == "bookmark":
+        await provider.bookmark(acct, target_urn)
         return target_urn
     if post.action == "repost_comment":
         return await provider.reshare(acct, target_urn, post.body or "")
@@ -406,7 +493,7 @@ async def _rollback_published_post(
     if post.external_id is None:
         return
     try:
-        await _provider().delete_post(acct, post.external_id)
+        await _provider(post.platform).delete_post(acct, post.external_id)
     except Exception:
         log.warning("publish_post.rollback_delete_failed", post_id=str(post.id))
     await audit_repo.record(
@@ -414,15 +501,15 @@ async def _rollback_published_post(
     )
 
 
-def _forbidden_message(action: str, exc: LinkedInAPIError) -> str:
+def _forbidden_message(action: str, exc: ProviderAPIError) -> str:
     """Human-readable reason for a 403 so the failure is actionable in the UI.
 
-    Comments and likes go through the socialActions API, which needs the
-    w_member_social_feed scope. That scope is part of the Community Management
-    API and is not self-serve; a standard Share-on-LinkedIn app (w_member_social)
-    can publish and reshare but cannot comment or like.
+    On LinkedIn, comments and likes go through the socialActions API, which
+    needs the w_member_social_feed scope. That scope is part of the Community
+    Management API and is not self-serve; a standard Share-on-LinkedIn app
+    (w_member_social) can publish and reshare but cannot comment or like.
     """
-    if action in ("comment", "like"):
+    if isinstance(exc, LinkedInAPIError) and action in ("comment", "like"):
         return (
             "Failed: LinkedIn denied this action (403). Comments and likes use the "
             "socialActions API, which requires the w_member_social_feed scope. That "
@@ -431,47 +518,47 @@ def _forbidden_message(action: str, exc: LinkedInAPIError) -> str:
             "posts and reshares but not comments or likes. Request Community "
             "Management API access to enable them."
         )
-    return f"Failed: LinkedIn denied this action (403). {exc}"[:1000]
+    return f"Failed: the platform denied this action (403). {exc}"[:1000]
 
 
 def _nonretryable(exc: Exception) -> bool:
-    """A LinkedIn 4xx is the client's fault (bad URN, missing scope, malformed
-    body) and never succeeds on retry, so we fail it immediately. 401 and 429 are
-    caught earlier (reconnect and rate-limit backoff); 5xx and network blips fall
-    through to the bounded retry."""
-    return isinstance(exc, LinkedInAPIError) and 400 <= exc.status_code < 500
-
-
-_DUPLICATE_URN_RE = re.compile(r"urn:li:(?:share|ugcPost|activity):\d+")
+    """A provider 4xx is the client's fault (bad target id, missing scope,
+    malformed body, duplicate content) and never succeeds on retry, so we fail
+    it immediately. 401 and 429 are caught earlier (reconnect and rate-limit
+    backoff); 5xx and network blips fall through to the bounded retry."""
+    return isinstance(exc, ProviderAPIError) and 400 <= exc.status_code < 500
 
 
 def _duplicate_urn(exc: Exception) -> str | None:
-    """Extract the existing URN from a LinkedIn 422 duplicate-content rejection.
+    """The already-live post id from a duplicate-content rejection, if named.
 
-    When identical content was already posted (common after a reset and relaunch),
-    LinkedIn returns 422 "Content is a duplicate of urn:li:share:..." and names the
-    live URN. We adopt that URN so the post is recognized as published rather than
-    failed. Returns None when the error is not a duplicate we can recover from.
+    LinkedIn's 422 duplicate rejection names the live URN (common after a reset
+    and relaunch); the provider extracts it into duplicate_external_id and we
+    adopt it so the post is recognized as published rather than failed. X
+    rejects duplicates without naming the existing tweet, so those fail with a
+    clear message instead.
     """
-    if not (isinstance(exc, LinkedInAPIError) and exc.status_code == 422):
-        return None
-    if "duplicate" not in str(exc).lower():
-        return None
-    match = _DUPLICATE_URN_RE.search(str(exc))
-    return match.group(0) if match else None
+    if isinstance(exc, ProviderAPIError):
+        return exc.duplicate_external_id
+    return None
 
 
 def _publish_failure_message(action: str, exc: Exception, *, rolled_back: bool) -> str:
     """Actionable failure text for the post row, so the UI shows why and the
     owner can fix it and retry."""
-    if isinstance(exc, LinkedInAPIError) and exc.status_code == 403:
-        if rolled_back:
+    if isinstance(exc, ProviderAPIError) and exc.status_code == 403:
+        if rolled_back and isinstance(exc, LinkedInAPIError):
             return (
                 "Failed: the post was rolled back because the link could not be "
                 "placed in the first comment. Comments require the "
                 "w_member_social_feed scope (Community Management API), which this "
                 "app does not have. Use body link placement or request the scope."
             )
+        if rolled_back:
+            return (
+                "Failed: the post was rolled back because the link could not be "
+                f"placed in the first comment. {exc}"
+            )[:1000]
         return _forbidden_message(action, exc)
     # Resharing a feed "activity" URN is rejected: reshareContext.parent must be
     # the original share or ugcPost. This is the usual cause when a campaign was
@@ -537,7 +624,7 @@ async def publish_post(ctx: dict, post_id: str) -> None:
         # link, raise the ask, and stop before any provider call or token check.
         # external_id is None guards against re-processing a row that somehow
         # already published (e.g. data from when the flag was on).
-        if is_assisted(post.action) and post.external_id is None:
+        if is_assisted(post.action, post.platform) and post.external_id is None:
             if target_urn is None:
                 await post_repo.mark_failed(
                     db, post, "Interaction has no resolvable target."
@@ -571,7 +658,9 @@ async def publish_post(ctx: dict, post_id: str) -> None:
             return
 
         if post.social_account_id is None:
-            await post_repo.mark_failed(db, post, "No connected LinkedIn account.")
+            await post_repo.mark_failed(
+                db, post, f"No connected {platform_label(post.platform)} account."
+            )
             await campaign_service.check_completion(db, post.campaign_id)
             await db.commit()
             return
@@ -625,6 +714,11 @@ async def publish_post(ctx: dict, post_id: str) -> None:
         await db.commit()
 
         try:
+            # Refresh a near-expiry token first (X's ~2h tokens with rotating
+            # refresh tokens). Commits its own small unit; a dead refresh token
+            # raises ProviderAuthError into the stale-token handler below.
+            await _ensure_fresh_token(db, acct, ctx["redis"])
+
             # Phase 1: publish the body. external_id is committed before we touch
             # the first comment, so a later failure can never re-publish it.
             if post.external_id is None:
@@ -649,7 +743,9 @@ async def publish_post(ctx: dict, post_id: str) -> None:
 
             # Phase 2: place the link in the first comment (resumable + idempotent).
             if needs_fc and post.first_comment_external_id is None and link:
-                fc_urn = await _provider().comment(acct, post.external_id or "", link)
+                fc_urn = await _provider(post.platform).comment(
+                    acct, post.external_id or "", link
+                )
                 post.first_comment_external_id = fc_urn
                 await audit_repo.record(
                     db,
@@ -660,7 +756,7 @@ async def publish_post(ctx: dict, post_id: str) -> None:
             await post_repo.mark_published(db, post, post.external_id or "")
             await campaign_service.check_completion(db, post.campaign_id)
             await db.commit()
-        except LinkedInAuthError:
+        except ProviderAuthError:
             await db.rollback()
             post = await post_repo.get(db, pid)
             if post is None or post.social_account_id is None:
@@ -671,13 +767,17 @@ async def publish_post(ctx: dict, post_id: str) -> None:
             if acct is not None and post.external_id is not None and needs_fc:
                 await _rollback_published_post(db, acct, post)
             await social_account_repo.mark_stale(db, post.social_account_id)
-            await post_repo.mark_failed(db, post, "LinkedIn token invalid (stale).")
+            await post_repo.mark_failed(
+                db,
+                post,
+                f"{platform_label(post.platform)} token invalid (stale).",
+            )
             await campaign_service.check_completion(db, post.campaign_id)
             await db.commit()
             await ctx["redis"].enqueue_job(
                 "request_reconnect", str(post.social_account_id)
             )
-        except LinkedInRateLimitError as exc:
+        except ProviderRateLimitError as exc:
             await db.rollback()
             await ctx["redis"].enqueue_job(
                 "publish_post", post_id, _defer_by=exc.retry_after or 60
@@ -1069,7 +1169,7 @@ async def reconcile_campaigns(ctx: dict) -> None:
 
 
 async def request_reconnect(ctx: dict, account_id: str) -> None:
-    """DM the owner of a stale LinkedIn account a link to reconnect it.
+    """DM the owner of a stale social account a link to reconnect it.
 
     Enqueued when publishing hits a 401 and the account is marked stale, so the
     person is nudged out of band instead of only seeing failures in the portal.
@@ -1085,6 +1185,8 @@ async def request_reconnect(ctx: dict, account_id: str) -> None:
             user = await user_repo.get(db, account.user_id)
             if user is None:
                 return
-            await slack_service.notify_reconnect(db, client, user)
+            await slack_service.notify_reconnect(
+                db, client, user, platform=account.platform
+            )
     finally:
         await client.aclose()

@@ -3,10 +3,13 @@ import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/auth/AuthContext";
 
 const ONBOARDING_PATH = "/app/onboarding";
-// The LinkedIn OAuth return lands here to exchange the code; it must stay
-// reachable mid-onboarding (the account is not connected yet at that point),
-// otherwise the gate would bounce it to onboarding before the exchange runs.
-const LINKEDIN_CALLBACK_PATH = "/connections/linkedin/callback";
+// The OAuth returns land here to exchange the code; they must stay reachable
+// mid-onboarding (the account is not connected yet at that point), otherwise
+// the gate would bounce them to onboarding before the exchange runs.
+const OAUTH_CALLBACK_PATHS = [
+  "/connections/linkedin/callback",
+  "/connections/x/callback",
+];
 
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
@@ -30,7 +33,7 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const onboarded = !!user.team_id && !!user.linkedin_status;
   const exempt =
     location.pathname === ONBOARDING_PATH ||
-    location.pathname === LINKEDIN_CALLBACK_PATH;
+    OAUTH_CALLBACK_PATHS.includes(location.pathname);
   if (!onboarded && !exempt) {
     return <Navigate to={ONBOARDING_PATH} replace />;
   }

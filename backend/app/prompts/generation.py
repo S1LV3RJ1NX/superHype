@@ -60,7 +60,11 @@ def _banned_phrase_line() -> str:
     return f"Never use these phrases, in any language: {joined}."
 
 
-def persuasion_rules() -> str:
+def _platform_name(platform: str) -> str:
+    return "X (Twitter)" if platform == "x" else "LinkedIn"
+
+
+def persuasion_rules(platform: str = "linkedin") -> str:
     """Reader-first persuasion principles shared by every generated text.
 
     Writing is applied psychology: the effect on the reader is the point, not the
@@ -68,6 +72,7 @@ def persuasion_rules() -> str:
     copy reads like a specific human making one compelling point, not a broadcast.
     Kept em-dash free, like all of our copy.
     """
+    name = _platform_name(platform)
     return (
         "Persuasion principles (write for the reader's reception, not to "
         "broadcast):\n"
@@ -83,8 +88,8 @@ def persuasion_rules() -> str:
         "percentage; use numbers to sharpen a story, not to replace it.\n"
         "- Validate, then redirect: begin from what the reader already believes and "
         "get them nodding before you shift their view.\n"
-        "- Speak the audience's language: sound like a credible practitioner on "
-        "LinkedIn, never a press release.\n"
+        f"- Speak the audience's language: sound like a credible practitioner on "
+        f"{name}, never a press release.\n"
         "- Omit needless words: cut 'in order to', 'it is important to note', "
         "'basically', 'actually', 'really'; if a line does not earn its place, cut "
         "it."
@@ -99,6 +104,7 @@ def variations_system(
     language: str | None = None,
     extra: str | None = None,
     persona: str | None = None,
+    platform: str = "linkedin",
 ) -> str:
     """System prompt for generating N distinct post variations from a seed.
 
@@ -117,14 +123,24 @@ def variations_system(
         if persona_clean
         else ""
     )
+    name = _platform_name(platform)
+    if platform == "x":
+        length_rules = (
+            "- Hard limit: 280 characters per post, counting spaces and "
+            "punctuation. Aim for under 250 so nothing is ever cut off.\n"
+            "- One tight idea per post. No hashtag stuffing (at most one, only "
+            "when it truly earns its place), no threads.\n"
+        )
+    else:
+        length_rules = "- Aim for roughly 120 to 200 words.\n"
     return (
         f"{rules_block}"
-        "You write LinkedIn posts for an employee-advocacy campaign. Given a seed "
+        f"You write {name} posts for an employee-advocacy campaign. Given a seed "
         f"post, produce exactly {n} distinct variations that make the same core "
         "point in genuinely different voices and structures, so they do not look "
         "coordinated.\n\n"
         f"{persona_line}"
-        f"{persuasion_rules()}\n\n"
+        f"{persuasion_rules(platform)}\n\n"
         "Format and integrity rules:\n"
         "- Opinion over announcement: frame each post around a point of view or "
         "the problem it kills, not a status update.\n"
@@ -133,7 +149,7 @@ def variations_system(
         "- Short sentences, plain words, short paragraphs with white space.\n"
         "- End most posts with a genuine reason to engage (a real question or a "
         "mild take).\n"
-        "- Aim for roughly 120 to 200 words.\n"
+        f"{length_rules}"
         "- Never use em dashes or en dashes (the characters and the words). Use "
         "commas, periods, colons, or parentheses instead.\n"
         f"- {_banned_phrase_line()}\n\n"
@@ -151,6 +167,7 @@ def interactions_system(
     length: str | None = None,
     language: str | None = None,
     extra: str | None = None,
+    platform: str = "linkedin",
 ) -> str:
     """System prompt for generating `count` distinct interaction texts.
 
@@ -166,14 +183,31 @@ def interactions_system(
         if hints
         else ""
     )
+    name = _platform_name(platform)
+    if platform == "x":
+        intro = (
+            "You write short, natural X (Twitter) interactions (replies and "
+            "quote-post commentary) reacting to a post. Each must be distinct "
+            "and human, never templated or repetitive."
+        )
+        reshare_noun = "the quote-post line a person adds when quoting the post"
+        limit_line = (
+            "Every text is a tweet: hard limit 280 characters, aim for under 250. "
+        )
+    else:
+        intro = (
+            "You write short, natural LinkedIn interactions (comments and "
+            "reshare commentary) reacting to a post. Each must be distinct and "
+            "human, never templated or repetitive."
+        )
+        reshare_noun = "a short framing line a person adds when resharing the post"
+        limit_line = ""
     return (
         f"{rules_block}"
-        "You write short, natural LinkedIn interactions (comments and reshare "
-        "commentary) reacting to a post. Each must be distinct and human, never "
-        "templated or repetitive.\n\n"
+        f"{intro}\n\n"
         "Write for the reader, not to broadcast: react in their world, make one "
         "concrete point, validate before you push back, sound like a real "
-        "practitioner on LinkedIn, and cut every needless word.\n\n"
+        f"practitioner on {name}, and cut every needless word.\n\n"
         "Comment rules (action=comment):\n"
         "- React to the post's actual content. 1 to 3 sentences that add a new "
         "point, ask a real question, or share a related experience.\n"
@@ -183,10 +217,10 @@ def interactions_system(
         '- Banned: generic praise such as "Great post", "Congrats team", "Love '
         'this", or "This is huge", and any one-word or emoji-only reaction.\n\n'
         "Reshare commentary rules (action=repost_comment):\n"
-        "- A short framing line a person adds when resharing the post, in their "
-        "own voice and specific to the post.\n\n"
-        "All texts: never use em dashes or en dashes; use commas, periods, or "
-        f"parentheses instead. {_banned_phrase_line()}\n\n"
+        f"- {reshare_noun.capitalize()}, in their own voice and specific to the "
+        "post.\n\n"
+        f"All texts: {limit_line}never use em dashes or en dashes; use commas, "
+        f"periods, or parentheses instead. {_banned_phrase_line()}\n\n"
         "When an item includes a persona=... field, write that text in that "
         "person's team voice and point of view, while still following every rule "
         "above.\n\n"

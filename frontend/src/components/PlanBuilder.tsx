@@ -9,6 +9,7 @@ export interface RosterUser {
   name: string | null;
   email: string;
   linkedin_status: string | null;
+  x_status: string | null;
   team_id: string | null;
 }
 
@@ -25,16 +26,26 @@ export interface LockedPost {
 }
 
 // Amplify actions in canonical order; the key matches the backend action name.
-const AMPLIFY_ACTIONS = [
-  { key: "like", label: "Like" },
-  { key: "comment", label: "Comment" },
-  { key: "repost_comment", label: "Repost" },
-] as const;
+// Labels shift per platform (a comment is a reply on X, a repost is a quote
+// post; X likes also get a paired bookmark server-side).
+const AMPLIFY_ACTIONS_BY_PLATFORM = {
+  linkedin: [
+    { key: "like", label: "Like" },
+    { key: "comment", label: "Comment" },
+    { key: "repost_comment", label: "Repost" },
+  ],
+  x: [
+    { key: "like", label: "Like" },
+    { key: "comment", label: "Reply" },
+    { key: "repost_comment", label: "Quote" },
+  ],
+} as const;
 
-const ALL_AMPLIFY_KEYS = AMPLIFY_ACTIONS.map((a) => a.key);
+const ALL_AMPLIFY_KEYS = AMPLIFY_ACTIONS_BY_PLATFORM.linkedin.map((a) => a.key);
 
 export function PlanBuilder({
   campaignType,
+  platform = "linkedin",
   roster,
   isEditor,
   busy,
@@ -44,6 +55,7 @@ export function PlanBuilder({
   lockedPosts,
 }: {
   campaignType: string;
+  platform?: string;
   roster: RosterUser[];
   isEditor: boolean;
   busy: boolean;
@@ -57,6 +69,10 @@ export function PlanBuilder({
   lockedPosts?: LockedPost[];
 }) {
   const isDistribute = campaignType === "distribute";
+  const onX = platform === "x";
+  const amplifyActions = onX
+    ? AMPLIFY_ACTIONS_BY_PLATFORM.x
+    : AMPLIFY_ACTIONS_BY_PLATFORM.linkedin;
 
   // Distribute tracks membership only (actions are derived from the type).
   const [selected, setSelected] = useState<Set<string>>(
@@ -95,7 +111,10 @@ export function PlanBuilder({
     roster.some((u) => u.team_id === t.id),
   );
 
-  const isConnected = (u: RosterUser) => !!u.linkedin_status;
+  const connectionStatus = (u: RosterUser) =>
+    onX ? u.x_status : u.linkedin_status;
+
+  const isConnected = (u: RosterUser) => !!connectionStatus(u);
 
   const teamMembers = (teamId: string) =>
     roster.filter((u) => u.team_id === teamId);
@@ -250,8 +269,12 @@ export function PlanBuilder({
 
       <div className="mb-3 rounded-md border border-clay/30 bg-clay/10 px-3 py-2 text-xs font-medium text-clay">
         {isDistribute
-          ? "Everyone you pick posts their own version (from the seed, in their team voice), plus the self comment if set. They also like and comment on each other's posts, founders' posts first."
-          : "Pick who takes part and which actions each does. New people default to like, comment, and repost; untick any to drop it for that person."}
+          ? onX
+            ? "Everyone you pick posts their own tweet (from the seed, in their team voice), plus the self reply if set. They also like, bookmark, and reply to each other's tweets, founders' tweets first."
+            : "Everyone you pick posts their own version (from the seed, in their team voice), plus the self comment if set. They also like and comment on each other's posts, founders' posts first."
+          : onX
+            ? "Pick who takes part and which actions each does. New people default to like (with a bookmark), reply, and quote post; untick any to drop it for that person."
+            : "Pick who takes part and which actions each does. New people default to like, comment, and repost; untick any to drop it for that person."}
       </div>
 
       {teamsLoading ? (
@@ -352,7 +375,7 @@ export function PlanBuilder({
             <div className="mb-1 flex items-center gap-2 pl-2 pr-10 text-[11px] font-medium uppercase tracking-wide text-muted-ink">
               <span aria-hidden className="w-4 shrink-0" />
               <span className="flex-1">Actions (untick to drop for a person)</span>
-              {AMPLIFY_ACTIONS.map((a) => {
+              {amplifyActions.map((a) => {
                 const all = filtered.every((u) => hasAction(u.id, a.key));
                 return (
                   <label
@@ -380,7 +403,7 @@ export function PlanBuilder({
             )}
             {filtered.map((u) => {
               const connected = isConnected(u);
-              const stale = connected && u.linkedin_status !== "active";
+              const stale = connected && connectionStatus(u) !== "active";
               const info = (
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm text-ink">
@@ -433,7 +456,7 @@ export function PlanBuilder({
                     title="Include this person (all actions)"
                   />
                   {info}
-                  {AMPLIFY_ACTIONS.map((a) => (
+                  {amplifyActions.map((a) => (
                     <span
                       key={a.key}
                       className="flex w-14 items-center justify-center"

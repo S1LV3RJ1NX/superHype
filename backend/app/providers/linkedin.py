@@ -5,6 +5,7 @@ logged. Errors are typed so the worker can decide retry behavior: auth (stale,
 non-retryable), rate limit (retryable with delay), or a generic API error.
 """
 
+import re
 from typing import Any
 from urllib.parse import quote
 
@@ -14,6 +15,11 @@ from app.config import settings
 from app.core.crypto import decrypt
 from app.logger import get_logger
 from app.models.social_account import SocialAccount
+from app.providers.base import (
+    ProviderAPIError,
+    ProviderAuthError,
+    ProviderRateLimitError,
+)
 
 log = get_logger(__name__)
 
@@ -21,20 +27,28 @@ _REST_BASE = "https://api.linkedin.com/rest"
 _OAUTH_TOKEN_URL = "https://www.linkedin.com/oauth/v2/accessToken"
 _TIMEOUT = httpx.Timeout(30.0)
 
+# When identical content was already posted (common after a reset and relaunch),
+# LinkedIn rejects with 422 "Content is a duplicate of urn:li:share:..." and
+# names the live URN; we extract it so the worker can adopt it as published.
+_DUPLICATE_URN_RE = re.compile(r"urn:li:(?:share|ugcPost|activity):\d+")
 
-class LinkedInAPIError(Exception):
+
+class LinkedInAPIError(ProviderAPIError):
     """A LinkedIn API call failed for a non-auth, non-rate-limit reason."""
 
     def __init__(self, status_code: int, message: str) -> None:
         self.status_code = status_code
+        if status_code == 422 and "duplicate" in message.lower():
+            match = _DUPLICATE_URN_RE.search(message)
+            self.duplicate_external_id = match.group(0) if match else None
         super().__init__(f"LinkedIn API error {status_code}: {message}")
 
 
-class LinkedInAuthError(LinkedInAPIError):
+class LinkedInAuthError(LinkedInAPIError, ProviderAuthError):
     """401: the token is invalid or revoked. Non-retryable; mark the account stale."""
 
 
-class LinkedInRateLimitError(LinkedInAPIError):
+class LinkedInRateLimitError(LinkedInAPIError, ProviderRateLimitError):
     """429: throttled. Retryable after retry_after seconds."""
 
     def __init__(self, message: str, retry_after: int | None = None) -> None:
@@ -245,6 +259,15 @@ class LinkedInProvider:
             )
             _raise_for_status(resp)
 
+    async def bookmark(
+        self,
+        acct: SocialAccount,
+        target_urn: str,
+    ) -> None:
+        # LinkedIn has no save/bookmark API; the planner never creates bookmark
+        # rows for LinkedIn campaigns, so reaching this is a plan-building bug.
+        raise LinkedInAPIError(400, "LinkedIn does not support bookmarks.")
+
     async def reshare(
         self,
         acct: SocialAccount,
@@ -266,6 +289,11 @@ class LinkedInProvider:
         }
         async with self._client() as client:
             resp = await client.post(_OAUTH_TOKEN_URL, data=form)
+            # RFC 6749 section 5.2: a dead or revoked refresh token comes back
+            # from the token endpoint as 400 invalid_grant, not 401. Only
+            # re-consent can fix it, so surface it as an auth error.
+            if resp.status_code == 400:
+                raise LinkedInAuthError(400, resp.text[:300])
             _raise_for_status(resp)
         return resp.json()
 

@@ -36,6 +36,18 @@ class GenerationError(Exception):
 _INTERACTION_CHUNK_SIZE = 20
 _MAX_GENERATION_CONCURRENCY = 5
 
+# X's hard post length. Anything longer is rejected by the API, so an overlong
+# generation gets one regenerate before the job fails; we never truncate
+# mid-sentence.
+_X_CHAR_LIMIT = 280
+
+# Actions that carry no generated text (a like or a bookmark has no body).
+_TEXTLESS_ACTIONS = ("like", "bookmark")
+
+
+def _too_long(text: str, platform: str) -> bool:
+    return platform == "x" and len(text) > _X_CHAR_LIMIT
+
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*\n?", re.MULTILINE)
 _FENCE_CLOSE_RE = re.compile(r"\n?```\s*$", re.MULTILINE)
@@ -110,24 +122,27 @@ async def _complete_json(messages: list[dict[str, Any]]) -> Any:
         ) from exc
 
 
-async def generate_variations(
+async def _variation_batch(
     seed_content: str,
     n: int,
     *,
-    tone: str | None = None,
-    length: str | None = None,
-    language: str | None = None,
-    extra: str | None = None,
-    persona: str | None = None,
+    tone: str | None,
+    length: str | None,
+    language: str | None,
+    extra: str | None,
+    persona: str | None,
+    platform: str,
 ) -> list[str]:
-    """Produce N distinct, natural variations of the seed post.
-
-    When `persona` is set, every variation is written in that author's team voice.
-    """
+    """One gateway call producing exactly n variation bodies (unvalidated length)."""
     system = variations_system(
-        n, tone=tone, length=length, language=language, extra=extra, persona=persona
+        n,
+        tone=tone,
+        length=length,
+        language=language,
+        extra=extra,
+        persona=persona,
+        platform=platform,
     )
-
     data = await _complete_json(
         [
             {"role": "system", "content": system},
@@ -148,6 +163,56 @@ async def generate_variations(
     if len(items) >= n:
         return items[:n]
     return [items[i % len(items)] for i in range(n)]
+
+
+async def generate_variations(
+    seed_content: str,
+    n: int,
+    *,
+    tone: str | None = None,
+    length: str | None = None,
+    language: str | None = None,
+    extra: str | None = None,
+    persona: str | None = None,
+    platform: str = "linkedin",
+) -> list[str]:
+    """Produce N distinct, natural variations of the seed post.
+
+    When `persona` is set, every variation is written in that author's team
+    voice. On X the 280-character limit is enforced: overlong variations are
+    regenerated once, and the job fails (rather than truncating mid-sentence)
+    if the model still cannot fit.
+    """
+    items = await _variation_batch(
+        seed_content,
+        n,
+        tone=tone,
+        length=length,
+        language=language,
+        extra=extra,
+        persona=persona,
+        platform=platform,
+    )
+    overlong = [i for i, v in enumerate(items) if _too_long(v, platform)]
+    if overlong:
+        replacements = await _variation_batch(
+            seed_content,
+            len(overlong),
+            tone=tone,
+            length=length,
+            language=language,
+            extra=extra,
+            persona=persona,
+            platform=platform,
+        )
+        for pos, i in enumerate(overlong):
+            items[i] = replacements[pos]
+        if any(_too_long(v, platform) for v in items):
+            raise GenerationError(
+                "LLM could not produce post variations within X's 280-character "
+                "limit after a retry."
+            )
+    return items
 
 
 def _format_interaction_item(pos: int, item: dict[str, str]) -> str:
@@ -171,12 +236,14 @@ async def _interaction_chunk(
     length: str | None,
     language: str | None,
     extra: str | None,
+    platform: str,
     sem: asyncio.Semaphore,
 ) -> list[str]:
     """Generate texts for one chunk of interaction items, with the quality retry.
 
     Returns the chunk's texts in chunk order. Raises GenerationError if the
-    chunk cannot produce substantive, varied text after one regeneration.
+    chunk cannot produce substantive, varied text (on X: within the character
+    limit) after one regeneration.
     """
     enumerated = "\n".join(
         _format_interaction_item(pos, items[i]) for pos, i in enumerate(chunk_indices)
@@ -188,11 +255,13 @@ async def _interaction_chunk(
         length=length,
         language=language,
         extra=extra,
+        platform=platform,
     )
 
     async with sem:
         # The comment-quality floor: substantive, varied comments only. If the
-        # model returns short or generic praise, regenerate once before failing.
+        # model returns short or generic praise (or an over-limit tweet),
+        # regenerate once before failing.
         for _attempt in range(2):
             data = await _complete_json(
                 [
@@ -210,12 +279,14 @@ async def _interaction_chunk(
             candidate = [t.strip() for t in result.texts]
             if len(candidate) >= len(chunk_indices) and not any(
                 _is_low_quality_comment(candidate[pos])
+                or _too_long(candidate[pos], platform)
                 for pos in range(len(chunk_indices))
             ):
                 return candidate
 
     raise GenerationError(
-        "LLM returned low-quality or too-few interaction texts after a retry."
+        "LLM returned low-quality, too-long, or too-few interaction texts after "
+        "a retry."
     )
 
 
@@ -227,8 +298,9 @@ async def generate_interactions(
     length: str | None = None,
     language: str | None = None,
     extra: str | None = None,
+    platform: str = "linkedin",
 ) -> list[str]:
-    """Produce one interaction text per item (empty string for `like`).
+    """Produce one interaction text per item (empty for `like` and `bookmark`).
 
     `items` is a list of {"action": ..., "angle": ...}. The output is indexed to
     the input order. Text items are split into bounded chunks generated
@@ -238,7 +310,9 @@ async def generate_interactions(
     if not items:
         return []
 
-    text_indices = [i for i, it in enumerate(items) if it.get("action") != "like"]
+    text_indices = [
+        i for i, it in enumerate(items) if it.get("action") not in _TEXTLESS_ACTIONS
+    ]
     if not text_indices:
         return ["" for _ in items]
 
@@ -257,6 +331,7 @@ async def generate_interactions(
                 length=length,
                 language=language,
                 extra=extra,
+                platform=platform,
                 sem=sem,
             )
             for chunk in chunks

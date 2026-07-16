@@ -58,6 +58,63 @@ async def test_create_amplify_rejects_unresolvable_url(client, as_role):
     assert resp.status_code == 422
 
 
+async def test_create_x_amplify_resolves_tweet_id(client, as_role):
+    async with as_role("viewer"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json={
+                "title": "X launch",
+                "type": "amplify",
+                "platform": "x",
+                "seed_url": "https://x.com/someone/status/1790000000000000000?s=20",
+                "seed_content": "x",
+            },
+        )
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["platform"] == "x"
+    assert body["seed_urn"] == "1790000000000000000"
+
+
+async def test_create_x_amplify_rejects_linkedin_url(client, as_role):
+    # A LinkedIn link on an X campaign resolves to no tweet id, so it is caught
+    # at create rather than failing every interaction later.
+    async with as_role("viewer"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json={
+                "title": "X",
+                "type": "amplify",
+                "platform": "x",
+                "seed_url": _SEED_URL,
+                "seed_content": "x",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_create_rejects_unknown_platform(client, as_role):
+    async with as_role("viewer"):
+        resp = await client.post(
+            "/v1/campaigns",
+            json={
+                "title": "M",
+                "type": "amplify",
+                "platform": "mastodon",
+                "seed_url": _SEED_URL,
+                "seed_content": "x",
+            },
+        )
+    assert resp.status_code == 422
+
+
+async def test_campaign_defaults_to_linkedin(client, as_role):
+    async with as_role("viewer"):
+        resp = await client.post("/v1/campaigns", json=amplify())
+    assert resp.status_code == 201
+    assert resp.json()["platform"] == "linkedin"
+
+
 async def test_create_distribute_requires_seed_text(client, as_role):
     async with as_role("editor"):
         resp = await client.post(

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Check, Link2, Loader2, Rocket } from "lucide-react";
 
 import { useAuth } from "@/auth/AuthContext";
+import { LinkedInLogo, XLogo } from "@/components/PlatformLogos";
 import { Wordmark } from "@/components/Wordmark";
 import { apiFetch, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -25,17 +26,25 @@ export function Onboarding() {
   const [selected, setSelected] = useState<string | null>(
     user?.team_id ?? null,
   );
-  // Resume at the right step: a returning (part-onboarded) user skips what they
-  // have already done. team set + LinkedIn connected lands on the agreement.
-  const [step, setStep] = useState<Step>(
-    !user?.team_id ? 1 : !user?.linkedin_status ? 2 : 3,
-  );
+  // Resume at the right step: no team yet lands on step 1, otherwise on the
+  // connect step. Returning from a LinkedIn or X OAuth hop deliberately lands
+  // back on step 2 (never auto-skips to 3) so the person can still connect the
+  // optional X account; they advance to the agreement with Continue.
+  const [step, setStep] = useState<Step>(!user?.team_id ? 1 : 2);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const linkedinConnected = !!user?.linkedin_status;
+  const xConnected = !!user?.x_status;
+
+  // LinkedIn is mandatory: the agreement step is unreachable without it. Step
+  // 2's Continue is disabled too; this guard catches any other path (stale
+  // state, a disconnect in another tab) that would land on step 3 unconnected.
+  useEffect(() => {
+    if (step === 3 && !linkedinConnected) setStep(2);
+  }, [step, linkedinConnected]);
 
   useEffect(() => {
     (async () => {
@@ -75,13 +84,14 @@ export function Onboarding() {
     }
   };
 
-  const connectLinkedIn = async () => {
+  const connect = async (platform: "linkedin" | "x") => {
+    const label = platform === "x" ? "X" : "LinkedIn";
     setConnecting(true);
     setError(null);
     try {
       sessionStorage.setItem(ONBOARDING_RETURN_KEY, "1");
       const { authorize_url } = await apiFetch<{ authorize_url: string }>(
-        "/v1/connections/linkedin/authorize",
+        `/v1/connections/${platform}/authorize`,
       );
       window.location.href = authorize_url;
     } catch (err) {
@@ -89,7 +99,7 @@ export function Onboarding() {
       setError(
         err instanceof ApiError
           ? err.message
-          : "Could not start LinkedIn connect. Please try again.",
+          : `Could not start ${label} connect. Please try again.`,
       );
       setConnecting(false);
     }
@@ -107,7 +117,7 @@ export function Onboarding() {
         <div className="mt-6 flex items-center gap-2 text-xs font-medium uppercase tracking-wide text-muted-ink">
           <span className={cn(step === 1 && "text-ink")}>1. Your team</span>
           <span className="text-border">/</span>
-          <span className={cn(step === 2 && "text-ink")}>2. Connect LinkedIn</span>
+          <span className={cn(step === 2 && "text-ink")}>2. Connect accounts</span>
           <span className="text-border">/</span>
           <span className={cn(step === 3 && "text-ink")}>3. Join in</span>
         </div>
@@ -172,20 +182,34 @@ export function Onboarding() {
               <Link2 className="h-7 w-7 text-clay" />
             </div>
             <h1 className="mt-4 font-serif text-2xl text-ink">
-              Connect your LinkedIn
+              Connect your accounts
             </h1>
             <p className="mt-2 text-sm leading-relaxed text-muted-ink">
-              Super-hype publishes and engages through your own LinkedIn account,
-              so you need to connect it to take part. Nothing ever goes out until
+              Super-hype publishes and engages through your own accounts, so you
+              need to connect LinkedIn to take part. X is optional; connect it
+              too if your team runs campaigns there. Nothing ever goes out until
               you approve it.
             </p>
 
-            {linkedinConnected ? (
-              <div className="mt-6 flex items-center gap-2 rounded-md border border-ok/20 bg-ok/5 px-4 py-3 text-sm font-medium text-ok">
-                <Check className="h-4 w-4" />
-                LinkedIn connected
-              </div>
-            ) : null}
+            <div className="mt-6 space-y-2">
+              <ConnectRow
+                label="LinkedIn"
+                logo={<LinkedInLogo />}
+                logoBg="bg-[#0A66C2]/10"
+                required
+                connected={linkedinConnected}
+                connecting={connecting}
+                onConnect={() => connect("linkedin")}
+              />
+              <ConnectRow
+                label="X (Twitter)"
+                logo={<XLogo />}
+                logoBg="bg-ink/10"
+                connected={xConnected}
+                connecting={connecting}
+                onConnect={() => connect("x")}
+              />
+            </div>
 
             <div className="mt-8 flex items-center gap-3">
               <button
@@ -196,27 +220,18 @@ export function Onboarding() {
                 <ArrowLeft className="h-4 w-4" />
                 Back
               </button>
-              {linkedinConnected ? (
-                <button
-                  onClick={() => setStep(3)}
-                  className="inline-flex items-center gap-2 rounded-md bg-clay px-5 py-2.5 text-sm font-medium text-paper hover:bg-clay-press"
-                >
-                  Continue
-                </button>
-              ) : (
-                <button
-                  onClick={connectLinkedIn}
-                  disabled={connecting}
-                  className="inline-flex items-center gap-2 rounded-md bg-clay px-5 py-2.5 text-sm font-medium text-paper hover:bg-clay-press disabled:opacity-50"
-                >
-                  {connecting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Link2 className="h-4 w-4" />
-                  )}
-                  Connect LinkedIn
-                </button>
-              )}
+              <button
+                onClick={() => setStep(3)}
+                disabled={!linkedinConnected || connecting}
+                title={
+                  linkedinConnected
+                    ? undefined
+                    : "Connect LinkedIn to continue"
+                }
+                className="inline-flex items-center gap-2 rounded-md bg-clay px-5 py-2.5 text-sm font-medium text-paper hover:bg-clay-press disabled:opacity-50"
+              >
+                Continue
+              </button>
             </div>
           </>
         )}
@@ -261,6 +276,63 @@ export function Onboarding() {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// One platform row on the connect step: LinkedIn is required to take part,
+// X is optional and can also be connected later from the Connectors page.
+function ConnectRow({
+  label,
+  logo,
+  logoBg,
+  required = false,
+  connected,
+  connecting,
+  onConnect,
+}: {
+  label: string;
+  logo: React.ReactNode;
+  logoBg: string;
+  required?: boolean;
+  connected: boolean;
+  connecting: boolean;
+  onConnect: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-between rounded-lg border border-border px-4 py-3">
+      <div className="flex items-center gap-3">
+        <span
+          className={`flex h-9 w-9 items-center justify-center rounded-full text-ink ${logoBg}`}
+        >
+          {logo}
+        </span>
+        <div>
+          <p className="text-sm font-medium text-ink">{label}</p>
+          <p className="text-xs text-muted-ink">
+            {required ? "Required" : "Optional, you can connect it later"}
+          </p>
+        </div>
+      </div>
+      {connected ? (
+        <span className="inline-flex items-center gap-1.5 rounded-md bg-ok/10 px-3 py-1.5 text-xs font-medium text-ok">
+          <Check className="h-3.5 w-3.5" />
+          Connected
+        </span>
+      ) : (
+        <button
+          onClick={onConnect}
+          disabled={connecting}
+          className="inline-flex items-center gap-1.5 rounded-md bg-clay px-3 py-1.5 text-xs font-medium text-paper hover:bg-clay-press disabled:opacity-50"
+        >
+          {connecting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Link2 className="h-3.5 w-3.5" />
+          )}
+          Connect
+        </button>
+      )}
     </div>
   );
 }

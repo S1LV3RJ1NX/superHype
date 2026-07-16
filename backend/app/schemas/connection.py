@@ -1,4 +1,4 @@
-"""Pydantic schemas for the LinkedIn connection flow."""
+"""Pydantic schemas for the social connection flows (LinkedIn and X)."""
 
 import uuid
 from datetime import datetime
@@ -10,9 +10,15 @@ class AuthorizeUrlOut(BaseModel):
     authorize_url: str
 
 
-class LinkedInCallbackBody(BaseModel):
+class OAuthCallbackBody(BaseModel):
+    """The {code, state} pair the frontend posts back from an OAuth redirect."""
+
     code: str
     state: str
+
+
+# Kept for existing imports; both platforms post the same callback shape.
+LinkedInCallbackBody = OAuthCallbackBody
 
 
 class ConnectionOut(BaseModel):

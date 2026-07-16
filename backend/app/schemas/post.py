@@ -48,7 +48,7 @@ class PostOut(BaseModel):
         Lets the client merge the assisted like+comment pair into one card
         without knowing the COMMUNITY_MANAGEMENT_ENABLED flag itself.
         """
-        return is_assisted(self.action)
+        return is_assisted(self.action, self.platform)
 
 
 class PostUpdate(BaseModel):
@@ -68,7 +68,7 @@ class Assignment(BaseModel):
     """
 
     user_id: uuid.UUID
-    action: str = Field(pattern="^(post|comment|like|repost_comment)$")
+    action: str = Field(pattern="^(post|comment|like|repost_comment|bookmark)$")
     body: str | None = None
     angle: str | None = None
     target_post_index: int | None = None

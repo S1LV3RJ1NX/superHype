@@ -163,6 +163,17 @@ async def test_429_raises_rate_limit_with_retry_after():
     assert exc.value.retry_after == 30
 
 
+async def test_refresh_invalid_grant_raises_auth_error():
+    # The token endpoint reports a dead refresh token as 400 invalid_grant
+    # (RFC 6749), not 401; it must map to the auth error so the worker marks
+    # the account stale and asks to reconnect.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "invalid_grant"})
+
+    with pytest.raises(LinkedInAuthError):
+        await _provider(handler).refresh(_account())
+
+
 async def test_reshare_uses_reshare_context():
     captured: dict = {}
 

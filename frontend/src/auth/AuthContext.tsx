@@ -19,6 +19,7 @@ export interface AppUser {
   team_id: string | null;
   team_name: string | null;
   linkedin_status: string | null;
+  x_status: string | null;
 }
 
 interface AuthContextValue {

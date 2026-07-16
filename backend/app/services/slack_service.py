@@ -15,12 +15,14 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.platforms import platform_label
 from app.integrations.slack import SlackClient, SlackError
 from app.logger import get_logger
 from app.models.campaign import Campaign
 from app.models.post import Post
 from app.models.slack_identity import SlackIdentity
 from app.models.user import User
+from app.repositories.campaign_repo import campaign_repo
 from app.repositories.post_repo import post_repo
 from app.repositories.slack_identity_repo import slack_identity_repo
 from app.repositories.user_repo import user_repo
@@ -29,14 +31,32 @@ from app.services.approval_service import ApprovalError, ReconnectRequiredError
 
 log = get_logger(__name__)
 
-# What each post row means to the person, in plain language for the DM card.
-_ACTION_LABELS = {
-    "post": "Publish your post",
-    "repost_comment": "Reshare with your comment",
-    "comment": "Comment on a teammate's post",
-    "like": "Like a teammate's post",
-    "self_comment": "Add the link as a comment on your post",
+# What each post row means to the person, in plain language for the DM card,
+# in each platform's own vocabulary (a reshare is a quote post on X, a comment
+# is a reply).
+_ACTION_LABELS: dict[str, dict[str, str]] = {
+    "linkedin": {
+        "post": "Publish your post",
+        "repost_comment": "Reshare with your comment",
+        "comment": "Comment on a teammate's post",
+        "like": "Like a teammate's post",
+        "self_comment": "Add the link as a comment on your post",
+    },
+    "x": {
+        "post": "Publish your post",
+        "repost_comment": "Quote-post with your comment",
+        "comment": "Reply to a teammate's post",
+        "like": "Like a teammate's post",
+        "bookmark": "Bookmark a teammate's post",
+        "self_comment": "Add the link as a reply to your post",
+    },
 }
+
+
+def _action_label(action: str, platform: str) -> str:
+    labels = _ACTION_LABELS.get(platform, _ACTION_LABELS["linkedin"])
+    return labels.get(action, action)
+
 
 # Statuses a person can still act on, per operation. Approve reuses the states
 # approval_service accepts; skip additionally settles an assisted ask in flight.
@@ -188,6 +208,7 @@ def _ask_lines(
     author_names: dict[uuid.UUID, str],
 ) -> list[str]:
     """One bullet per ask: the action, its target post, and a preview of the text."""
+    on_x = campaign.platform == "x"
     lines: list[str] = []
     for post in posts[:_MAX_ASK_LINES]:
         if post.action == "post":
@@ -196,20 +217,26 @@ def _ask_lines(
                 line += f': "{_snippet(post.body)}"'
         elif post.action == "repost_comment":
             target = _target_phrase(post, campaign, target_posts, author_names)
-            line = f"Reshare {target} with your comment"
+            verb = "Quote-post" if on_x else "Reshare"
+            line = f"{verb} {target} with your comment"
             if post.body:
                 line += f': "{_snippet(post.body)}"'
         elif post.action == "comment":
             target = _target_phrase(post, campaign, target_posts, author_names)
-            line = f"Comment on {target}"
+            verb = "Reply to" if on_x else "Comment on"
+            line = f"{verb} {target}"
             if post.body:
                 line += f': "{_snippet(post.body)}"'
         elif post.action == "like":
             line = f"Like {_target_phrase(post, campaign, target_posts, author_names)}"
+        elif post.action == "bookmark":
+            target = _target_phrase(post, campaign, target_posts, author_names)
+            line = f"Bookmark {target}"
         elif post.action == "self_comment":
-            line = "Add the link as a comment on your post"
+            noun = "reply" if on_x else "comment"
+            line = f"Add the link as a {noun} on your post"
         else:
-            line = _ACTION_LABELS.get(post.action, post.action)
+            line = _action_label(post.action, campaign.platform)
         lines.append(f"• {line}")
     extra = len(posts) - _MAX_ASK_LINES
     if extra > 0:
@@ -228,12 +255,12 @@ def _action_counts(posts: list[Post]) -> tuple[list[str], dict[str, int]]:
     return order, counts
 
 
-def _action_options(posts: list[Post]) -> list[dict[str, Any]]:
+def _action_options(posts: list[Post], platform: str) -> list[dict[str, Any]]:
     """Checkbox options (one per distinct action) for the per-action opt-in."""
     order, counts = _action_counts(posts)
     options: list[dict[str, Any]] = []
     for action in order:
-        label = _ACTION_LABELS.get(action, action)
+        label = _action_label(action, platform)
         n = counts[action]
         text = label + (f" (x{n})" if n > 1 else "")
         options.append({"text": {"type": "plain_text", "text": text}, "value": action})
@@ -255,13 +282,14 @@ def _bundle_blocks(
     reshare while still approving the like and comment in one go.
     """
     portal_url = f"{settings.FRONTEND_URL}/app/campaigns/{campaign.id}"
-    options = _action_options(posts)
+    label = platform_label(campaign.platform)
+    options = _action_options(posts, campaign.platform)
     ask_lines = _ask_lines(campaign, posts, target_posts or {}, author_names or {})
-    text = f"You have {len(posts)} LinkedIn action(s) for {campaign.title}"
+    text = f"You have {len(posts)} {label} action(s) for {campaign.title}"
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "Your LinkedIn actions"},
+            "text": {"type": "plain_text", "text": f"Your {label} actions"},
         },
         {
             "type": "section",
@@ -562,8 +590,13 @@ async def notify_schedule_missed(
         )
 
 
-async def notify_reconnect(db: AsyncSession, client: SlackClient, user: User) -> None:
-    """DM a person that their LinkedIn token went stale, with a reconnect link."""
+async def notify_reconnect(
+    db: AsyncSession,
+    client: SlackClient,
+    user: User,
+    platform: str = "linkedin",
+) -> None:
+    """DM a person that their platform token went stale, with a reconnect link."""
     identity = await resolve_identity(db, client, user)
     if identity is None:
         log.info("slack.notify_reconnect.no_identity", user_id=str(user.id))
@@ -571,8 +604,8 @@ async def notify_reconnect(db: AsyncSession, client: SlackClient, user: User) ->
     channel = identity.slack_dm_channel or identity.slack_user_id
     reconnect_url = f"{settings.FRONTEND_URL}/app/connections"
     text = (
-        "Your LinkedIn connection expired, so super-hype cannot publish on your "
-        f"behalf until you reconnect: {reconnect_url}"
+        f"Your {platform_label(platform)} connection expired, so super-hype "
+        f"cannot publish on your behalf until you reconnect: {reconnect_url}"
     )
     try:
         await client.post_message(channel, text=text)
@@ -677,10 +710,12 @@ async def handle_interaction(
                     db, [p.id for p in approve_posts], actor=user
                 )
         except ReconnectRequiredError:
+            campaign = await campaign_repo.get(db, campaign_id)
+            label = platform_label(campaign.platform if campaign else None)
             await _safe_respond(
                 client,
                 response_url,
-                "Your LinkedIn connection needs to be refreshed before we can "
+                f"Your {label} connection needs to be refreshed before we can "
                 f"publish. Reconnect here: {reconnect_url}",
             )
             return

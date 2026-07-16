@@ -72,11 +72,15 @@ def _to_http(exc: ApprovalError) -> HTTPException:
     if isinstance(exc, LaunchRequiredError):
         return HTTPException(409, "Launch the campaign before approving posts.")
     if isinstance(exc, ReconnectRequiredError):
+        # The code keeps its historical name for client compatibility; the
+        # platform field says which connector the client should send the user
+        # through (linkedin or x).
         return HTTPException(
             409,
             detail={
                 "code": "linkedin_reconnect_required",
                 "post_id": str(exc.post_id),
+                "platform": exc.platform,
             },
         )
     if isinstance(exc, MixedCampaignError):

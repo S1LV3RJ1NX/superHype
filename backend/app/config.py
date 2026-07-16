@@ -68,6 +68,19 @@ class Settings(BaseSettings):
     # through the API; no code change is needed.
     COMMUNITY_MANAGEMENT_ENABLED: bool = False
 
+    # X (Twitter). Optional: when the client id is unset the X connector is
+    # hidden and X campaigns cannot publish. OAuth 2.0 PKCE (confidential web
+    # app from console.x.com); scopes include offline.access so the worker can
+    # refresh the ~2h access tokens with the rotating refresh token.
+    X_CLIENT_ID: str | None = None
+    X_CLIENT_SECRET: str | None = None
+    X_API_BASE_URL: str = "https://api.x.com"
+    # X access tokens are refreshed proactively by the worker (offline.access),
+    # so reconnect is only needed when the refresh token itself is dead (the
+    # account is marked stale); a small buffer still guards a token that would
+    # die mid-publish on an account that somehow has no refresh token.
+    X_RECONNECT_BUFFER_HOURS: int = 1
+
     # LLM gateway (OpenAI-compatible).
     LLM_GATEWAY_URL: str
     LLM_API_KEY: str

@@ -385,7 +385,7 @@ async def test_readiness_requires_connect_when_no_account(client, as_role):
         resp = await client.get(f"/v1/campaigns/{cid}/approval-readiness")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["requires_linkedin"] is True
+    assert body["requires_connection"] is True
     assert body["connected"] is False
     assert body["needs_reconnect"] is True
     # One amplify participant expands to like + comment + repost.
@@ -399,7 +399,7 @@ async def test_readiness_clear_with_healthy_account(client, as_role, db):
         resp = await client.get(f"/v1/campaigns/{cid}/approval-readiness")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["requires_linkedin"] is True
+    assert body["requires_connection"] is True
     assert body["connected"] is True
     assert body["needs_reconnect"] is False
 
@@ -435,8 +435,79 @@ async def test_readiness_assisted_only_needs_no_linkedin(client, as_role, db):
         await db.commit()
         resp = await client.get(f"/v1/campaigns/{cid}/approval-readiness")
     body = resp.json()
-    assert body["requires_linkedin"] is False
+    assert body["requires_connection"] is False
     assert body["needs_reconnect"] is False
+
+
+def _x_amplify_payload() -> dict:
+    return {
+        "title": "X",
+        "type": "amplify",
+        "platform": "x",
+        "seed_url": "https://x.com/someone/status/1790000000000000000",
+        "seed_content": "x",
+    }
+
+
+async def _connect_x(db, user_id, *, expires_in_hours=2):
+    acct = SocialAccount(
+        user_id=user_id,
+        platform="x",
+        external_urn="9000001",
+        display_name="Tester",
+        access_token_enc=encrypt("x-tok"),
+        refresh_token_enc=encrypt("x-refresh"),
+        scopes=["tweet.write"],
+        expires_at=datetime.now(UTC) + timedelta(hours=expires_in_hours),
+        status="active",
+    )
+    db.add(acct)
+    await db.commit()
+    return acct
+
+
+async def test_readiness_x_campaign_requires_x_connection(client, as_role, db):
+    # X actions are fully automated (never assisted), so even a plain comment
+    # needs a live token; a LinkedIn-only connection does not count.
+    async with as_role("editor") as user:
+        created = await client.post("/v1/campaigns", json=_x_amplify_payload())
+        assert created.status_code == 201, created.text
+        cid = created.json()["id"]
+        await client.post(
+            f"/v1/campaigns/{cid}/plan", json={"participant_ids": [str(user.id)]}
+        )
+        await _connect(db, user.id)  # LinkedIn only
+        resp = await client.get(f"/v1/campaigns/{cid}/approval-readiness")
+    body = resp.json()
+    assert body["platform"] == "x"
+    assert body["requires_connection"] is True
+    assert body["connected"] is False
+    assert body["needs_reconnect"] is True
+
+
+async def test_readiness_x_clear_with_refreshable_token(client, as_role, db):
+    # An X account holds a rotating refresh token, so a short-lived (~2h) access
+    # token never demands a manual reconnect: the worker refreshes it itself.
+    async with as_role("editor") as user:
+        created = await client.post("/v1/campaigns", json=_x_amplify_payload())
+        cid = created.json()["id"]
+        await client.post(
+            f"/v1/campaigns/{cid}/plan", json={"participant_ids": [str(user.id)]}
+        )
+        await _connect_x(db, user.id)
+        resp = await client.get(f"/v1/campaigns/{cid}/approval-readiness")
+    body = resp.json()
+    assert body["platform"] == "x"
+    assert body["connected"] is True
+    assert body["needs_reconnect"] is False
+
+
+async def test_readiness_linkedin_campaign_reports_platform(client, as_role, db):
+    async with as_role("editor") as user:
+        cid, _ = await _amplify_with_post(client, user, action="repost_comment")
+        await _connect(db, user.id)
+        resp = await client.get(f"/v1/campaigns/{cid}/approval-readiness")
+    assert resp.json()["platform"] == "linkedin"
 
 
 async def test_missing_post_404(client, as_role):

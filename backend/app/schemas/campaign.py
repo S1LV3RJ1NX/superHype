@@ -24,6 +24,7 @@ class CampaignOut(BaseModel):
     id: uuid.UUID
     title: str
     type: str
+    platform: str
     raw_brief: str | None
     seed_url: str | None
     seed_urn: str | None
@@ -61,16 +62,18 @@ class CampaignDetail(CampaignOut):
 
 
 class ApprovalReadiness(BaseModel):
-    """Pre-flight LinkedIn check for the current user on one campaign.
+    """Pre-flight connection check for the current user on one campaign.
 
     Answers "can I approve my posts here, or do I need to (re)connect first?" so
     the UI can prompt for re-consent before the person starts approving instead
-    of failing mid-flow. requires_linkedin is false when the user's pending posts
-    are all assisted-manual (comments or likes done by hand), which need no token.
+    of failing mid-flow. ``platform`` names the campaign's platform;
+    requires_connection is false when the user's pending posts are all
+    assisted-manual (comments or likes done by hand), which need no token.
     """
 
     pending_count: int
-    requires_linkedin: bool
+    platform: str
+    requires_connection: bool
     connected: bool
     needs_reconnect: bool
 
@@ -78,6 +81,7 @@ class ApprovalReadiness(BaseModel):
 class CampaignCreate(BaseModel):
     title: str
     type: str = Field(pattern="^(amplify|distribute)$")
+    platform: str = Field(default="linkedin", pattern="^(linkedin|x)$")
     raw_brief: str | None = None
     seed_url: str | None = None
     seed_content: str | None = None

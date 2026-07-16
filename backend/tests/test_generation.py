@@ -157,3 +157,77 @@ async def test_generate_interactions_bad_contract_raises():
         pytest.raises(GenerationError, match="does not match"),
     ):
         await generate_interactions("target", items)
+
+
+# --- X (Twitter) platform rules -------------------------------------------
+
+_LONG = "word " * 80  # ~400 chars, over X's 280 limit
+_SHORT_TWEET = "Cold starts under eight seconds finally make scale to zero real."
+
+
+async def test_x_variations_regenerate_overlong_then_succeed():
+    client = AsyncMock()
+    client.chat.completions.create = AsyncMock(
+        side_effect=[
+            _mock_completion(json.dumps({"variations": [_LONG, _SHORT_TWEET]})),
+            # The retry only regenerates the overlong slots (one here).
+            _mock_completion(json.dumps({"variations": ["short and sweet"]})),
+        ]
+    )
+    with patch("app.services.generation_service.get_llm_client", return_value=client):
+        out = await generate_variations("seed", 2, platform="x")
+    assert out == ["short and sweet", _SHORT_TWEET]
+    assert client.chat.completions.create.await_count == 2
+
+
+async def test_x_variations_fail_when_still_overlong_after_retry():
+    payload = json.dumps({"variations": [_LONG]})
+    with (
+        patch(
+            "app.services.generation_service.get_llm_client",
+            return_value=_client(payload),
+        ),
+        pytest.raises(GenerationError, match="280"),
+    ):
+        await generate_variations("seed", 1, platform="x")
+
+
+async def test_linkedin_variations_ignore_x_limit():
+    # The 280-char cap is X-only; a long LinkedIn post passes through untouched.
+    payload = json.dumps({"variations": [_LONG.strip()]})
+    with patch(
+        "app.services.generation_service.get_llm_client", return_value=_client(payload)
+    ):
+        out = await generate_variations("seed", 1, platform="linkedin")
+    assert out == [_LONG.strip()]
+
+
+async def test_x_interactions_reject_overlong_reply_after_retry():
+    items = [{"action": "comment", "angle": "x"}]
+    payload = json.dumps({"texts": [_LONG]})
+    with (
+        patch(
+            "app.services.generation_service.get_llm_client",
+            return_value=_client(payload),
+        ),
+        pytest.raises(GenerationError, match="low-quality, too-long"),
+    ):
+        await generate_interactions("target", items, platform="x")
+
+
+async def test_x_interactions_bookmark_is_textless():
+    items = [
+        {"action": "comment", "angle": "supportive"},
+        {"action": "bookmark"},
+        {"action": "like"},
+    ]
+    reply = (
+        "This matches what we saw building inference infra, the idle cost is the "
+        "real leak here."
+    )
+    payload = json.dumps({"texts": [reply]})
+    with patch(
+        "app.services.generation_service.get_llm_client", return_value=_client(payload)
+    ):
+        out = await generate_interactions("target", items, platform="x")
+    assert out == [reply, "", ""]

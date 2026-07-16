@@ -2,7 +2,7 @@
 # Usage: make <target>   (run `make help` to list everything)
 
 .DEFAULT_GOAL := help
-.PHONY: help install server worker flush reset migrate seed test lint format
+.PHONY: help install server worker flush reset migrate seed test lint format tunnel
 
 help: ## List available commands
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | \
@@ -38,5 +38,5 @@ lint: ## Lint (ruff) and type-check (mypy)
 format: ## Format with ruff
 	uv run ruff format .
 
-tunnel: ## Create a tunnel to the backend
-	cloudflared tunnel --url http://localhost:8000
+tunnel: ## Expose the local API at https://superhype-local.prathameshsaraf.com (Slack Request URL)
+	cloudflared tunnel run --url http://localhost:8000 superhype-local

@@ -37,6 +37,17 @@ class DummyProvider:
     async def like(self, acct: SocialAccount, target_urn: str) -> None:
         return None
 
+    async def bookmark(self, acct: SocialAccount, target_urn: str) -> None:
+        return None
+
+    async def reshare(
+        self, acct: SocialAccount, target_urn: str, commentary: str = ""
+    ) -> str:
+        return "urn:li:share:2"
+
+    async def delete_post(self, acct: SocialAccount, urn: str) -> None:
+        return None
+
     async def refresh(self, acct: SocialAccount) -> object:
         return {}
 

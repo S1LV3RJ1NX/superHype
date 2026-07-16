@@ -209,6 +209,7 @@ export function CampaignWizard({
 
           <PlanBuilder
             campaignType={type}
+            platform={fields.platform}
             roster={roster}
             isEditor={isEditor}
             busy={submitting}

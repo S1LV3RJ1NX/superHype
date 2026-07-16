@@ -17,6 +17,33 @@ interface UserRecord {
   team_id: string | null;
   team_name: string | null;
   linkedin_status: string | null;
+  x_status: string | null;
+}
+
+// Shared connection-status cell for the LinkedIn and X columns.
+function ConnectionCell({ status }: { status: string | null }) {
+  if (status === "active") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-sm text-ok">
+        <span className="h-2 w-2 rounded-full bg-ok" />
+        Connected
+      </span>
+    );
+  }
+  if (status === "stale") {
+    return (
+      <span className="inline-flex items-center gap-1.5 text-sm text-pending">
+        <span className="h-2 w-2 rounded-full bg-pending" />
+        Stale
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1.5 text-sm text-muted-ink">
+      <Link2 className="h-3.5 w-3.5" />
+      Not connected
+    </span>
+  );
 }
 
 interface UsersPage {
@@ -127,6 +154,7 @@ export function Users() {
                 <th className="px-4 py-3">User</th>
                 <th className="px-4 py-3">Team</th>
                 <th className="px-4 py-3">LinkedIn</th>
+                <th className="px-4 py-3">X</th>
                 <th className="px-4 py-3">Role</th>
               </tr>
             </thead>
@@ -134,7 +162,7 @@ export function Users() {
               {users.length === 0 && !loading && (
                 <tr>
                   <td
-                    colSpan={4}
+                    colSpan={5}
                     className="px-4 py-8 text-center text-sm text-muted-ink"
                   >
                     No users match your search.
@@ -181,22 +209,10 @@ export function Users() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      {u.linkedin_status === "active" ? (
-                        <span className="inline-flex items-center gap-1.5 text-sm text-ok">
-                          <span className="h-2 w-2 rounded-full bg-ok" />
-                          Connected
-                        </span>
-                      ) : u.linkedin_status === "stale" ? (
-                        <span className="inline-flex items-center gap-1.5 text-sm text-pending">
-                          <span className="h-2 w-2 rounded-full bg-pending" />
-                          Stale
-                        </span>
-                      ) : (
-                        <span className="inline-flex items-center gap-1.5 text-sm text-muted-ink">
-                          <Link2 className="h-3.5 w-3.5" />
-                          Not connected
-                        </span>
-                      )}
+                      <ConnectionCell status={u.linkedin_status} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <ConnectionCell status={u.x_status} />
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2">

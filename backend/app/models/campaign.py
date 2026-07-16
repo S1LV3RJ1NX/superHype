@@ -30,6 +30,12 @@ class Campaign(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     type: Mapped[str] = mapped_column(
         String(16), nullable=False, default="amplify", server_default="amplify"
     )
+    # The single platform this campaign runs on (linkedin | x). One platform per
+    # campaign: every post row it plans is stamped with it, and readiness,
+    # approval gates, and worker dispatch all key off it. Locked after creation.
+    platform: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="linkedin", server_default="linkedin"
+    )
     # Optional internal notes / brief about the campaign.
     raw_brief: Mapped[str | None] = mapped_column(Text)
 
