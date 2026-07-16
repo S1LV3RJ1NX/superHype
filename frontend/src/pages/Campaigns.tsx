@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { campaignStatusLabel } from "@/components/CampaignFields";
 import { DeleteCampaignDialog } from "@/components/DeleteCampaignDialog";
 import { ApiError, apiFetch } from "@/lib/api";
+import { platformLabel } from "@/lib/platform";
 import { cn } from "@/lib/utils";
 
 interface Campaign {
@@ -18,11 +19,6 @@ interface Campaign {
   created_at: string;
   created_by: string | null;
 }
-
-const PLATFORM_LABEL: Record<string, string> = {
-  linkedin: "LinkedIn",
-  x: "X",
-};
 
 const DELETABLE_STATUSES = ["draft", "review", "failed"];
 const EDITABLE_STATUSES = ["draft", "review"];
@@ -167,7 +163,7 @@ export function Campaigns() {
                   >
                     <td className="px-4 py-3 font-medium text-ink">{c.title}</td>
                     <td className="px-4 py-3 text-muted-ink">
-                      {PLATFORM_LABEL[c.platform] ?? "LinkedIn"}
+                      {platformLabel(c.platform)}
                     </td>
                     <td className="px-4 py-3 capitalize text-muted-ink">{c.type}</td>
                     <td className="px-4 py-3">
