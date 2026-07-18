@@ -35,7 +35,7 @@ const AMPLIFY_ACTIONS_BY_PLATFORM = {
     { key: "repost_comment", label: "Repost" },
   ],
   x: [
-    { key: "like", label: "Like" },
+    { key: "like", label: "Like + bookmark" },
     { key: "comment", label: "Reply" },
     { key: "repost_comment", label: "Quote" },
   ],
@@ -73,6 +73,9 @@ export function PlanBuilder({
   const amplifyActions = onX
     ? AMPLIFY_ACTIONS_BY_PLATFORM.x
     : AMPLIFY_ACTIONS_BY_PLATFORM.linkedin;
+  // X pairs a bookmark with every like server-side, so its "Like + bookmark"
+  // header needs a wider column than the single-word actions to stay on one line.
+  const colWidth = (key: string) => (onX && key === "like" ? "w-28" : "w-14");
 
   // Distribute tracks membership only (actions are derived from the type).
   const [selected, setSelected] = useState<Set<string>>(
@@ -270,10 +273,10 @@ export function PlanBuilder({
       <div className="mb-3 rounded-md border border-clay/30 bg-clay/10 px-3 py-2 text-xs font-medium text-clay">
         {isDistribute
           ? onX
-            ? "Everyone you pick posts their own tweet (from the seed, in their team voice), plus the self reply if set. They also like, bookmark, and reply to each other's tweets, founders' tweets first."
+            ? "Everyone you pick posts their own tweet (from the seed, in their team voice), plus the self reply if set. They also like, bookmark, and reply to each other's tweets, founders' tweets first. On X, replies and quotes are done by hand from a ready-to-paste prompt; likes and bookmarks are automatic."
             : "Everyone you pick posts their own version (from the seed, in their team voice), plus the self comment if set. They also like and comment on each other's posts, founders' posts first."
           : onX
-            ? "Pick who takes part and which actions each does. New people default to like (with a bookmark), reply, and quote post; untick any to drop it for that person."
+            ? "Pick who takes part and which actions each does. New people default to like (with a bookmark), reply, and quote post; untick any to drop it for that person. On X, replies and quotes are done by hand from a ready-to-paste prompt; likes and bookmarks are automatic."
             : "Pick who takes part and which actions each does. New people default to like, comment, and repost; untick any to drop it for that person."}
       </div>
 
@@ -380,10 +383,13 @@ export function PlanBuilder({
                 return (
                   <label
                     key={a.key}
-                    className="flex w-14 flex-col items-center gap-0.5"
+                    className={cn(
+                      "flex flex-col items-center gap-0.5",
+                      colWidth(a.key),
+                    )}
                     title={`Toggle ${a.label} for everyone listed`}
                   >
-                    <span>{a.label}</span>
+                    <span className="whitespace-nowrap">{a.label}</span>
                     <input
                       type="checkbox"
                       checked={all}
@@ -459,7 +465,10 @@ export function PlanBuilder({
                   {amplifyActions.map((a) => (
                     <span
                       key={a.key}
-                      className="flex w-14 items-center justify-center"
+                      className={cn(
+                        "flex items-center justify-center",
+                        colWidth(a.key),
+                      )}
                     >
                       <input
                         type="checkbox"

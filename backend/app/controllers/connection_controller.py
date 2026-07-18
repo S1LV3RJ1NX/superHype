@@ -164,6 +164,28 @@ async def _resume_pending_post(
     return post
 
 
+async def _refire_held_notifications(
+    db: AsyncSession, user: User, platform: str
+) -> None:
+    """After a reconnect, fire the approve cards held while the token was stale.
+
+    ``notify_participant`` holds (does not schedule or DM) a person's actions when
+    their token needs re-consent, leaving those posts pending. Now that the
+    account is live again, re-enqueue notify for each campaign where they still
+    hold pending posts on this platform; the job schedules them and sends the
+    card. The notify job guards on campaign status, so a paused or reset campaign
+    is skipped, and it is idempotent, so a later staggered notify is a no-op.
+    """
+    pending = await post_repo.list_pending_for_user(db, user.id)
+    campaign_ids = {
+        p.campaign_id
+        for p in pending
+        if p.status == "pending" and p.platform == platform
+    }
+    for campaign_id in campaign_ids:
+        await queue.enqueue_job("notify_participant", str(campaign_id), str(user.id))
+
+
 async def complete_linkedin(
     db: AsyncSession,
     user: User,
@@ -208,6 +230,9 @@ async def complete_linkedin(
 
     resumed_post = await _resume_pending_post(db, user, account, resume_post_id)
     await db.commit()
+
+    # Fire any approve cards we held while this connection was stale.
+    await _refire_held_notifications(db, user, "linkedin")
 
     result = ConnectionOut.model_validate(account)
     if resumed_post is not None:
@@ -274,6 +299,9 @@ async def complete_x(
 
     resumed_post = await _resume_pending_post(db, user, account, resume_post_id)
     await db.commit()
+
+    # Fire any approve cards we held while this connection was stale.
+    await _refire_held_notifications(db, user, "x")
 
     result = ConnectionOut.model_validate(account)
     if resumed_post is not None:

@@ -402,10 +402,20 @@ def _target_key(post: Post) -> str:
     return f"e:{post.engagement_url or post.id}"
 
 
-def _group_label(actions: set[str]) -> str:
+def _group_label(actions: set[str], platform: str = "linkedin") -> str:
     """Human label for one grouped target, combining like + comment when both."""
     if "self_comment" in actions:
         return "Add your link as a comment on your post"
+    if platform == "x":
+        # On X only reply and quote are assisted (likes and bookmarks are
+        # automated), and both can target the same post, so combine them.
+        if "comment" in actions and "repost_comment" in actions:
+            return "Reply to and quote this post"
+        if "repost_comment" in actions:
+            return "Quote this post with your comment"
+        if "comment" in actions:
+            return "Reply to this post"
+        return "Engage with this post"
     if "like" in actions and "comment" in actions:
         return "Like and comment on this teammate's post"
     if "comment" in actions:
@@ -434,18 +444,24 @@ def _engagement_blocks(
     for post in posts:
         groups.setdefault(_target_key(post), []).append(post)
 
-    text = f"You have {len(groups)} LinkedIn engagement(s) to do for {campaign.title}"
+    label = platform_label(campaign.platform)
+    header = (
+        "Time to reply and quote"
+        if campaign.platform == "x"
+        else "Time to comment and like"
+    )
+    text = f"You have {len(groups)} {label} engagement(s) to do for {campaign.title}"
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
-            "text": {"type": "plain_text", "text": "Time to comment and like"},
+            "text": {"type": "plain_text", "text": header},
         },
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
                 "text": (
-                    f"*{campaign.title}*\nDo these on LinkedIn, then mark them done "
+                    f"*{campaign.title}*\nDo these on {label}, then mark them done "
                     "here:"
                 ),
             },
@@ -454,18 +470,18 @@ def _engagement_blocks(
     comment_texts: list[str] = []
     for group in groups.values():
         actions = {p.action for p in group}
-        line = f"*{_group_label(actions)}*"
+        line = f"*{_group_label(actions, campaign.platform)}*"
         url = next((p.engagement_url for p in group if p.engagement_url), None)
         if url:
             line += f" - <{url}|open the post>"
-        # The comment text (from the comment or self-comment in the group) is not
-        # inlined here: it is sent as its own message (below) so it copies cleanly
-        # on both mobile and desktop. The card just points to that message.
+        # The comment text (from the comment, self-comment, or X quote in the
+        # group) is not inlined here: it is sent as its own message (below) so it
+        # copies cleanly on both mobile and desktop. The card just points to it.
         body = next(
             (
                 p.body
                 for p in group
-                if p.action in ("comment", "self_comment") and p.body
+                if p.action in ("comment", "self_comment", "repost_comment") and p.body
             ),
             None,
         )

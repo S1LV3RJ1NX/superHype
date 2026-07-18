@@ -1527,6 +1527,107 @@ async def test_notify_participant_schedules_and_dms(db, env, monkeypatch):
     assert len(notify_participant.await_args.args[4]) == 2  # the two posts
 
 
+async def _x_acct_status(db, user, *, status="active") -> SocialAccount:
+    acct = SocialAccount(
+        user_id=user.id,
+        platform="x",
+        external_urn="123",
+        display_name="X",
+        access_token_enc=encrypt("tok"),
+        refresh_token_enc=encrypt("r"),
+        scopes=["tweet.write"],
+        status=status,
+    )
+    db.add(acct)
+    await db.flush()
+    return acct
+
+
+async def _x_amplify_like(db, user):
+    c = Campaign(title="C", type="amplify", platform="x", status="publishing")
+    db.add(c)
+    await db.flush()
+    db.add(
+        Post(
+            campaign_id=c.id,
+            user_id=user.id,
+            platform="x",
+            action="like",
+            status="pending",
+            idempotency_key=uuid.uuid4().hex,
+        )
+    )
+    await db.commit()
+    return c
+
+
+async def test_notify_participant_holds_card_when_x_not_connected(db, env, monkeypatch):
+    """An unconnected X participant gets a reconnect DM, not an approve card, and
+    their posts stay pending so a later reconnect can re-fire the card."""
+    import app.services.slack_service as slack_mod
+
+    fake = _FakeSlackClient()
+    monkeypatch.setattr(jobs_mod, "build_slack_client", lambda: fake)
+    notify_participant = AsyncMock()
+    notify_reconnect = AsyncMock()
+    monkeypatch.setattr(slack_mod, "notify_participant", notify_participant)
+    monkeypatch.setattr(slack_mod, "notify_reconnect", notify_reconnect)
+
+    user = await _user(db)
+    c = await _x_amplify_like(db, user)  # no X account for this user
+
+    await jobs_mod.notify_participant(env["ctx"], str(c.id), str(user.id))
+
+    assert notify_reconnect.await_count == 1
+    assert notify_participant.await_count == 0
+    async with env["maker"]() as s:
+        rows = (await s.execute(select(Post))).scalars().all()
+        assert {r.status for r in rows} == {"pending"}
+
+
+async def test_notify_participant_holds_card_when_x_stale(db, env, monkeypatch):
+    import app.services.slack_service as slack_mod
+
+    fake = _FakeSlackClient()
+    monkeypatch.setattr(jobs_mod, "build_slack_client", lambda: fake)
+    notify_participant = AsyncMock()
+    notify_reconnect = AsyncMock()
+    monkeypatch.setattr(slack_mod, "notify_participant", notify_participant)
+    monkeypatch.setattr(slack_mod, "notify_reconnect", notify_reconnect)
+
+    user = await _user(db)
+    await _x_acct_status(db, user, status="stale")
+    c = await _x_amplify_like(db, user)
+
+    await jobs_mod.notify_participant(env["ctx"], str(c.id), str(user.id))
+
+    assert notify_reconnect.await_count == 1
+    assert notify_participant.await_count == 0
+
+
+async def test_notify_participant_fires_when_x_connected(db, env, monkeypatch):
+    import app.services.slack_service as slack_mod
+
+    fake = _FakeSlackClient()
+    monkeypatch.setattr(jobs_mod, "build_slack_client", lambda: fake)
+    notify_participant = AsyncMock()
+    notify_reconnect = AsyncMock()
+    monkeypatch.setattr(slack_mod, "notify_participant", notify_participant)
+    monkeypatch.setattr(slack_mod, "notify_reconnect", notify_reconnect)
+
+    user = await _user(db)
+    await _x_acct_status(db, user, status="active")
+    c = await _x_amplify_like(db, user)
+
+    await jobs_mod.notify_participant(env["ctx"], str(c.id), str(user.id))
+
+    assert notify_reconnect.await_count == 0
+    assert notify_participant.await_count == 1
+    async with env["maker"]() as s:
+        rows = (await s.execute(select(Post))).scalars().all()
+        assert {r.status for r in rows} == {"scheduled"}
+
+
 async def test_handle_slack_interaction_job_delegates(db, env, monkeypatch):
     import app.services.slack_service as slack_mod
 
@@ -1579,10 +1680,10 @@ async def _x_account(db, user, *, expires_at=None) -> SocialAccount:
     return acct
 
 
-async def test_publish_x_comment_automated_despite_cm_disabled(db, env):
-    # X comments (replies) always go through the API: the assisted-manual mode
-    # is a LinkedIn-only workaround, so with COMMUNITY_MANAGEMENT_ENABLED off
-    # (the suite default) an X reply still calls the provider.
+async def test_publish_x_comment_assisted(db, env):
+    # X replies to a post the member did not author are blocked by the API, so a
+    # comment runs assisted-manual: the worker resolves the target, sets
+    # action_required + a tweet deep link, and never calls the provider.
     user = await _user(db)
     acct = await _x_account(db, user)
     c = Campaign(title="C", type="amplify", platform="x", status="publishing")
@@ -1604,10 +1705,43 @@ async def test_publish_x_comment_automated_despite_cm_disabled(db, env):
 
     await jobs_mod.publish_post(env["ctx"], str(p.id))
 
-    assert ("comment", "999", "nice one") in env["provider"].calls
+    assert not any(ci[0] == "comment" for ci in env["provider"].calls)
     async with env["maker"]() as s:
         rp = await s.get(Post, p.id)
-        assert rp.status == "published"
+        assert rp.status == "action_required"
+        assert rp.engagement_url == "https://x.com/i/web/status/999"
+
+
+async def test_publish_x_quote_assisted(db, env):
+    # A quote post (repost_comment) of another member's tweet is likewise blocked
+    # by the API, so it runs assisted-manual with the quote commentary handed over
+    # to paste and no provider call.
+    user = await _user(db)
+    acct = await _x_account(db, user)
+    c = Campaign(title="C", type="amplify", platform="x", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        platform="x",
+        action="repost_comment",
+        body="worth a read",
+        status="approved",
+        target_external_id="999",
+        idempotency_key="kx-quote",
+    )
+    db.add(p)
+    await db.commit()
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+
+    assert not any(ci[0] in ("reshare", "publish") for ci in env["provider"].calls)
+    async with env["maker"]() as s:
+        rp = await s.get(Post, p.id)
+        assert rp.status == "action_required"
+        assert rp.engagement_url == "https://x.com/i/web/status/999"
 
 
 async def test_publish_x_bookmark_dispatches(db, env):
@@ -1647,8 +1781,7 @@ async def test_publish_x_without_account_names_platform(db, env):
         user_id=user.id,
         social_account_id=None,
         platform="x",
-        action="repost_comment",
-        body="take",
+        action="like",
         status="approved",
         target_external_id="999",
         idempotency_key="kx3",

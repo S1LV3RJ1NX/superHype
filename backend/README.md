@@ -30,7 +30,7 @@ to obtain each secret):
 | `DATABASE_URL` | async Postgres URL, e.g. `postgresql+asyncpg://user:pass@host:5432/super-hype` |
 | `REDIS_URL` | Redis URL including the db index, e.g. `redis://:pass@host:6379/3` |
 | `JWT_SECRET` | random 50+ char string |
-| `TOKEN_ENCRYPTION_KEY` | Fernet key for encrypting LinkedIn tokens |
+| `TOKEN_ENCRYPTION_KEY` | Fernet key for encrypting LinkedIn and X tokens |
 | `COMPANY_EMAIL_DOMAIN` | the domain allowed to sign in |
 | `BOOTSTRAP_ADMIN_EMAILS` | comma-separated admin emails seeded as admins |
 
@@ -91,7 +91,7 @@ app/
   repositories/    all DB access; one singleton per aggregate
   controllers/     per-resource request handling + authorization
   views/           FastAPI routers (thin)
-  providers/       LinkedIn provider
+  providers/       platform providers (base Protocol, LinkedIn, X)
   integrations/    LLM gateway, Slack
   storage/         AssetStore interface + Postgres-backed image storage
   workers/         ARQ app + jobs (queue, generation, publishing)

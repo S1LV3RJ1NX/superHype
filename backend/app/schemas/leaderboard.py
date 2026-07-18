@@ -13,6 +13,7 @@ class LeaderboardEntry(BaseModel):
     avatar_url: str | None
     team_name: str | None
     likes: int
+    bookmarks: int
     comments: int
     reposts: int
     direct_posts: int

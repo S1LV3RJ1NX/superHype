@@ -1,6 +1,6 @@
 # SETUP.md: getting super-hype running
 
-Step-by-step setup for local development and the three external apps you must register: Google (login), LinkedIn (posting), and Slack (approvals).
+Step-by-step setup for local development and the external apps you register: Google (login), LinkedIn (posting), X (optional second platform), and Slack (approvals).
 
 ---
 
@@ -11,6 +11,7 @@ Step-by-step setup for local development and the three external apps you must re
 - Docker and docker-compose (for Postgres and Redis, or run them natively).
 - A LinkedIn Company Page you administer (required to create the LinkedIn app, even though v1 posts to personal profiles only).
 - A Google Workspace for your company domain (so login can be restricted to it).
+- Optional: an X (Twitter) developer account, if you want X campaigns (section 4). Skip it and super-hype runs LinkedIn-only; the X connector stays hidden.
 
 ---
 
@@ -80,7 +81,51 @@ actions you want.
 
 ---
 
-## 4. Slack app (approvals and reconnect)
+## 4. X (Twitter) app (optional second platform)
+
+X is an optional second platform. A campaign targets one platform (LinkedIn or
+X); there is no cross-posting. Leave `X_CLIENT_ID` empty and the X connector is
+hidden, X campaigns cannot be created, and everything else runs unchanged. When
+configured, X differs from LinkedIn in two ways worth knowing up front: every
+action (tweet, quote post, reply, like, bookmark) is fully automated through the
+API with no assisted-manual step, and access tokens are short-lived (~2 hours)
+but auto-refreshed by the worker, so members rarely re-consent.
+
+**Set up the app:**
+
+1. Go to the X Developer Portal (`console.x.com`), join the Developer Program,
+   and create a Project, then an App inside it. The free tier allows writes but
+   is heavily rate-limited; Basic is the tier that fits real campaign volume.
+2. Open the app's **User authentication settings** and set it up:
+   - **App type: Web App, Automated App or Bot** (a confidential client, so you
+     get a Client Secret). Do not pick a native/public client type; it has no
+     secret and the code expects one.
+   - **App permissions: Read and write** (plus the like and bookmark scopes;
+     see step 4).
+   - **Type of App: OAuth 2.0.**
+3. Add the **Callback URI / Redirect URL**. It must equal `FRONTEND_URL` +
+   `/connections/x/callback`:
+   ```
+   http://localhost:5173/connections/x/callback
+   https://app.yourcompany.com/connections/x/callback
+   ```
+   Set a Website URL too (any valid URL, for example your repo or site).
+4. The app requests these OAuth 2.0 scopes (set in code, no portal action beyond
+   enabling read and write): `tweet.read`, `tweet.write`, `users.read`,
+   `like.write`, `bookmark.write`, `media.write`, and `offline.access`.
+   `offline.access` is what grants the rotating refresh token the worker uses to
+   keep the short-lived access token alive.
+5. Copy the **OAuth 2.0 Client ID** and **Client Secret** (not the OAuth 1.0a
+   API Key / Secret and not the Bearer Token, which this flow does not use) into
+   `X_CLIENT_ID` and `X_CLIENT_SECRET`, then restart the API.
+
+Because Slack cannot reach `localhost`, X's callback goes to the frontend (like
+Google and LinkedIn), so a tunnel is not required for the connect flow itself;
+you only need one for Slack interactivity (section 5).
+
+---
+
+## 5. Slack app (approvals and reconnect)
 
 1. Go to the Slack API site, **Create New App -> From scratch**, name it and pick your workspace.
 2. **OAuth and Permissions -> Bot Token Scopes**, add: `chat:write`, `im:write`, `users:read`, `users:read.email` (to map company emails to Slack user ids), and `commands` if you add slash commands later.
@@ -101,7 +146,7 @@ Slack is optional and strictly additive. The web app exposes the same approve, e
 
 ---
 
-## 5. Environment
+## 6. Environment
 
 Generation runs through the OpenAI SDK pointed at your LLM gateway, so there is no separate provider account to create: set `LLM_GATEWAY_URL` to the gateway's OpenAI-compatible base URL, `LLM_API_KEY` to its key, and `LLM_MODEL_NAME` to the model the gateway should route to.
 
@@ -126,6 +171,9 @@ LINKEDIN_CLIENT_ID=
 LINKEDIN_CLIENT_SECRET=
 LINKEDIN_API_VERSION=202606
 
+X_CLIENT_ID=                         # OAuth 2.0 Client ID; leave empty to hide the X connector
+X_CLIENT_SECRET=                     # OAuth 2.0 Client Secret
+
 LLM_GATEWAY_URL=                     # OpenAI-compatible base URL of your LLM gateway
 LLM_API_KEY=
 LLM_MODEL_NAME=                      # the model the gateway should route to
@@ -139,7 +187,7 @@ The frontend needs only `frontend/.env` with `VITE_API_BASE_URL=http://localhost
 
 ---
 
-## 6. Run it locally
+## 7. Run it locally
 
 The fast path is docker-compose for Postgres and Redis, then the app and worker with uv and the frontend with pnpm.
 
@@ -167,20 +215,20 @@ The `backend/Makefile` wraps the common commands (`make server`, `make worker`,
 
 ---
 
-## 7. First run
+## 8. First run
 
 1. Open the frontend and choose **Continue with Google**. Sign in with an email listed in `BOOTSTRAP_ADMIN_EMAILS`; you are created as an admin.
 2. Have teammates sign in once with their company Google accounts. First sign-in runs a short onboarding (agree to participate, pick a team); each person is created as a viewer, though members of certain teams (for example Founders, GTM) are auto-granted the editor role.
 3. As an admin, open **Users** and raise anyone else who will run campaigns to editor (search, then change their role). Roles are cumulative: viewer, editor, admin.
-4. Every participant opens **Connectors** and connects their LinkedIn (the one-time consent). After that they only reconnect if a token goes stale between campaigns.
+4. Every participant opens **Connectors** and connects their LinkedIn (the one-time consent), and their X account too if you configured X and plan to run X campaigns. After that LinkedIn members only reconnect if a token goes stale between campaigns; X refreshes itself in the background and only needs a reconnect if the refresh token is revoked.
 5. An editor creates a campaign, picks the participants (people or whole teams), generates drafts, and an admin (or the editor, for their own campaign) launches it. Each person then approves, edits, or skips their own actions, either in the web app or from the bundled Slack DM (Approve all / Skip all) if Slack is configured. When the like and comment step comes due, they do it on LinkedIn and mark it done from the portal card or the Slack Mark all done DM.
 
 ---
 
-## 8. Production notes
+## 9. Production notes
 
 - Run four processes: the API (uvicorn workers), the ARQ worker, Postgres, and Redis, with a reverse proxy in front for TLS.
 - `OAUTHLIB_INSECURE_TRANSPORT` must be unset or false in production; the code refuses insecure OAuth there regardless.
-- Set the real `APP_URL` and `FRONTEND_URL`, and update the Google, LinkedIn, and Slack redirect and request URLs to the production domain.
+- Set the real `APP_URL` and `FRONTEND_URL`, and update the Google, LinkedIn, X, and Slack redirect and request URLs to the production domain.
 - Run `uv run alembic upgrade head` on deploy before the API starts. Build the frontend with `npm run build` and serve the static assets behind the proxy.
 - The API and worker are the two deployables; run migrations as a one-off job before the API starts, and supply all secrets (`JWT_SECRET`, `TOKEN_ENCRYPTION_KEY`, OAuth and LLM keys) through your platform's secret store rather than committing them.

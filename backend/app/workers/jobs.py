@@ -217,6 +217,30 @@ async def flush_campaign_jobs(ctx: dict, campaign_id: str, post_ids: list[str]) 
     await flush_campaign_jobs_on_pool(ctx["redis"], campaign_id, set(post_ids))
 
 
+async def _needs_reconnect(
+    db: AsyncSession, user_id: uuid.UUID, platform: str, posts: list[Post]
+) -> bool:
+    """True when these posts need a live token the person does not have.
+
+    Mirrors the approve gate: assisted-manual actions (LinkedIn like/comment while
+    community management is off, and X reply/quote which the API blocks) need no
+    connection, so a person with only those is always ready. Any automated action
+    (X post/self-comment/like/bookmark, LinkedIn posts and reshares) needs a
+    connected account whose token is not stale or expiring.
+    """
+    if not any(not is_assisted(p.action, platform) for p in posts):
+        return False
+    account = await social_account_repo.get_by_user(db, user_id, platform=platform)
+    if account is None:
+        return True
+    buffer_hours = (
+        settings.X_RECONNECT_BUFFER_HOURS
+        if platform == "x"
+        else settings.LINKEDIN_RECONNECT_BUFFER_HOURS
+    )
+    return account.requires_reconnect(now=datetime.now(UTC), buffer_hours=buffer_hours)
+
+
 async def notify_participant(ctx: dict, campaign_id: str, user_id: str) -> None:
     """Schedule a participant's pending posts and DM them the bundled ask.
 
@@ -225,6 +249,13 @@ async def notify_participant(ctx: dict, campaign_id: str, user_id: str) -> None:
     action with Approve all / Skip all. The scheduling happens with or without
     Slack, so an unconfigured deployment only drops the DM, never the campaign:
     people still approve from the portal.
+
+    Reconnect-first: if any of the person's actions need a live token they do not
+    have (a missing or stale connection), we DM them to reconnect and hold the
+    approve card instead of asking them to approve something we cannot publish.
+    The posts stay ``pending``, so completing the reconnect re-fires this job
+    (see ``_refire_held_notifications``) and the card goes out once the token is
+    fresh. Assisted-only LinkedIn asks need no token and are never held.
     """
     cid = uuid.UUID(campaign_id)
     uid = uuid.UUID(user_id)
@@ -239,18 +270,33 @@ async def notify_participant(ctx: dict, campaign_id: str, user_id: str) -> None:
         posts = await post_repo.list_for_campaign_user(
             db, cid, uid, statuses=("pending",)
         )
+        if not posts:
+            return
+
+        user = await user_repo.get(db, uid)
+        if user is None:
+            return
+
+        # Ask for a refresh first, then fire: hold the approve card while the
+        # token is missing or stale. Posts stay pending for the reconnect re-fire.
+        if await _needs_reconnect(db, uid, campaign.platform, posts):
+            client = build_slack_client()
+            if client is None:
+                return
+            try:
+                await slack_service.notify_reconnect(
+                    db, client, user, campaign.platform
+                )
+            finally:
+                await client.aclose()
+            return
+
         for post in posts:
             post.status = "scheduled"
         await db.commit()
 
-        if not posts:
-            return
         client = build_slack_client()
         if client is None:
-            return
-        user = await user_repo.get(db, uid)
-        if user is None:
-            await client.aclose()
             return
         try:
             await slack_service.notify_participant(db, client, campaign, user, posts)

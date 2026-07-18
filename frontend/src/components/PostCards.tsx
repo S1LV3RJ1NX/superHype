@@ -488,9 +488,9 @@ export function CombinedEngagementCard({
   );
 }
 
-// The guided human step for a comment or like: open the post on LinkedIn, paste
-// the suggested text (comment only), act, then mark it done. Only the owner can
-// mark it done since only they can actually perform the action.
+// The guided human step for a comment, like, or X reply/quote: open the post on
+// LinkedIn or X, paste the suggested text (comment/quote only), act, then mark it
+// done. Only the owner can mark it done since only they can perform the action.
 function EngagementAsk({
   post,
   isOwner,
@@ -510,7 +510,9 @@ function EngagementAsk({
     if (!busy) setActing(null);
   }, [busy]);
   const isSelfComment = post.action === "self_comment";
-  const hasText = post.action === "comment" || isSelfComment;
+  const isQuote = post.action === "repost_comment";
+  const isX = post.platform === "x";
+  const hasText = post.action === "comment" || isSelfComment || isQuote;
 
   const copyText = async () => {
     if (!post.body) return;
@@ -528,9 +530,13 @@ function EngagementAsk({
       <p className="text-xs text-muted-ink">
         {isSelfComment
           ? "Open your post, paste your self-comment, then mark it done."
-          : hasText
-            ? "Open the post, paste your comment, then mark it done."
-            : "Open the post, like it, then mark it done."}
+          : isQuote
+            ? "Open the post, quote it with your comment, then mark it done."
+            : isX && hasText
+              ? "Open the post, paste your reply, then mark it done."
+              : hasText
+                ? "Open the post, paste your comment, then mark it done."
+                : "Open the post, like it, then mark it done."}
       </p>
       <div className="mt-2 flex flex-wrap gap-2">
         {post.engagement_url && (
@@ -541,7 +547,11 @@ function EngagementAsk({
             className="inline-flex items-center gap-1.5 rounded-md bg-clay px-3 py-1.5 text-xs font-medium text-paper hover:bg-clay-press"
           >
             <ExternalLink className="h-3.5 w-3.5" />
-            {isSelfComment ? "Open your post" : "Open on LinkedIn"}
+            {isSelfComment
+              ? "Open your post"
+              : isX
+                ? "Open on X"
+                : "Open on LinkedIn"}
           </a>
         )}
         {hasText && post.body && (

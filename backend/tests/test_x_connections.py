@@ -304,6 +304,61 @@ async def test_callback_resumes_pending_x_post(
     assert post.social_account_id is not None
 
 
+async def test_callback_refires_held_notifications(
+    client, as_role, mock_redis, db, enqueued
+):
+    """Reconnecting fires the approve card we held while the token was stale.
+
+    A pending X post with no resume target (the person got a reconnect-first DM,
+    not an approve card) must, once the account is live again, re-enqueue
+    notify_participant for that campaign so the card finally goes out.
+    """
+    from app.models.campaign import Campaign
+    from app.models.post import Post
+
+    user_id = uuid.uuid4()
+    async with as_role("viewer", user_id=user_id):
+        campaign = Campaign(
+            title="C",
+            type="amplify",
+            platform="x",
+            status="publishing",
+            created_by=user_id,
+        )
+        db.add(campaign)
+        await db.flush()
+        post = Post(
+            campaign_id=campaign.id,
+            user_id=user_id,
+            platform="x",
+            action="like",
+            status="pending",
+            idempotency_key=str(uuid.uuid4()),
+        )
+        db.add(post)
+        await db.commit()
+
+        state = "x-state-refire"
+        await mock_redis.set(
+            f"super-hype:x:state:{state}",
+            json.dumps({"user_id": str(user_id), "code_verifier": "v"}),
+            ex=600,
+        )
+        exchange_patch, identity_patch = _mock_oauth()
+        with exchange_patch, identity_patch:
+            resp = await client.post(
+                "/v1/connections/x/callback",
+                json={"code": "real-code", "state": state},
+            )
+
+    assert resp.status_code == 200
+    assert resp.json()["resumed_post_id"] is None
+    assert any(
+        name == "notify_participant" and args == (str(campaign.id), str(user_id))
+        for name, args, _ in enqueued
+    )
+
+
 async def test_callback_does_not_resume_post_from_another_platform(
     client, as_role, mock_redis, db, enqueued
 ):

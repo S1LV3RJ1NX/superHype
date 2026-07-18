@@ -47,6 +47,7 @@ async def get_leaderboard(
                 avatar_url=u.avatar_url if u else None,
                 team_name=team_names.get(u.team_id) if u and u.team_id else None,
                 likes=s.likes,
+                bookmarks=s.bookmarks,
                 comments=s.comments,
                 reposts=s.reposts,
                 direct_posts=s.direct_posts,

@@ -83,6 +83,30 @@ async def test_scoring_weights(client: AsyncClient, as_role, engine):
     assert entry["score"] == 10
 
 
+async def test_bookmarks_score_and_pair_with_likes(
+    client: AsyncClient, as_role, engine
+):
+    # X pairs every like with a bookmark; both land published and both score.
+    xena = _user("Xena")
+    await _seed(
+        engine,
+        users=[xena],
+        posts=[
+            _post(xena.id, "like"),
+            _post(xena.id, "bookmark"),
+            _post(xena.id, "like"),
+            _post(xena.id, "bookmark"),
+        ],
+    )
+    async with as_role("viewer"):
+        resp = await client.get("/v1/leaderboard")
+    entry = next(e for e in resp.json()["entries"] if e["user_id"] == str(xena.id))
+    assert entry["likes"] == 2
+    assert entry["bookmarks"] == 2
+    # 2*1 (like) + 2*2 (bookmark) = 6
+    assert entry["score"] == 6
+
+
 async def test_acknowledged_likes_and_comments_count(
     client: AsyncClient, as_role, engine
 ):

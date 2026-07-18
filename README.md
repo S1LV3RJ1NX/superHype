@@ -9,10 +9,10 @@
 </p>
 
 <p align="center">
-  Human-in-the-loop employee advocacy platform. LinkedIn is supported today,
-  more channels coming soon. Amplify an existing post with genuine interactions,
-  or distribute distinct, on-voice variations across your team, each approved by
-  a real person and published on a stagger through the channel's official API.
+  Human-in-the-loop employee advocacy platform for LinkedIn and X. Amplify an
+  existing post with genuine interactions, or distribute distinct, on-voice
+  variations across your team, each approved by a real person and published on a
+  stagger through the platform's official API. A campaign targets one platform.
 </p>
 
 <p align="center">
@@ -52,18 +52,24 @@
 - **Slack loop.** Bundled approve/skip at launch, a bundled mark-all-done for the
   assisted like and comment step, deferred reminders, and a reconnect prompt on a
   stale token.
+- **Two platforms, one per campaign.** Pick LinkedIn or X when you create a
+  campaign; generation, connections, and the action vocabulary adapt (a comment
+  is a reply on X, a reshare is a quote post, a like carries a bookmark). No
+  cross-posting: a campaign runs on exactly one platform.
 - **Official API only.** Every action runs on each member's own consented
-  LinkedIn account (`w_member_social`); tokens are Fernet-encrypted at rest.
-  Comments and likes run assisted-manual until the Community Management API is
-  enabled.
+  account (LinkedIn `w_member_social`, or X OAuth 2.0 with `tweet.write`,
+  `like.write`, and `bookmark.write`); tokens are Fernet-encrypted at rest. On
+  X every action is fully automated through the API. On LinkedIn comments and
+  likes run assisted-manual until the Community Management API is enabled.
 - **Authentic pacing.** Approved posts publish on a randomized stagger with
   per-account spacing and daily caps, so a coordinated push never reads as a bot
   pod. Publishing is idempotent and never double-posts on retry.
 - **Campaign controls.** Pause and resume a launched campaign, reset it to re-run,
   and (admins) delete; queued jobs are flushed so nothing stale fires.
 - **Onboarding and roles.** Google login (company domain only), team selection,
-  and a mandatory LinkedIn connect step. Cumulative roles (viewer, editor, admin)
-  with fine-grained ownership; participants see and edit only their own posts.
+  and a connect step: LinkedIn is required, X is optional (offered only when the
+  deployment has X configured). Cumulative roles (viewer, editor, admin) with
+  fine-grained ownership; participants see and edit only their own posts.
 - **Leaderboard.** Ranks members by a weighted contribution score over an optional
   date window.
 - **Audit trail.** Every externally triggered mutation writes an append-only audit
@@ -140,8 +146,8 @@ people who actually built the thing, without the spam.
    text, applying your global and per-campaign content rules. Every draft stays
    editable.
 3. **Approve and publish on a stagger.** Each person approves, edits, or skips
-   their own post; approved work goes out through LinkedIn's official
-   `/rest/posts` API on a randomized schedule.
+   their own post; approved work goes out through the platform's official API
+   (LinkedIn `/rest/posts` or the X v2 endpoints) on a randomized schedule.
 
 ## Architecture
 
@@ -152,7 +158,7 @@ A monorepo with two deployables and remote managed datastores.
 | `backend/` | Python 3.13, FastAPI (async), SQLAlchemy 2.0 + asyncpg, Alembic, Pydantic v2, ARQ worker, structlog, managed with `uv` |
 | `frontend/` | Vite, React 18, TypeScript, Tailwind CSS, shadcn/ui |
 | Data | PostgreSQL (state), Redis (queue + OAuth state) |
-| External | LinkedIn API, Google OAuth, an OpenAI-compatible LLM gateway, Slack |
+| External | LinkedIn API, X (Twitter) API v2, Google OAuth, an OpenAI-compatible LLM gateway, Slack |
 
 The backend follows strict layering: `view -> controller -> service -> repository
 -> model`. Everything is async, every list endpoint is paginated, slow and
@@ -206,6 +212,7 @@ fire on a cadence rather than once per launch.
 - [x] Scaffold, full data model, migrations, seed, reference API, themed UI shell, landing page
 - [x] Google auth, onboarding, users, teams and personas
 - [x] LinkedIn connection and provider (posts, reshares, images, video)
+- [x] X (Twitter) connection and provider (tweets, quote posts, replies, likes, bookmarks, media; OAuth 2.0 PKCE with worker-side token refresh)
 - [x] Generation (per-persona post variations and interaction text)
 - [x] Content rules (admin-editable global rules + per-campaign rules and toggle)
 - [x] Campaign lifecycle and worker (amplify + distribute, ARQ jobs)

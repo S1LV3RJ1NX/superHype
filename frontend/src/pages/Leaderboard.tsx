@@ -12,6 +12,7 @@ interface LeaderboardEntry {
   avatar_url: string | null;
   team_name: string | null;
   likes: number;
+  bookmarks: number;
   comments: number;
   reposts: number;
   direct_posts: number;
@@ -234,6 +235,7 @@ export function Leaderboard() {
                   <th className="px-4 py-3">#</th>
                   <th className="px-4 py-3">Member</th>
                   <th className="px-4 py-3 text-right">Likes</th>
+                  <th className="px-4 py-3 text-right">Bookmarks</th>
                   <th className="px-4 py-3 text-right">Comments</th>
                   <th className="px-4 py-3 text-right">Reposts</th>
                   <th className="px-4 py-3 text-right">Brand posts</th>
@@ -244,7 +246,7 @@ export function Leaderboard() {
                 {entries.length === 0 && (
                   <tr>
                     <td
-                      colSpan={7}
+                      colSpan={8}
                       className="px-4 py-8 text-center text-sm text-muted-ink"
                     >
                       No activity in this window yet.
@@ -292,6 +294,9 @@ export function Leaderboard() {
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-muted-ink">
                       {e.likes}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-muted-ink">
+                      {e.bookmarks}
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-muted-ink">
                       {e.comments}

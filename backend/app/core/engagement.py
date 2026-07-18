@@ -20,13 +20,16 @@ def is_assisted(action: str, platform: str = "linkedin") -> bool:
     the reconnect gate does not apply. Posts and reshares are always automated
     through w_member_social.
 
-    On X every action (tweets, replies, likes, bookmarks, quote tweets) is
-    covered by the standard OAuth scopes, so nothing is ever assisted there.
-    This is the single source of truth shared by the worker, the approve gate,
-    and readiness checks.
+    On X, replies to and quotes of a post the member did not author are blocked
+    by the API (the Feb 2026 anti-spam rule, no self-serve workaround), so those
+    two actions run assisted-manual: we deep-link the person to the target and
+    they reply or quote in their own browser. Everything else on X (a tweet, the
+    author's own self-comment reply on their own post, likes, bookmarks) is
+    covered by the standard OAuth scopes and stays automated. This is the single
+    source of truth shared by the worker, the approve gate, and readiness checks.
     """
-    if platform != "linkedin":
-        return False
+    if platform == "x":
+        return action in ("comment", "repost_comment")
     return not settings.COMMUNITY_MANAGEMENT_ENABLED and action in (
         "comment",
         "like",

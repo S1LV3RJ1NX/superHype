@@ -13,16 +13,29 @@ as written; where a comment or older note disagrees, this document wins.
 ## 1. Overview
 
 super-hype is an internal employee-advocacy tool. Employees connect their own
-LinkedIn account, then a small GTM team runs coordinated, consented pushes around
-a post. There are two campaign types:
+LinkedIn and/or X account, then a small GTM team runs coordinated, consented
+pushes around a post. A campaign targets exactly one platform (`campaigns.platform`
+is `linkedin` or `x`); there is no cross-posting. The platform is chosen at
+creation and drives which connection each participant needs, the generation
+constraints (X enforces a 280-character budget), and the action vocabulary (on X
+a comment is a reply, a reshare is a quote post, and every like is paired with a
+bookmark). There are two campaign types:
 
-- Amplify (1 x N): run interactions on one existing LinkedIn post. Every chosen
-  participant does all three actions: like, comment, and reshare.
+- Amplify (1 x N): run interactions on one existing post. Every chosen
+  participant does all three actions: like, comment, and reshare (on X: like +
+  bookmark, reply, and quote post).
 - Distribute (N x N): take one seed and give every participant a distinct on-voice
   post to publish, then have everyone like and comment on everyone else's post
   (no reshares), with an optional author self-comment. Cross-engagement is capped
   per member (`DISTRIBUTE_MAX_ENGAGEMENT_TARGETS`) and prioritizes founder-team
   posts so a large campaign does not fan out quadratically.
+
+Platform behavior differs in one important way. On LinkedIn, comments and likes
+need the vetted Community Management API, so until it is enabled they run
+assisted-manual (the person acts in their own browser and marks it done). On X,
+every action is fully automated through the v2 API, so nothing is assisted-manual
+there. See `[backend/app/core/engagement.py](backend/app/core/engagement.py)`
+(`is_assisted`), which returns false for all X actions.
 
 The plan is not assembled by hand. The portal collects participants (people or
 whole teams) and the backend's `expand_participants` turns them into the concrete
@@ -46,6 +59,7 @@ flowchart LR
     Redis[("Redis: queue + OAuth state")]
     LLM["LLM gateway (OpenAI-compatible)"]
     LI["LinkedIn REST API"]
+    X["X (Twitter) API v2"]
     Google["Google OAuth / OIDC"]
 
     Browser -->|"HTTPS /v1 with Bearer JWT"| API
@@ -53,10 +67,12 @@ flowchart LR
     API -->|"enqueue jobs + OAuth state"| Redis
     API -->|"OIDC login"| Google
     API -->|"OAuth connect"| LI
+    API -->|"OAuth 2.0 PKCE connect + token exchange"| X
     Worker -->|"poll jobs"| Redis
     Worker -->|"read and write state"| PG
     Worker -->|"generate"| LLM
     Worker -->|"publish, comment, like, delete"| LI
+    Worker -->|"tweet, reply, quote, like, bookmark, refresh"| X
 ```
 
 - API entrypoint: `[backend/app/main.py](backend/app/main.py)` builds the FastAPI
@@ -104,7 +120,9 @@ app/
     crypto.py        Fernet encrypt/decrypt for tokens
     redis.py         Redis + ARQ redis settings
     safe_fetch.py    SSRF-guarded image fetch
+    platforms.py     platform constants + platform_label helper
     linkedin_urn.py  parse a pasted LinkedIn URL into a post URN (keeps the activity/share/ugcPost namespace); expands lnkd.in short links by following redirects, validating every hop against a LinkedIn host allowlist (no SSRF)
+    x_urls.py        parse a pasted X post URL (or bare id) into a numeric tweet id, and build a tweet permalink
   db/
     base.py          DeclarativeBase, mixins, naming convention
     session.py       async engine, session factory, get_db
@@ -114,7 +132,7 @@ app/
   services/          business logic + external side effects
   controllers/       per-resource request handling + ownership
   views/             FastAPI routers (thin)
-  providers/         base Protocol + linkedin.py
+  providers/         base Protocol + linkedin.py + x.py (shared error hierarchy)
   integrations/      llm.py (OpenAI SDK against the gateway)
   prompts/           LLM prompt builders + banned-phrase constants
   storage/           AssetStore Protocol + Postgres bytea backend
@@ -195,7 +213,8 @@ erDiagram
     social_accounts {
         uuid id PK
         uuid user_id FK
-        text external_urn
+        string platform "linkedin|x"
+        text external_urn "LinkedIn person URN or numeric X user id"
         bytea access_token_enc
         bytea refresh_token_enc
         timestamptz expires_at
@@ -203,6 +222,7 @@ erDiagram
     }
     campaigns {
         uuid id PK
+        string platform "linkedin|x"
         string type "amplify|distribute"
         text seed_url
         text seed_urn
@@ -225,7 +245,8 @@ erDiagram
         uuid campaign_id FK
         uuid user_id FK
         uuid social_account_id FK
-        string action "post|comment|like|repost_comment|self_comment"
+        string platform "linkedin|x"
+        string action "post|comment|like|bookmark|repost_comment|self_comment"
         text target_external_id
         uuid target_post_id FK
         text body
@@ -274,12 +295,19 @@ Notable points:
   generation prompts. Combined per campaign with `campaigns.custom_rules` and gated
   by `campaigns.apply_global_rules`; see section 8. Edited only by admins through
   `GET`/`PUT /v1/content-rules`.
-- `posts.action` is one of `post`, `comment`, `like`, `repost_comment`, or
-  `self_comment`. A `self_comment` is the author's own follow-up ("link in the
-  comments") on their own post: it is a tracked row targeting the poster row (via
-  `target_post_id`), so it is visible in the plan and, when the socialActions API
-  is unavailable, falls back to the same assisted-manual step as comments and likes
-  instead of failing silently.
+- `posts.action` is one of `post`, `comment`, `like`, `bookmark`,
+  `repost_comment`, or `self_comment`. A `self_comment` is the author's own
+  follow-up ("link in the comments") on their own post: it is a tracked row
+  targeting the poster row (via `target_post_id`), so it is visible in the plan
+  and, when the socialActions API is unavailable, falls back to the same
+  assisted-manual step as comments and likes instead of failing silently.
+  `bookmark` exists only on X campaigns, where the planner pairs a bookmark with
+  each like so a supporter both likes and saves the target (both are strong
+  ranking signals in X's algorithm).
+- `campaigns.platform` and `posts.platform` record which platform the row runs
+  on (`linkedin` or `x`), defaulting to `linkedin` for backward compatibility.
+  The worker routes each post to the matching provider by `posts.platform`, and
+  approval readiness checks the participant's account for `campaigns.platform`.
 - `social_accounts` holds Fernet-encrypted `access_token_enc` and
   `refresh_token_enc`, plus `expires_at` and a `status` of `active` or `stale`.
   Unique on `(user_id, platform)`. See
@@ -342,6 +370,33 @@ sequenceDiagram
   `/v2/userinfo` (the `sub` claim becomes `urn:li:person:{sub}`).
 - Disconnect best-effort revokes the token, deletes the row, and audits it.
 
+### X connect, reconnect, disconnect
+
+`[backend/app/controllers/connection_controller.py](backend/app/controllers/connection_controller.py)`
+plus `[backend/app/services/x_oauth_service.py](backend/app/services/x_oauth_service.py)`
+handle X on the same routes as LinkedIn (`/v1/connections/x/*`), with two
+differences from the LinkedIn flow:
+
+- OAuth 2.0 PKCE. `authorize_x` generates a code verifier and its S256
+  challenge; the verifier is stored in Redis bound to the CSRF state (never sent
+  to the browser) and replayed at the code exchange. X is a confidential client,
+  so the token endpoint also takes HTTP Basic auth with the client id and secret.
+  Scopes are `tweet.read tweet.write users.read like.write bookmark.write
+  media.write offline.access`. `external_urn` holds the numeric X user id from
+  `/2/users/me`.
+- Rotating refresh token. X access tokens live ~2 hours and `offline.access`
+  grants a single-use refresh token that rotates on every use. Both are
+  Fernet-encrypted at rest. Because the token is short-lived, the worker
+  refreshes it proactively (see the next subsection) rather than relying on
+  re-consent.
+
+The reconnect-then-act primitive is shared: `authorize_x` accepts a
+`resume_post_id` and `complete_x` resumes the approve after storing the fresh
+token, exactly like LinkedIn. `_resume_pending_post` only resumes a post whose
+`platform` matches the connected account, so an X connect never approves a
+LinkedIn post or vice versa. Disconnect best-effort revokes, deletes the row,
+and audits it (`x_disconnected`).
+
 ### Token lifetime and staleness (current behavior)
 
 - LinkedIn access tokens last 60 days. `exchange_code` stores
@@ -360,8 +415,29 @@ sequenceDiagram
   reconnects and runs the action. The Slack phase reuses this same primitive.
 - The worker keeps the reactive 401 path (mark `stale`, enqueue
   `request_reconnect`) as the safety net for tokens revoked out-of-band between
-  approval and publish. `provider.refresh()` exists but is unused (standard
-  Share-on-LinkedIn apps get no refresh token). See section 11.
+  approval and publish. On LinkedIn `provider.refresh()` is used only if the app
+  holds a refresh token (standard Share-on-LinkedIn apps get none). See section 11.
+
+### X token refresh (worker-side)
+
+X access tokens expire in ~2 hours, so re-consent per publish is not viable.
+Instead `publish_post` calls `_ensure_fresh_token` before dispatching: if the
+account holds a refresh token and its `expires_at` is within
+`_TOKEN_REFRESH_BUFFER_SECONDS` (10 minutes), the worker refreshes and persists
+the rotated pair immediately (committed on its own, since X refresh tokens are
+single-use and must survive even if the publish that follows rolls back).
+
+- One approval fans out into several concurrent `publish_post` jobs for the same
+  account (post, like, bookmark, reply, quote), so the refresh is serialized with
+  a per-account Redis lock (`super-hype:token-refresh:{account_id}`). Losers wait
+  for the winner, re-read the row, and skip the refresh if the token is fresh
+  again, so the single-use refresh token is never burned twice.
+- A dead or already-rotated refresh token comes back from the X token endpoint as
+  HTTP 400 `invalid_grant` (per RFC 6749), which the provider maps to
+  `ProviderAuthError`, so the worker marks the account `stale` and enqueues a
+  reconnect exactly as it does for a 401. `SocialAccount.requires_reconnect`
+  returns false while a live refresh token is present (the worker keeps the token
+  alive), and reconnection is prompted only once the account is marked stale.
 
 ## 7. Campaign lifecycle
 
@@ -495,8 +571,9 @@ SDK, and never a hardcoded model name.
   approve/skip bundle for posts still `scheduled`, the mark-all-done bundle for
   assisted asks still `action_required`. Fully-settled people get nothing. A no-op
   without Slack (the portal always carries the same work).
-- `request_reconnect`: DMs the owner of a stale LinkedIn account a reconnect link.
-  Enqueued when publishing hits a 401 and the account is marked `stale`.
+- `request_reconnect`: DMs the owner of a stale account (LinkedIn or X) a
+  reconnect link. Enqueued when publishing hits a 401, or when an X refresh token
+  is dead (400 `invalid_grant`), and the account is marked `stale`.
 - `handle_slack_interaction`: runs a signature-verified Slack button click
   (approval work plus the card update via `response_url`) off the request path,
   so the endpoint acks inside Slack's 3s window and does no external call inline.
@@ -529,6 +606,11 @@ actionable, since you cannot comment on a post that does not exist yet. The ask
 payload is factored into `services/engagement_service.py` so a Slack card can
 reuse it later. Posts and reshares stay fully automated; flip the flag to true to
 dispatch comments, likes, and self-comments through the API with no code change.
+
+This assisted-manual path is LinkedIn-only. `is_assisted(action, platform)`
+returns false for every X action, so X comments, likes, and bookmarks always
+dispatch through the v2 API regardless of `COMMUNITY_MANAGEMENT_ENABLED` (which
+gates the LinkedIn socialActions scope, not X).
 
 Combined like + comment: because an assisted like and comment on the same target
 both just send the person to LinkedIn, the portal merges them into one card so
@@ -602,15 +684,32 @@ Key properties:
   a partial first-comment publish first).
 - Every publish, first-comment placement, and rollback writes an audit row.
 
-The provider itself is `[backend/app/providers/linkedin.py](backend/app/providers/linkedin.py)`,
-which talks to the versioned `/rest/posts` API with the `LinkedIn-Version` and
-`X-Restli-Protocol-Version` headers, plus `comment`, `like`, reshare, three-step
-image upload, `delete_post`, and `refresh`.
+Providers implement one shared Protocol and a shared error hierarchy
+(`ProviderAPIError`, `ProviderAuthError`, `ProviderRateLimitError` in
+`[backend/app/providers/base.py](backend/app/providers/base.py)`), so the
+worker's retry policy (auth -> reconnect, 429 -> delayed retry, other 4xx ->
+fail fast) is written once and works for every platform. `publish_post` picks
+the provider by `posts.platform` through the `_provider(platform)` registry in
+`[backend/app/workers/jobs.py](backend/app/workers/jobs.py)` (unknown platforms
+fall back to LinkedIn rather than crashing the worker).
+
+- `[backend/app/providers/linkedin.py](backend/app/providers/linkedin.py)` talks
+  to the versioned `/rest/posts` API with the `LinkedIn-Version` and
+  `X-Restli-Protocol-Version` headers, plus `comment`, `like`, reshare,
+  three-step image upload, `delete_post`, and `refresh`. LinkedIn has no
+  bookmark, so `bookmark` raises (the planner never creates bookmark rows for
+  LinkedIn).
+- `[backend/app/providers/x.py](backend/app/providers/x.py)` talks to the X v2
+  API: `publish` (tweet), `reshare` (quote post), `comment` (reply), `like`,
+  `bookmark`, chunked media upload, `delete_post`, `refresh` (rotating token),
+  and `insights` (public metrics). It maps 401 to `ProviderAuthError`, 429 to
+  `ProviderRateLimitError`, and the token endpoint's 400 `invalid_grant` to
+  `ProviderAuthError`.
 
 ## 10. Cross-cutting concerns
 
-- Token encryption: LinkedIn tokens are Fernet-encrypted at rest via
-  `core/crypto.py`. Tokens are never logged.
+- Token encryption: LinkedIn and X access and refresh tokens are Fernet-encrypted
+  at rest via `core/crypto.py`. Tokens are never logged.
 - SSRF protection: external image URLs are fetched through
   `[backend/app/core/safe_fetch.py](backend/app/core/safe_fetch.py)`, which blocks
   non-public hosts, caps the byte size, and validates the content type. The
@@ -695,10 +794,10 @@ identically whether the click came from the browser or from Slack.
 
 - Reconnect-then-act (implemented for the portal). The portal pre-checks expiry at
   approve time and bundles re-consent with the action via a `resume_post_id` bound
-  into the OAuth state. Remaining work: if the app gets Marketing Developer
-  Platform refresh tokens, add a silent pre-flight in `publish_post` that calls
-  `provider.refresh()` when near expiry so most reconnects disappear; and wire the
-  Slack reconnect button (the resume primitive already exists).
+  into the OAuth state. Silent pre-flight refresh is now implemented for X (the
+  worker's `_ensure_fresh_token` refreshes near-expiry tokens); it activates for
+  LinkedIn automatically if the app ever holds a refresh token. Remaining work:
+  wire the Slack reconnect button (the resume primitive already exists).
 - Timezone-aware scheduled launches. There is no scheduled start today; launch is
   immediate and only the per-person stagger is delayed. Recommended: store UTC and
   render local. Add `campaigns.scheduled_at` (`timestamptz`, UTC) and an IANA
@@ -714,7 +813,10 @@ identically whether the click came from the browser or from Slack.
   a cron/`cron_jobs` sweep would let it nudge repeatedly.
 - Expiry-sweep cron. A daily sweep over `social_accounts.expires_at` to refresh or
   prompt reconnect is deferred (the supporting index already exists).
-- Insights. `provider.insights` is not implemented in v1.
+- Insights. `provider.insights` is implemented for X (public metrics via
+  `/2/tweets/{id}`) but not yet consumed by the leaderboard; LinkedIn insights
+  remain unimplemented (no member-post metrics API on the `w_member_social`
+  scope).
 - Amplify post text. Generation needs the target post's text to write relevant
   comments, but we only store the URN and cannot read arbitrary post bodies with
   the `w_member_social` scope (`GET /rest/posts/{urn}` needs the restricted
