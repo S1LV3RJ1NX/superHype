@@ -13,6 +13,10 @@ repos:
       - id: check-yaml
       - id: check-toml
       - id: check-added-large-files
+        # The launch deck is a single self-contained HTML file (images inlined)
+        # served at /presentation; it must ship with the frontend build, so it
+        # is exempt from the large-file guard that still protects everything else.
+        exclude: ^frontend/public/presentation\.html$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.18

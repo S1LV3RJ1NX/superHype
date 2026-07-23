@@ -13,6 +13,7 @@ import { Landing } from "@/pages/Landing";
 import { Leaderboard } from "@/pages/Leaderboard";
 import { LinkedInCallback } from "@/pages/LinkedInCallback";
 import { Onboarding } from "@/pages/Onboarding";
+import { Presentation } from "@/pages/Presentation";
 import { Profile } from "@/pages/Profile";
 import { Teams } from "@/pages/Teams";
 import { Users } from "@/pages/Users";
@@ -23,6 +24,7 @@ export default function App() {
     <AuthProvider>
       <Routes>
         <Route path="/" element={<Landing />} />
+        <Route path="/presentation" element={<Presentation />} />
         <Route path="/v1/google/callback" element={<AuthCallback />} />
         <Route path="/app" element={<Navigate to="/app/campaigns" replace />} />
         <Route
