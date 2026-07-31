@@ -1,6 +1,13 @@
-import { useEffect, useState } from "react";
-import { Loader2, Search, Sparkles } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Download, FileSpreadsheet, Loader2, Search, Sparkles } from "lucide-react";
 
+import {
+  ApiError,
+  type DraftImportPreview,
+  type ManualDraftPayload,
+  downloadDraftsTemplate,
+  previewCampaignDrafts,
+} from "@/lib/api";
 import { fetchAllTeams } from "@/lib/roster";
 import { cn } from "@/lib/utils";
 
@@ -46,6 +53,7 @@ const ALL_AMPLIFY_KEYS = AMPLIFY_ACTIONS_BY_PLATFORM.linkedin.map((a) => a.key);
 export function PlanBuilder({
   campaignType,
   platform = "linkedin",
+  campaignId,
   roster,
   isEditor,
   busy,
@@ -56,6 +64,7 @@ export function PlanBuilder({
 }: {
   campaignType: string;
   platform?: string;
+  campaignId?: string;
   roster: RosterUser[];
   isEditor: boolean;
   busy: boolean;
@@ -63,6 +72,7 @@ export function PlanBuilder({
     participantIds: string[],
     generate: boolean,
     actionsByParticipant?: Record<string, string[]>,
+    manualDrafts?: Record<string, ManualDraftPayload>,
   ) => void;
   initialParticipantIds?: string[];
   initialActionsByParticipant?: Record<string, string[]>;
@@ -93,6 +103,16 @@ export function PlanBuilder({
     }
     return init;
   });
+
+  // Imported spreadsheet drafts (distribute only). The preview drives the
+  // matched/unmatched panel; the drafts ride into onPlan for the selected
+  // participants so the backend can skip AI generation for them.
+  const [importPreview, setImportPreview] = useState<DraftImportPreview | null>(
+    null,
+  );
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<"all" | "connected" | "unconnected">(
@@ -241,12 +261,77 @@ export function PlanBuilder({
     return out;
   };
 
-  const handleGenerate = () =>
+  // --- spreadsheet draft import (distribute only) ---------------------------
+
+  const importedDrafts: Record<string, ManualDraftPayload> = {};
+  if (importPreview) {
+    for (const m of importPreview.matched) importedDrafts[m.user_id] = m.draft;
+  }
+
+  const handleImportFile = async (file: File) => {
+    if (!campaignId) return;
+    setImportError(null);
+    setImportBusy(true);
+    try {
+      const preview = await previewCampaignDrafts(campaignId, file);
+      setImportPreview(preview);
+      // Matched people are almost always meant to take part; select them so
+      // their drafts are actually used, and let the user untick exceptions.
+      setMembers(
+        preview.matched.map((m) => m.user_id),
+        true,
+      );
+    } catch (err) {
+      setImportError(
+        err instanceof ApiError ? err.message : "Failed to read the file",
+      );
+    } finally {
+      setImportBusy(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const handleDownloadTemplate = async () => {
+    setImportError(null);
+    try {
+      await downloadDraftsTemplate();
+    } catch (err) {
+      setImportError(
+        err instanceof ApiError ? err.message : "Failed to download the sample",
+      );
+    }
+  };
+
+  const selectAllMatched = () => {
+    if (!importPreview) return;
+    setMembers(
+      importPreview.matched.map((m) => m.user_id),
+      true,
+    );
+  };
+
+  const draftSummary = (d: ManualDraftPayload): string => {
+    const parts: string[] = [];
+    if (d.post_body) parts.push("post");
+    if (d.self_comment) parts.push("self-comment");
+    if (d.comments.length > 0)
+      parts.push(`${d.comments.length} comment${d.comments.length > 1 ? "s" : ""}`);
+    return parts.join(", ") || "nothing filled in";
+  };
+
+  const handleGenerate = () => {
+    // Only the selected people's drafts travel; unselected rows are dropped.
+    const drafts: Record<string, ManualDraftPayload> = {};
+    for (const uid of participantIds) {
+      if (importedDrafts[uid]) drafts[uid] = importedDrafts[uid];
+    }
     onPlan(
       participantIds,
       true,
       isDistribute ? undefined : actionsByParticipant(),
+      isDistribute && Object.keys(drafts).length > 0 ? drafts : undefined,
     );
+  };
 
   return (
     <div>
@@ -315,6 +400,100 @@ export function PlanBuilder({
                   );
                 })}
               </div>
+            </div>
+          )}
+
+          {isDistribute && campaignId && (
+            <div className="mb-3 rounded-md border border-clay/30 bg-clay/5 p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".xlsx,.csv"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void handleImportFile(f);
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={importBusy}
+                  className="inline-flex items-center gap-1.5 rounded-md bg-ink px-3 py-1.5 text-xs font-medium text-paper hover:opacity-90 disabled:opacity-50"
+                >
+                  {importBusy ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <FileSpreadsheet className="h-3.5 w-3.5" />
+                  )}
+                  {importBusy ? "Reading..." : "Import drafts (.xlsx or .csv)"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDownloadTemplate()}
+                  className="inline-flex items-center gap-1.5 rounded-md border border-clay/40 bg-paper px-3 py-1.5 text-xs font-medium text-clay hover:bg-clay/10"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  Download sample
+                </button>
+              </div>
+              <p className="mt-2 rounded-md border border-clay/30 bg-clay/10 px-2.5 py-1.5 text-xs font-medium text-clay">
+                Optional: fill the sample sheet with pre-written posts and
+                comments; matched people keep their text and skip AI
+                generation. Blank cells are still AI generated.
+              </p>
+
+              {importError && (
+                <p className="mt-2 text-xs text-fail">{importError}</p>
+              )}
+
+              {importPreview && (
+                <div className="mt-2 space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <p className="text-xs font-medium text-ink">
+                      {importPreview.matched.length} matched
+                      {importPreview.unmatched.length > 0 &&
+                        `, ${importPreview.unmatched.length} not matched`}
+                    </p>
+                    {importPreview.matched.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={selectAllMatched}
+                        className="text-xs text-muted-ink underline-offset-2 hover:text-ink hover:underline"
+                      >
+                        Select all matched
+                      </button>
+                    )}
+                  </div>
+                  {importPreview.matched.map((m) => (
+                    <div
+                      key={m.user_id}
+                      className="rounded-md border border-border bg-paper px-2 py-1 text-[11px] text-muted-ink"
+                    >
+                      <span className="font-medium text-ink">
+                        {m.user_name ?? m.user_email}
+                      </span>{" "}
+                      (row {m.row}, by {m.matched_by}): {draftSummary(m.draft)}
+                      {m.warnings.map((w) => (
+                        <span key={w} className="block text-clay">
+                          {w}
+                        </span>
+                      ))}
+                    </div>
+                  ))}
+                  {importPreview.unmatched.map((u) => (
+                    <div
+                      key={u.row}
+                      className="rounded-md border border-clay/30 bg-clay/10 px-2 py-1 text-[11px] text-clay"
+                    >
+                      Row {u.row} ({u.email ?? u.name ?? "no email or name"}):{" "}
+                      {u.reason} It will fall back to AI if the person is
+                      selected.
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -412,8 +591,16 @@ export function PlanBuilder({
               const stale = connected && connectionStatus(u) !== "active";
               const info = (
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm text-ink">
+                  <p className="flex items-center gap-1.5 truncate text-sm text-ink">
                     {u.name ?? u.email}
+                    {importedDrafts[u.id] && (
+                      <span
+                        className="shrink-0 rounded-full border border-clay/40 bg-clay/10 px-1.5 py-px text-[10px] font-medium text-clay"
+                        title={`Imported: ${draftSummary(importedDrafts[u.id])}`}
+                      >
+                        Imported draft
+                      </span>
+                    )}
                   </p>
                   <p
                     className={cn(

@@ -8,7 +8,7 @@ import uuid
 from datetime import UTC, date, datetime
 from zoneinfo import ZoneInfoNotFoundError
 
-from fastapi import HTTPException
+from fastapi import HTTPException, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -42,9 +42,11 @@ from app.schemas.campaign import (
     ScheduleEntry,
 )
 from app.schemas.common import Page, PageParams
+from app.schemas.draft_import import DraftImportPreview
 from app.schemas.post import PlanRequest, PostOut
-from app.services import campaign_service
+from app.services import campaign_service, draft_import_service
 from app.services.campaign_service import TransitionError
+from app.services.draft_import_service import DraftSheetError
 from app.storage import db_asset_store
 from app.workers import queue
 
@@ -519,6 +521,8 @@ async def build_plan(
         body.participant_ids,
         actions_by_participant=body.actions_by_participant,
     )
+    if campaign.type == "distribute":
+        campaign_service.apply_manual_drafts(assignments, body.manual_drafts)
     rows = await campaign_service.build_plan(
         db,
         campaign_id,
@@ -529,6 +533,37 @@ async def build_plan(
     )
     await db.commit()
     return [PostOut.model_validate(r) for r in rows]
+
+
+def drafts_template() -> bytes:
+    """The sample .xlsx workbook users fill in for the draft import."""
+    return draft_import_service.build_template()
+
+
+async def preview_drafts(
+    db: AsyncSession, campaign_id: uuid.UUID, file: UploadFile, actor: User
+) -> DraftImportPreview:
+    """Parse an uploaded draft sheet and match its rows to the roster.
+
+    Pure read: nothing is stored. The frontend echoes the matched drafts back
+    inside PlanRequest.manual_drafts when the plan is saved. Same authorization
+    as planning (creator or admin), and distribute campaigns only since the
+    template's columns describe authored posts.
+    """
+    campaign = await _load_or_404(db, campaign_id)
+    _require_type_permission(campaign.type, actor)
+    if not (_is_admin(actor) or campaign.created_by == actor.id):
+        raise HTTPException(403, "Only the creator or an admin can import drafts.")
+    if campaign.type != "distribute":
+        raise HTTPException(409, "Draft import applies to distribute campaigns only.")
+    # Read one byte past the cap so parse_sheet can reject oversized files
+    # without ever buffering an arbitrarily large body.
+    data = await file.read(draft_import_service.MAX_UPLOAD_BYTES + 1)
+    try:
+        rows = draft_import_service.parse_sheet(data, file.filename or "")
+    except DraftSheetError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return await draft_import_service.match_rows(db, rows)
 
 
 async def generate(
@@ -545,6 +580,8 @@ async def generate(
         body.participant_ids,
         actions_by_participant=body.actions_by_participant,
     )
+    if campaign.type == "distribute":
+        campaign_service.apply_manual_drafts(assignments, body.manual_drafts)
     try:
         await campaign_service.transition(db, campaign, "generating", actor_id=actor.id)
     except TransitionError as exc:

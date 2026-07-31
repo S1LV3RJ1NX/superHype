@@ -12,7 +12,7 @@ import {
   PlanBuilder,
   type RosterUser,
 } from "@/components/PlanBuilder";
-import { ApiError, apiFetch } from "@/lib/api";
+import { ApiError, apiFetch, type ManualDraftPayload } from "@/lib/api";
 import { fetchAllRoster } from "@/lib/roster";
 
 export function CampaignWizard({
@@ -133,6 +133,7 @@ export function CampaignWizard({
     participantIds: string[],
     generate: boolean,
     actionsByParticipant?: Record<string, string[]>,
+    manualDrafts?: Record<string, ManualDraftPayload>,
   ) => {
     if (!created) return;
     setError(null);
@@ -148,6 +149,7 @@ export function CampaignWizard({
             ...(actionsByParticipant
               ? { actions_by_participant: actionsByParticipant }
               : {}),
+            ...(manualDrafts ? { manual_drafts: manualDrafts } : {}),
           }),
         },
       );
@@ -210,6 +212,7 @@ export function CampaignWizard({
           <PlanBuilder
             campaignType={type}
             platform={fields.platform}
+            campaignId={created?.id}
             roster={roster}
             isEditor={isEditor}
             busy={submitting}

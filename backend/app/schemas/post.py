@@ -29,6 +29,7 @@ class PostOut(BaseModel):
     image_asset_id: uuid.UUID | None
     image_url: str | None
     image_alt: str | None
+    source: str
     status: str
     scheduled_at: datetime | None
     published_at: datetime | None
@@ -65,6 +66,10 @@ class Assignment(BaseModel):
 
     For distribute, `post` actions become variation posts (their order defines
     variation slots); interactions reference a poster via `target_post_index`.
+    A pre-filled ``body`` (from an imported draft sheet) is used as-is and never
+    sent to the gateway; ``source`` records that provenance on the created row.
+    ``self_comment`` rides on the `post` assignment and overrides the campaign's
+    own self_comment for that author.
     """
 
     user_id: uuid.UUID
@@ -72,6 +77,21 @@ class Assignment(BaseModel):
     body: str | None = None
     angle: str | None = None
     target_post_index: int | None = None
+    self_comment: str | None = None
+    source: str = Field(default="ai", pattern="^(ai|manual)$")
+
+
+class ManualDraft(BaseModel):
+    """One person's pre-written content from an imported draft sheet.
+
+    Every field is optional: whatever is blank falls back to AI generation.
+    ``comments`` are the texts this person leaves on other participants' posts,
+    consumed in order by their comment slots.
+    """
+
+    post_body: str | None = None
+    self_comment: str | None = None
+    comments: list[str] = Field(default_factory=list, max_length=10)
 
 
 class PlanRequest(BaseModel):
@@ -81,16 +101,21 @@ class PlanRequest(BaseModel):
     ``regenerate`` forces every post to be rewritten. Left False (the default),
     re-planning preserves text for participants already in the plan and only
     generates the newly added ones, so adding a person does not overwrite edits.
+    Manually sourced rows survive regenerate either way.
 
     ``actions_by_participant`` is amplify only: the campaign manager picks which
     of like/comment/repost_comment each person does. When omitted, amplify
     defaults to all three per participant. Distribute ignores it and derives its
     own action graph. A participant mapped to an empty list contributes no posts.
+
+    ``manual_drafts`` (distribute only) carries imported spreadsheet content per
+    participant; those pieces are stamped source=manual and skip generation.
     """
 
     participant_ids: list[uuid.UUID]
     regenerate: bool = False
     actions_by_participant: dict[uuid.UUID, list[str]] | None = None
+    manual_drafts: dict[uuid.UUID, ManualDraft] | None = None
 
 
 class BatchAction(BaseModel):

@@ -26,6 +26,8 @@ export interface Post {
   engagement_url: string | null;
   acknowledged_at: string | null;
   error: string | null;
+  // Text provenance: "manual" (imported draft or hand-edited) vs "ai".
+  source: string;
   // True when the action is a guided human step (comment/like/self_comment while
   // the Community Management API is off), so the client can merge the assisted
   // like+comment pair into one card.
@@ -86,7 +88,12 @@ export function PostCard({
             {owner?.name ?? owner?.email ?? "Unknown"}
           </span>
         </div>
-        <StatusBadge status={post.status} />
+        <div className="flex items-center gap-1.5">
+          {post.action !== "like" && post.action !== "bookmark" && (
+            <SourceBadge source={post.source} />
+          )}
+          <StatusBadge status={post.status} />
+        </div>
       </div>
 
       {post.action !== "like" && post.action !== "bookmark" && (
@@ -300,7 +307,11 @@ export function CombinedEngagementCard({
             {owner?.name ?? owner?.email ?? "Unknown"}
           </span>
         </div>
-        <StatusBadge status={status} />
+        <div className="flex items-center gap-1.5">
+          {/* The card's text is the comment; the paired like has no text. */}
+          <SourceBadge source={comment.source} />
+          <StatusBadge status={status} />
+        </div>
       </div>
 
       <div className="mt-2">
@@ -653,6 +664,24 @@ function StatusBadge({ status }: { status: string }) {
       className={`rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${style}`}
     >
       {label}
+    </span>
+  );
+}
+
+// Provenance chip next to the status: was this text written by a person
+// (imported draft or hand edit) or by the AI? Textless likes/bookmarks skip it.
+function SourceBadge({ source }: { source: string }) {
+  const manual = source === "manual";
+  return (
+    <span
+      title={manual ? "Written by a person" : "AI generated"}
+      className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${
+        manual
+          ? "border-clay/40 bg-clay/10 text-clay"
+          : "border-border bg-sand text-muted-ink"
+      }`}
+    >
+      {manual ? "Manual" : "AI"}
     </span>
   );
 }

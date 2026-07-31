@@ -7,11 +7,11 @@ Launch is gated to the creator or an admin. There is no admin campaign sign-off.
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Response, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.controllers import campaign_controller
-from app.core.deps import require_onboarded
+from app.core.deps import require_onboarded, require_role
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.campaign import (
@@ -23,6 +23,7 @@ from app.schemas.campaign import (
     ScheduleEntry,
 )
 from app.schemas.common import Page, PageParams
+from app.schemas.draft_import import DraftImportPreview
 from app.schemas.post import PlanRequest, PostOut
 
 router = APIRouter(prefix="/v1/campaigns", tags=["campaigns"])
@@ -54,6 +55,23 @@ async def schedule_feed(
     user: User = Depends(require_onboarded),
 ) -> list[ScheduleEntry]:
     return await campaign_controller.schedule_feed(db, start, end, user)
+
+
+# Declared before /{campaign_id} so "drafts" is not parsed as a campaign uuid.
+@router.get("/drafts/template")
+async def drafts_template(
+    actor: User = Depends(require_role("editor")),
+) -> Response:
+    content = campaign_controller.drafts_template()
+    return Response(
+        content=content,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ),
+        headers={
+            "Content-Disposition": 'attachment; filename="super-hype-drafts.xlsx"'
+        },
+    )
 
 
 @router.get("/{campaign_id}", response_model=CampaignDetail)
@@ -101,6 +119,16 @@ async def build_plan(
     actor: User = Depends(require_onboarded),
 ) -> list[PostOut]:
     return await campaign_controller.build_plan(db, campaign_id, body, actor)
+
+
+@router.post("/{campaign_id}/drafts/preview", response_model=DraftImportPreview)
+async def preview_drafts(
+    campaign_id: uuid.UUID,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    actor: User = Depends(require_onboarded),
+) -> DraftImportPreview:
+    return await campaign_controller.preview_drafts(db, campaign_id, file, actor)
 
 
 @router.post("/{campaign_id}/generate", response_model=CampaignOut)

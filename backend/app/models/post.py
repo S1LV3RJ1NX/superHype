@@ -50,6 +50,12 @@ class Post(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     image_url: Mapped[str | None] = mapped_column(Text)
     image_alt: Mapped[str | None] = mapped_column(Text)
     image_asset_urn: Mapped[str | None] = mapped_column(Text)
+    # Provenance of the text: "ai" (gateway-written) or "manual" (imported from a
+    # draft sheet, or hand-edited after generation). Drives the AI/Manual badge
+    # and lets regenerate rewrite AI text while leaving manual drafts alone.
+    source: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="ai", server_default="ai"
+    )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="pending", server_default="pending"
     )

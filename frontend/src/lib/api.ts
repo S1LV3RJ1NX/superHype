@@ -87,6 +87,84 @@ export async function uploadAsset(file: File): Promise<{ id: string }> {
   return res.json() as Promise<{ id: string }>;
 }
 
+export interface ManualDraftPayload {
+  post_body: string | null;
+  self_comment: string | null;
+  comments: string[];
+}
+
+export interface DraftRowMatch {
+  row: number;
+  email: string | null;
+  name: string | null;
+  user_id: string;
+  user_name: string | null;
+  user_email: string;
+  matched_by: string;
+  draft: ManualDraftPayload;
+  warnings: string[];
+}
+
+export interface DraftRowUnmatched {
+  row: number;
+  email: string | null;
+  name: string | null;
+  reason: string;
+}
+
+export interface DraftImportPreview {
+  matched: DraftRowMatch[];
+  unmatched: DraftRowUnmatched[];
+}
+
+export async function previewCampaignDrafts(
+  campaignId: string,
+  file: File,
+): Promise<DraftImportPreview> {
+  const token = getToken();
+  const form = new FormData();
+  form.append("file", file);
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetch(
+    `${API_BASE}/v1/campaigns/${campaignId}/drafts/preview`,
+    { method: "POST", body: form, headers },
+  );
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    const detail = body.detail;
+    const message =
+      typeof detail === "string" ? detail : (detail?.message ?? "Upload failed");
+    throw new ApiError(res.status, message, detail);
+  }
+  return res.json() as Promise<DraftImportPreview>;
+}
+
+export async function downloadDraftsTemplate(): Promise<void> {
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const res = await fetch(`${API_BASE}/v1/campaigns/drafts/template`, {
+    headers,
+  });
+  if (!res.ok) {
+    throw new ApiError(res.status, "Failed to download the sample template");
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "super-hype-drafts.xlsx";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export async function fetchAssetObjectUrl(
   id: string,
 ): Promise<{ url: string; contentType: string }> {

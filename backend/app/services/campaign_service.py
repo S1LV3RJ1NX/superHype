@@ -21,7 +21,7 @@ from app.repositories.post_repo import post_repo
 from app.repositories.social_account_repo import social_account_repo
 from app.repositories.team_repo import team_repo
 from app.repositories.user_repo import user_repo
-from app.schemas.post import Assignment
+from app.schemas.post import Assignment, ManualDraft
 from app.services.generation_service import (
     generate_interactions,
     generate_variations,
@@ -371,22 +371,64 @@ def _assignment_key(campaign: Campaign, a: Assignment, ordered: list[uuid.UUID])
     return f"{a.action}:{a.user_id}:{target}"
 
 
+def apply_manual_drafts(
+    assignments: list[Assignment],
+    manual_drafts: dict[uuid.UUID, ManualDraft] | None,
+) -> None:
+    """Overlay imported spreadsheet content onto expanded assignments, in place.
+
+    A person's `post` assignment gets their drafted body (and self-comment
+    override); their `comment` assignments consume their comment pool in order.
+    Everything touched is stamped source=manual so it skips generation and
+    survives regenerate. An exhausted pool or an absent piece falls back to AI.
+    """
+    if not manual_drafts:
+        return
+    pools = {uid: list(d.comments) for uid, d in manual_drafts.items()}
+    for a in assignments:
+        draft = manual_drafts.get(a.user_id)
+        if draft is None:
+            continue
+        if a.action == "post":
+            if draft.post_body and draft.post_body.strip():
+                a.body = draft.post_body.strip()
+                a.source = "manual"
+            if draft.self_comment and draft.self_comment.strip():
+                a.self_comment = draft.self_comment.strip()
+        elif a.action == "comment":
+            pool = pools.get(a.user_id)
+            while pool:
+                text = pool.pop(0).strip()
+                if text:
+                    a.body = text
+                    a.source = "manual"
+                    break
+
+
 async def _preserved_bodies(
-    db: AsyncSession, campaign: Campaign, campaign_id: uuid.UUID
-) -> dict[str, str]:
-    """Map assignment keys to the bodies of the current pending posts.
+    db: AsyncSession,
+    campaign: Campaign,
+    campaign_id: uuid.UUID,
+    *,
+    regenerate: bool,
+) -> dict[str, tuple[str, str]]:
+    """Map assignment keys to (body, source) of the current pending posts.
 
     Read before the pending rows are cleared so a rebuild can reuse text for
     unchanged actions (no gateway call, no lost manual edit). Interaction targets
-    resolve through the existing poster rows to the target person.
+    resolve through the existing poster rows to the target person. Regenerate
+    drops AI text so it gets rewritten, but manual text (imported drafts, hand
+    edits) is kept even then: regeneration is for AI output, not people's words.
     """
     existing = await post_repo.list_for_campaign(db, campaign_id)
     poster_user_by_id = {p.id: p.user_id for p in existing if p.action == "post"}
-    preserved: dict[str, str] = {}
+    preserved: dict[str, tuple[str, str]] = {}
     for p in existing:
         if p.status not in ("pending", "scheduled"):
             continue
         if not (p.body and p.body.strip()):
+            continue
+        if regenerate and p.source != "manual":
             continue
         if p.action in ("post", "self_comment"):
             key = f"{p.action}:{p.user_id}"
@@ -395,7 +437,7 @@ async def _preserved_bodies(
             key = f"{p.action}:{p.user_id}:{target_user if target_user else '?'}"
         else:
             key = f"{p.action}:{p.user_id}:seed"
-        preserved[key] = p.body
+        preserved[key] = (p.body, p.source)
     return preserved
 
 
@@ -422,7 +464,9 @@ async def build_plan(
     if campaign is None:
         raise TransitionError("Campaign not found.")
 
-    preserved = {} if regenerate else await _preserved_bodies(db, campaign, campaign_id)
+    preserved = await _preserved_bodies(
+        db, campaign, campaign_id, regenerate=regenerate
+    )
 
     # Detach any audit rows that still point at the pending posts (e.g. after a
     # reset, which rewinds rather than deletes) so the rebuild's hard-delete does
@@ -463,20 +507,25 @@ async def build_plan(
 
     # Variation bodies must be resolved before interactions: a distribute comment
     # is written from the body of the post it reacts to, so the poster rows have
-    # to exist first. Text preserved from the prior plan is reused as-is; manual
-    # text (generate=False) falls back to the assignment; only the remaining slots
-    # touch the gateway.
+    # to exist first. Text preserved from the prior plan is reused as-is, then a
+    # body already on the assignment (an imported manual draft); only the
+    # remaining empty slots touch the gateway.
     variation_bodies: list[str] = []
+    variation_sources: list[str] = []
     if post_assignments:
-        variation_bodies = [
-            preserved.get(_assignment_key(campaign, a, ordered), "")
-            for a in post_assignments
-        ]
+        for a in post_assignments:
+            entry = preserved.get(_assignment_key(campaign, a, ordered))
+            if entry is not None:
+                variation_bodies.append(entry[0])
+                variation_sources.append(entry[1])
+            elif a.body and a.body.strip():
+                variation_bodies.append(a.body)
+                variation_sources.append(a.source)
+            else:
+                variation_bodies.append("")
+                variation_sources.append("ai")
         need_gen = [i for i, b in enumerate(variation_bodies) if not b]
-        if not generate:
-            for i in need_gen:
-                variation_bodies[i] = post_assignments[i].body or ""
-        elif need_gen:
+        if generate and need_gen:
             seed = campaign.seed_content or campaign.raw_brief or campaign.title
             # Group the not-yet-filled posters by team persona so each author's
             # post is written in that team's voice, one gateway call per persona.
@@ -531,16 +580,29 @@ async def build_plan(
             image_url=row_image_url,
             image_asset_id=row_image_asset_id,
             image_alt=row_image_alt,
+            source=variation_sources[idx] if idx < len(variation_sources) else "ai",
             status="pending",
             idempotency_key=f"{campaign_id}:post:{a.user_id}:{row_id}",
         )
         poster_rows.append(row)
         rows.append(row)
 
-    preserved_interactions: list[str | None] = [
-        preserved.get(_assignment_key(campaign, a, ordered)) or None
-        for a in interaction_assignments
-    ]
+    # Kept text per interaction: preserved from the prior plan first, then a body
+    # already on the assignment (imported manual draft). A non-None entry is used
+    # as-is by _resolve_interaction_texts and never hits the gateway.
+    kept_interactions: list[str | None] = []
+    interaction_sources: list[str] = []
+    for a in interaction_assignments:
+        entry = preserved.get(_assignment_key(campaign, a, ordered))
+        if entry is not None:
+            kept_interactions.append(entry[0])
+            interaction_sources.append(entry[1])
+        elif a.body and a.body.strip():
+            kept_interactions.append(a.body)
+            interaction_sources.append(a.source)
+        else:
+            kept_interactions.append(None)
+            interaction_sources.append("ai")
     interaction_texts = await _resolve_interaction_texts(
         campaign,
         interaction_assignments,
@@ -548,7 +610,7 @@ async def build_plan(
         persona_by_user,
         generate=generate,
         extra=effective_rules,
-        preserved=preserved_interactions,
+        preserved=kept_interactions,
     )
 
     for i, a in enumerate(interaction_assignments):
@@ -568,6 +630,7 @@ async def build_plan(
             lang=campaign.language,
             target_post_id=target_post_id,
             target_external_id=target_external_id,
+            source=interaction_sources[i] if i < len(interaction_sources) else "ai",
             status="pending",
             idempotency_key=f"{campaign_id}:{a.action}:{a.user_id}:{row_id}",
         )
@@ -578,26 +641,42 @@ async def build_plan(
     # tracked row (targeting the poster row) so it is visible in the plan and,
     # when the socialActions API is unavailable, falls back to the same
     # assisted-manual step as likes and comments instead of failing silently.
-    if campaign.self_comment:
-        for poster in poster_rows:
-            sc_id = uuid.uuid4()
-            rows.append(
-                Post(
-                    id=sc_id,
-                    campaign_id=campaign_id,
-                    user_id=poster.user_id,
-                    social_account_id=poster.social_account_id,
-                    platform=campaign.platform,
-                    action="self_comment",
-                    body=campaign.self_comment,
-                    lang=campaign.language,
-                    target_post_id=poster.id,
-                    status="pending",
-                    idempotency_key=(
-                        f"{campaign_id}:self_comment:{poster.user_id}:{sc_id}"
-                    ),
-                )
+    # A per-person self-comment from an imported draft overrides the campaign's,
+    # then a body preserved from the prior plan, then the campaign default. The
+    # text is always human-written, so the row is always source=manual.
+    self_comment_by_user = {
+        a.user_id: a.self_comment
+        for a in post_assignments
+        if a.self_comment and a.self_comment.strip()
+    }
+    for poster in poster_rows:
+        preserved_sc = preserved.get(f"self_comment:{poster.user_id}")
+        sc_body = (
+            self_comment_by_user.get(poster.user_id)
+            or (preserved_sc[0] if preserved_sc else None)
+            or campaign.self_comment
+        )
+        if not sc_body:
+            continue
+        sc_id = uuid.uuid4()
+        rows.append(
+            Post(
+                id=sc_id,
+                campaign_id=campaign_id,
+                user_id=poster.user_id,
+                social_account_id=poster.social_account_id,
+                platform=campaign.platform,
+                action="self_comment",
+                body=sc_body,
+                lang=campaign.language,
+                target_post_id=poster.id,
+                source="manual",
+                status="pending",
+                idempotency_key=(
+                    f"{campaign_id}:self_comment:{poster.user_id}:{sc_id}"
+                ),
             )
+        )
 
     await post_repo.bulk_create(db, rows)
 

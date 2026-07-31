@@ -120,6 +120,9 @@ async def update_post(
         raise HTTPException(409, "Only pending posts can be edited.")
     updates = body.model_dump(exclude_unset=True)
     if updates:
+        # A hand-rewritten body is no longer AI text; keep the badge honest.
+        if updates.get("body") and updates["body"] != post.body:
+            updates["source"] = "manual"
         await post_repo.update(db, post, **updates)
         await audit_repo.record(
             db,
