@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.controllers import user_controller
-from app.core.deps import get_current_user, require_role
+from app.core.deps import get_current_user, require_onboarded, require_role
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.common import Page, PageParams
@@ -15,6 +15,8 @@ from app.schemas.user import RoleUpdate, TeamAssign, UserOut
 router = APIRouter(prefix="/v1/users", tags=["users"])
 
 
+# /me and the team assignment are the onboarding wizard's own calls, so they
+# stay on get_current_user; gating them would deadlock the flow.
 @router.get("/me", response_model=UserOut)
 async def get_me(
     user: User = Depends(get_current_user),
@@ -37,7 +39,7 @@ async def set_my_team(
 async def list_roster(
     params: PageParams = Depends(),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_onboarded),
 ) -> Page[UserOut]:
     """Team roster for assigning campaign participants (any authed user)."""
     return await user_controller.list_users(db, params)

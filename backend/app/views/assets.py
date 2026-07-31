@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.controllers import asset_controller
-from app.core.deps import get_current_user, require_role
+from app.core.deps import require_onboarded, require_role
 from app.core.safe_fetch import MAX_IMAGE_BYTES, media_kind
 from app.db.session import get_db
 from app.models.user import User
@@ -64,7 +64,7 @@ async def upload_asset(
 async def get_asset(
     asset_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_onboarded),
 ) -> Response:
     data, content_type = await asset_controller.get_asset(db, asset_id)
     return Response(

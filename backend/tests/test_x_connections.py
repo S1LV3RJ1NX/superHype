@@ -154,7 +154,7 @@ async def test_x_connection_does_not_clobber_linkedin(client, as_role, mock_redi
     from app.repositories.social_account_repo import social_account_repo
 
     user_id = uuid.uuid4()
-    async with as_role("viewer", user_id=user_id):
+    async with as_role("viewer", user_id=user_id, linkedin=False):
         db.add(
             SocialAccount(
                 user_id=user_id,

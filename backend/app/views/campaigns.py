@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.controllers import campaign_controller
-from app.core.deps import get_current_user
+from app.core.deps import require_onboarded
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.campaign import (
@@ -32,7 +32,7 @@ router = APIRouter(prefix="/v1/campaigns", tags=["campaigns"])
 async def list_campaigns(
     params: PageParams = Depends(),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_onboarded),
 ) -> Page[CampaignOut]:
     return await campaign_controller.list_campaigns(db, params, user)
 
@@ -41,7 +41,7 @@ async def list_campaigns(
 async def create_campaign(
     body: CampaignCreate,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> CampaignOut:
     return await campaign_controller.create_campaign(db, body, actor)
 
@@ -51,7 +51,7 @@ async def schedule_feed(
     start: date,
     end: date,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_onboarded),
 ) -> list[ScheduleEntry]:
     return await campaign_controller.schedule_feed(db, start, end, user)
 
@@ -60,7 +60,7 @@ async def schedule_feed(
 async def get_campaign(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_onboarded),
 ) -> CampaignDetail:
     return await campaign_controller.get_campaign(db, campaign_id, user)
 
@@ -69,7 +69,7 @@ async def get_campaign(
 async def approval_readiness(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_onboarded),
 ) -> ApprovalReadiness:
     return await campaign_controller.approval_readiness(db, campaign_id, user)
 
@@ -79,7 +79,7 @@ async def update_campaign(
     campaign_id: uuid.UUID,
     body: CampaignUpdate,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> CampaignOut:
     return await campaign_controller.update_campaign(db, campaign_id, body, actor)
 
@@ -88,7 +88,7 @@ async def update_campaign(
 async def delete_campaign(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> None:
     await campaign_controller.delete_campaign(db, campaign_id, actor)
 
@@ -98,7 +98,7 @@ async def build_plan(
     campaign_id: uuid.UUID,
     body: PlanRequest,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> list[PostOut]:
     return await campaign_controller.build_plan(db, campaign_id, body, actor)
 
@@ -108,7 +108,7 @@ async def generate(
     campaign_id: uuid.UUID,
     body: PlanRequest,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> CampaignOut:
     return await campaign_controller.generate(db, campaign_id, body, actor)
 
@@ -117,7 +117,7 @@ async def generate(
 async def launch(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> CampaignOut:
     return await campaign_controller.launch(db, campaign_id, actor)
 
@@ -126,7 +126,7 @@ async def launch(
 async def reset(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> CampaignOut:
     return await campaign_controller.reset(db, campaign_id, actor)
 
@@ -135,7 +135,7 @@ async def reset(
 async def pause(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> CampaignOut:
     return await campaign_controller.pause(db, campaign_id, actor)
 
@@ -144,6 +144,6 @@ async def pause(
 async def resume(
     campaign_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> CampaignOut:
     return await campaign_controller.resume(db, campaign_id, actor)

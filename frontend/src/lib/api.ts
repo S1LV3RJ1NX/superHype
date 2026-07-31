@@ -1,5 +1,6 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
 const TOKEN_KEY = "sh_token";
+const ONBOARDING_PATH = "/app/onboarding";
 
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
@@ -38,6 +39,17 @@ export async function apiFetch<T = unknown>(
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     const detail = body.detail;
+    // The API now enforces onboarding too. Hitting this means the client-side
+    // gate was bypassed (a stale tab, a direct call), so send them to finish it
+    // rather than surfacing a permission error they cannot act on.
+    if (
+      res.status === 403 &&
+      detail?.code === "onboarding_incomplete" &&
+      !skipAuthRedirect &&
+      window.location.pathname !== ONBOARDING_PATH
+    ) {
+      window.location.href = ONBOARDING_PATH;
+    }
     const message =
       typeof detail === "string"
         ? detail

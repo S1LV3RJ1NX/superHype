@@ -20,7 +20,7 @@ async def _make_team(engine, name: str, *, is_active: bool = True) -> Team:
 
 
 async def test_new_user_has_no_team(client: AsyncClient, as_role):
-    async with as_role("viewer", email="fresh@test.local"):
+    async with as_role("viewer", email="fresh@test.local", team=False):
         resp = await client.get("/v1/users/me")
     assert resp.status_code == 200
     assert resp.json()["team_id"] is None

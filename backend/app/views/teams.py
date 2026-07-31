@@ -15,6 +15,7 @@ from app.schemas.team import TeamCreate, TeamOut, TeamUpdate
 router = APIRouter(prefix="/v1/teams", tags=["teams"])
 
 
+# Ungated on purpose: this is the picker onboarding step 1 reads from.
 @router.get("", response_model=Page[TeamOut])
 async def list_teams(
     params: PageParams = Depends(),

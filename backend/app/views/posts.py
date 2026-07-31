@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.controllers import post_controller
-from app.core.deps import get_current_user
+from app.core.deps import require_onboarded
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.common import Page, PageParams
@@ -20,7 +20,7 @@ async def list_posts(
     campaign_id: uuid.UUID,
     params: PageParams = Depends(),
     db: AsyncSession = Depends(get_db),
-    user: User = Depends(get_current_user),
+    user: User = Depends(require_onboarded),
 ) -> Page[PostOut]:
     return await post_controller.list_posts(db, campaign_id, params, user)
 
@@ -32,7 +32,7 @@ async def list_posts(
 async def batch_action(
     body: BatchAction,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> list[PostOut]:
     return await post_controller.batch_action(
         db, op=body.op, post_ids=body.post_ids, actor=actor
@@ -44,7 +44,7 @@ async def update_post(
     post_id: uuid.UUID,
     body: PostUpdate,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> PostOut:
     return await post_controller.update_post(db, post_id, body, actor)
 
@@ -53,7 +53,7 @@ async def update_post(
 async def approve_post(
     post_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> PostOut:
     return await post_controller.approve_post(db, post_id, actor)
 
@@ -62,7 +62,7 @@ async def approve_post(
 async def acknowledge_post(
     post_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> PostOut:
     return await post_controller.acknowledge_post(db, post_id, actor)
 
@@ -71,6 +71,6 @@ async def acknowledge_post(
 async def skip_post(
     post_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    actor: User = Depends(get_current_user),
+    actor: User = Depends(require_onboarded),
 ) -> PostOut:
     return await post_controller.skip_post(db, post_id, actor)

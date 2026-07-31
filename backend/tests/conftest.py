@@ -11,6 +11,7 @@ from collections.abc import AsyncGenerator
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -128,6 +129,11 @@ def as_role(client: AsyncClient, engine: AsyncEngine):
 
     Returns a context manager that yields the synthetic user and injects it into
     the database so foreign-key-dependent queries work.
+
+    The user is onboarded by default (a team and a LinkedIn account), because
+    require_onboarded gates every real endpoint and an un-onboarded caller is
+    not what most tests are about. Pass team=False or linkedin=False to test the
+    gate itself, or to test the onboarding endpoints that fill those in.
     """
     from contextlib import asynccontextmanager
 
@@ -139,12 +145,42 @@ def as_role(client: AsyncClient, engine: AsyncEngine):
         role: str = "viewer",
         email: str | None = None,
         user_id: uuid.UUID | None = None,
+        team: bool = True,
+        linkedin: bool = True,
     ):
         user = _make_user(role=role, email=email, user_id=user_id)
         maker = async_sessionmaker(engine, expire_on_commit=False)
 
         async with maker() as session:
+            # Tests re-enter as the same user_id to act again later, so both
+            # extras are idempotent and never clobber what a test set up itself.
+            existing = await session.get(User, user.id)
+            if existing is not None and existing.team_id is not None:
+                user.team_id = existing.team_id
+            elif team:
+                row = Team(id=uuid.uuid4(), name=f"Team {uuid.uuid4().hex[:8]}")
+                session.add(row)
+                await session.flush()
+                user.team_id = row.id
             user = await session.merge(user)
+            await session.flush()
+            if linkedin:
+                connected = await session.scalar(
+                    select(SocialAccount.id).where(
+                        SocialAccount.user_id == user.id,
+                        SocialAccount.platform == "linkedin",
+                    )
+                )
+                if connected is None:
+                    session.add(
+                        SocialAccount(
+                            user_id=user.id,
+                            platform="linkedin",
+                            external_urn=f"urn:li:person:{uuid.uuid4().hex[:12]}",
+                            display_name=user.name,
+                            access_token_enc=b"enc",
+                        )
+                    )
             await session.commit()
             await session.refresh(user)
 

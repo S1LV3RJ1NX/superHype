@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.controllers import leaderboard_controller
-from app.core.deps import get_current_user
+from app.core.deps import require_onboarded
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.leaderboard import LeaderboardOut
@@ -20,7 +20,7 @@ async def get_leaderboard(
     end: datetime | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=100),
     db: AsyncSession = Depends(get_db),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(require_onboarded),
 ) -> LeaderboardOut:
     """Ranked members by contribution score. Omit start/end for all-time."""
     return await leaderboard_controller.get_leaderboard(

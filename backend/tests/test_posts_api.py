@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sqlalchemy import delete
 
 from app.core.crypto import encrypt
 from app.models.social_account import SocialAccount
@@ -11,8 +12,23 @@ from app.models.social_account import SocialAccount
 pytestmark = pytest.mark.asyncio
 
 
+async def _disconnect(db, user_id, platform="linkedin"):
+    await db.execute(
+        delete(SocialAccount).where(
+            SocialAccount.user_id == user_id, SocialAccount.platform == platform
+        )
+    )
+    await db.commit()
+
+
 async def _connect(db, user_id, *, status="active", expires_in_days=60):
-    """Give a user a LinkedIn connection so approve can pass the reconnect gate."""
+    """Replace a user's LinkedIn connection with one in a known state.
+
+    as_role already connects the user so they clear the onboarding gate, so this
+    drops that placeholder first and installs an account with the token expiry
+    and status the reconnect assertions need.
+    """
+    await _disconnect(db, user_id)
     acct = SocialAccount(
         user_id=user_id,
         platform="linkedin",
@@ -377,19 +393,17 @@ async def test_owner_skips_failed_post(client, as_role, db):
     assert resp.json()["status"] == "skipped"
 
 
-async def test_readiness_requires_connect_when_no_account(client, as_role):
-    # A reshare publishes under the owner's token, so with no account the
-    # pre-flight check asks the owner to connect before approving.
+async def test_readiness_blocked_when_owner_has_no_linkedin(client, as_role, db):
+    # LinkedIn is half of onboarding, so an owner with no account is not a
+    # usable member of the app at all. The gate sends them back to the wizard
+    # rather than serving a readiness prompt they cannot act on. The equivalent
+    # "connected is false" branch is still exercised for X, which is optional.
     async with as_role("editor") as user:
         cid, _ = await _amplify_with_post(client, user, action="repost_comment")
+        await _disconnect(db, user.id)
         resp = await client.get(f"/v1/campaigns/{cid}/approval-readiness")
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["requires_connection"] is True
-    assert body["connected"] is False
-    assert body["needs_reconnect"] is True
-    # One amplify participant expands to like + comment + repost.
-    assert body["pending_count"] == 3
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "onboarding_incomplete"
 
 
 async def test_readiness_clear_with_healthy_account(client, as_role, db):
@@ -437,6 +451,15 @@ async def test_readiness_assisted_only_needs_no_linkedin(client, as_role, db):
     body = resp.json()
     assert body["requires_connection"] is False
     assert body["needs_reconnect"] is False
+
+
+async def test_readiness_counts_pending(client, as_role):
+    async with as_role("editor") as user:
+        cid, _ = await _amplify_with_post(client, user, action="repost_comment")
+        resp = await client.get(f"/v1/campaigns/{cid}/approval-readiness")
+    assert resp.status_code == 200
+    # One amplify participant expands to like + comment + repost.
+    assert resp.json()["pending_count"] == 3
 
 
 def _x_amplify_payload() -> dict:

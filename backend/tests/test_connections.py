@@ -83,7 +83,7 @@ async def test_callback_stores_encrypted_token(client, as_role, mock_redis, db):
             return_value=("urn:li:person:abc123", "Test User"),
         ),
     ):
-        async with as_role("viewer", user_id=user_id):
+        async with as_role("viewer", user_id=user_id, linkedin=False):
             resp = await client.post(
                 "/v1/connections/linkedin/callback",
                 json={"code": "real-code", "state": state},
@@ -121,7 +121,7 @@ async def test_disconnect_deletes_row_and_audits(client, as_role, mock_redis, db
             return_value=("urn:li:person:del123", "Del User"),
         ),
     ):
-        async with as_role("viewer", user_id=user_id) as _user:
+        async with as_role("viewer", user_id=user_id, linkedin=False) as _user:
             await client.post(
                 "/v1/connections/linkedin/callback",
                 json={"code": "code", "state": state},
@@ -185,7 +185,7 @@ async def test_reconnect_returns_authorize_url(client, as_role, mock_redis):
 
 @pytest.mark.asyncio
 async def test_list_connections_empty(client, as_role, mock_redis):
-    async with as_role("viewer"):
+    async with as_role("viewer", linkedin=False):
         resp = await client.get("/v1/connections")
     assert resp.status_code == 200
     assert resp.json() == []
@@ -209,7 +209,7 @@ async def test_list_connections_after_connect(client, as_role, mock_redis):
             return_value=("urn:li:person:list1", "List User"),
         ),
     ):
-        async with as_role("viewer", user_id=user_id):
+        async with as_role("viewer", user_id=user_id, linkedin=False):
             await client.post(
                 "/v1/connections/linkedin/callback",
                 json={"code": "code", "state": state},
@@ -311,7 +311,7 @@ def _mock_oauth():
 async def test_callback_resumes_pending_post(client, as_role, mock_redis, db, enqueued):
     user_id = uuid.uuid4()
     state = "state-resume-ok"
-    async with as_role("viewer", user_id=user_id):
+    async with as_role("viewer", user_id=user_id, linkedin=False):
         campaign, post = await _pending_post(db, user_id)
         await mock_redis.set(
             f"super-hype:li:state:{state}",
@@ -349,7 +349,9 @@ async def test_callback_resume_owner_mismatch_skips(
         _, post = await _pending_post(db, owner_id)
 
     state = "state-resume-foreign"
-    async with as_role("viewer", user_id=other_id, email="other@test.local"):
+    async with as_role(
+        "viewer", user_id=other_id, email="other@test.local", linkedin=False
+    ):
         await mock_redis.set(
             f"super-hype:li:state:{state}",
             json.dumps({"user_id": str(other_id), "resume_post_id": str(post.id)}),
@@ -375,7 +377,7 @@ async def test_callback_resume_idempotent_when_terminal(
 ):
     user_id = uuid.uuid4()
     state = "state-resume-terminal"
-    async with as_role("viewer", user_id=user_id):
+    async with as_role("viewer", user_id=user_id, linkedin=False):
         _, post = await _pending_post(db, user_id)
         post.status = "skipped"
         await db.commit()
