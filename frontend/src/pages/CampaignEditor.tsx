@@ -12,7 +12,7 @@ import {
 } from "@/components/CampaignFields";
 import { CampaignWizard } from "@/components/CampaignWizard";
 import { type LockedPost, type RosterUser } from "@/components/PlanBuilder";
-import { apiFetch } from "@/lib/api";
+import { apiFetch, fetchAllPages } from "@/lib/api";
 import { fetchAllRoster } from "@/lib/roster";
 
 const EDITABLE_STATUSES = ["draft", "review"];
@@ -137,18 +137,20 @@ export function CampaignEditor() {
     setLoading(true);
     setError(null);
     try {
+      // Drain the paginated posts list: a truncated first page would drop
+      // participants from the pre-selected plan and hide locked posts.
       const [c, p, r] = await Promise.all([
         apiFetch<Campaign>(`/v1/campaigns/${id}`),
-        apiFetch<{ items: Post[] }>(`/v1/campaigns/${id}/posts`),
+        fetchAllPages<Post>(`/v1/campaigns/${id}/posts`),
         fetchAllRoster(),
       ]);
       setCampaign(c);
       setRoster(r);
       setInitialFields(fieldsFromCampaign(c));
-      setInitialParticipantIds(participantIdsFromPosts(p.items));
-      setInitialActionsByParticipant(actionsByParticipantFromPosts(p.items));
+      setInitialParticipantIds(participantIdsFromPosts(p));
+      setInitialActionsByParticipant(actionsByParticipantFromPosts(p));
       setLockedPosts(
-        p.items
+        p
           .filter((post) => post.status !== "pending")
           .map((post) => ({
             id: post.id,

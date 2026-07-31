@@ -64,6 +64,26 @@ export async function apiFetch<T = unknown>(
   return res.json() as Promise<T>;
 }
 
+/**
+ * Drain a keyset-paginated list endpoint (Page[T] with items + next_cursor).
+ * Every list endpoint defaults to a small page (20), so any view that needs
+ * the complete set must follow the cursor or it silently truncates.
+ */
+export async function fetchAllPages<T>(path: string): Promise<T[]> {
+  const all: T[] = [];
+  let cursor: string | null = null;
+  const sep = path.includes("?") ? "&" : "?";
+  do {
+    const qs: string = `${sep}limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`;
+    const page: { items: T[]; next_cursor: string | null } = await apiFetch(
+      `${path}${qs}`,
+    );
+    all.push(...page.items);
+    cursor = page.next_cursor;
+  } while (cursor);
+  return all;
+}
+
 export async function uploadAsset(file: File): Promise<{ id: string }> {
   const token = getToken();
   const form = new FormData();

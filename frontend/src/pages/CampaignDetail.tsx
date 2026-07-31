@@ -25,8 +25,9 @@ import {
   type Post,
   PostCard,
 } from "@/components/PostCards";
-import { ApiError, apiFetch } from "@/lib/api";
+import { ApiError, apiFetch, fetchAllPages } from "@/lib/api";
 import { platformLabel } from "@/lib/platform";
+import { fetchAllRoster } from "@/lib/roster";
 
 const DELETABLE_STATUSES = ["draft", "review", "failed"];
 const EDITABLE_STATUSES = ["draft", "review"];
@@ -129,14 +130,17 @@ export function CampaignDetail() {
   const load = useCallback(async () => {
     if (!id) return;
     try {
+      // Posts and roster are paginated (default page 20, newest first): drain
+      // both fully, or big campaigns lose cards and anyone past the first
+      // roster page renders as "Unknown".
       const [c, p, r] = await Promise.all([
         apiFetch<Campaign>(`/v1/campaigns/${id}`),
-        apiFetch<{ items: Post[] }>(`/v1/campaigns/${id}/posts`),
-        apiFetch<{ items: RosterUser[] }>(`/v1/users/roster`),
+        fetchAllPages<Post>(`/v1/campaigns/${id}/posts`),
+        fetchAllRoster(),
       ]);
       setCampaign(c);
-      setPosts(p.items);
-      setRoster(r.items);
+      setPosts(p);
+      setRoster(r);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load campaign");
     }
