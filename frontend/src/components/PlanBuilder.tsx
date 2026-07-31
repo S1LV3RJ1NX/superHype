@@ -87,19 +87,34 @@ export function PlanBuilder({
   // header needs a wider column than the single-word actions to stay on one line.
   const colWidth = (key: string) => (onX && key === "like" ? "w-28" : "w-14");
 
+  const connectionStatus = (u: RosterUser) =>
+    onX ? u.x_status : u.linkedin_status;
+
+  const isConnected = (u: RosterUser) => !!connectionStatus(u);
+
+  // Only people with a connected account on this platform can take part: they
+  // are the only ones shown, and any selection (initial plan, team toggle,
+  // import auto-select) is trimmed to them. Re-planning a campaign created
+  // before this rule silently drops its unconnected participants.
+  const connectedRoster = roster.filter(isConnected);
+  const connectedIds = new Set(connectedRoster.map((u) => u.id));
+
   // Distribute tracks membership only (actions are derived from the type).
   const [selected, setSelected] = useState<Set<string>>(
-    () => new Set(initialParticipantIds ?? []),
+    () =>
+      new Set((initialParticipantIds ?? []).filter((id) => connectedIds.has(id))),
   );
   // Amplify tracks each person's chosen actions; membership = a non-empty set.
   const [actions, setActions] = useState<Record<string, Set<string>>>(() => {
     const init: Record<string, Set<string>> = {};
     if (initialActionsByParticipant) {
       for (const [uid, acts] of Object.entries(initialActionsByParticipant)) {
-        if (acts.length > 0) init[uid] = new Set(acts);
+        if (acts.length > 0 && connectedIds.has(uid)) init[uid] = new Set(acts);
       }
     } else if (initialParticipantIds) {
-      for (const uid of initialParticipantIds) init[uid] = new Set(ALL_AMPLIFY_KEYS);
+      for (const uid of initialParticipantIds) {
+        if (connectedIds.has(uid)) init[uid] = new Set(ALL_AMPLIFY_KEYS);
+      }
     }
     return init;
   });
@@ -115,9 +130,6 @@ export function PlanBuilder({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<"all" | "connected" | "unconnected">(
-    "all",
-  );
   const [teamFilter, setTeamFilter] = useState<string>("all");
   const [teams, setTeams] = useState<TeamOption[]>([]);
   const [teamsLoading, setTeamsLoading] = useState(true);
@@ -129,18 +141,13 @@ export function PlanBuilder({
       .finally(() => setTeamsLoading(false));
   }, []);
 
-  // Only show team controls for teams that actually have someone in the roster.
+  // Only show team controls for teams with someone connected in the roster.
   const teamsInRoster = teams.filter((t) =>
-    roster.some((u) => u.team_id === t.id),
+    connectedRoster.some((u) => u.team_id === t.id),
   );
 
-  const connectionStatus = (u: RosterUser) =>
-    onX ? u.x_status : u.linkedin_status;
-
-  const isConnected = (u: RosterUser) => !!connectionStatus(u);
-
   const teamMembers = (teamId: string) =>
-    roster.filter((u) => u.team_id === teamId);
+    connectedRoster.filter((u) => u.team_id === teamId);
 
   // --- membership helpers (branch on campaign type) ------------------------
 
@@ -154,7 +161,10 @@ export function PlanBuilder({
 
   // Add or remove people wholesale. On amplify, adding a person defaults them to
   // every action; removing clears their set.
-  const setMembers = (uids: string[], on: boolean) => {
+  const setMembers = (rawUids: string[], on: boolean) => {
+    // Never let an unconnected person into the selection, whatever the path
+    // (team chip, select all, draft import auto-select).
+    const uids = on ? rawUids.filter((u) => connectedIds.has(u)) : rawUids;
     if (isDistribute) {
       setSelected((prev) => {
         const next = new Set(prev);
@@ -222,19 +232,14 @@ export function PlanBuilder({
     );
   };
 
-  const filtered = roster.filter((u) => {
+  const filtered = connectedRoster.filter((u) => {
     const q = search.trim().toLowerCase();
     const matchesQuery =
       !q ||
       (u.name ?? "").toLowerCase().includes(q) ||
       u.email.toLowerCase().includes(q);
-    const connected = isConnected(u);
-    const matchesFilter =
-      filter === "all" ||
-      (filter === "connected" && connected) ||
-      (filter === "unconnected" && !connected);
     const matchesTeam = teamFilter === "all" || u.team_id === teamFilter;
-    return matchesQuery && matchesFilter && matchesTeam;
+    return matchesQuery && matchesTeam;
   });
 
   const allFilteredSelected =
@@ -508,21 +513,10 @@ export function PlanBuilder({
           </div>
 
           <div className="mb-2 flex flex-wrap items-center gap-1.5">
-            <FilterChip
-              label="All"
-              active={filter === "all"}
-              onClick={() => setFilter("all")}
-            />
-            <FilterChip
-              label="Connected"
-              active={filter === "connected"}
-              onClick={() => setFilter("connected")}
-            />
-            <FilterChip
-              label="Not connected"
-              active={filter === "unconnected"}
-              onClick={() => setFilter("unconnected")}
-            />
+            <span className="text-[11px] text-muted-ink">
+              Only people with a connected {onX ? "X" : "LinkedIn"} account are
+              listed.
+            </span>
             {teamsInRoster.length > 0 && (
               <select
                 value={teamFilter}
@@ -583,12 +577,14 @@ export function PlanBuilder({
           <div className="max-h-80 divide-y divide-border overflow-y-auto rounded-md border border-border">
             {filtered.length === 0 && (
               <p className="px-3 py-4 text-xs text-muted-ink">
-                No people match your search.
+                {connectedRoster.length === 0
+                  ? `No one has connected ${onX ? "X" : "LinkedIn"} yet.`
+                  : "No people match your search."}
               </p>
             )}
             {filtered.map((u) => {
-              const connected = isConnected(u);
-              const stale = connected && connectionStatus(u) !== "active";
+              // Everyone listed is connected; stale just means reconnect needed.
+              const stale = connectionStatus(u) !== "active";
               const info = (
                 <div className="min-w-0 flex-1">
                   <p className="flex items-center gap-1.5 truncate text-sm text-ink">
@@ -608,11 +604,7 @@ export function PlanBuilder({
                       stale ? "text-clay" : "text-muted-ink",
                     )}
                   >
-                    {connected
-                      ? stale
-                        ? "Needs reconnect"
-                        : "Connected"
-                      : "Not connected"}
+                    {stale ? "Needs reconnect" : "Connected"}
                   </p>
                 </div>
               );
@@ -704,31 +696,6 @@ export function PlanBuilder({
 function nameFor(roster: RosterUser[], uid: string) {
   const u = roster.find((x) => x.id === uid);
   return u?.name ?? u?.email ?? "Unknown";
-}
-
-function FilterChip({
-  label,
-  active,
-  onClick,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "rounded-full border px-3 py-1 text-xs transition-colors",
-        active
-          ? "border-ink bg-paper text-ink"
-          : "border-border bg-sand/40 text-muted-ink hover:bg-sand",
-      )}
-    >
-      {label}
-    </button>
-  );
 }
 
 export function SmallButton({
