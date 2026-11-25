@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.core.approval_mode import auto_approves
 from app.core.engagement import is_assisted
 from app.core.platforms import platform_label
 from app.models.post import Post
@@ -110,10 +111,14 @@ async def _require_owner_admin_or_creator(
     raise NotOwnerOrAdminError()
 
 
-async def _apply_approve(db: AsyncSession, post: Post, actor: User) -> bool:
+async def _apply_approve(
+    db: AsyncSession, post: Post, actor: User, *, auto: bool = False
+) -> bool:
     """Validate and mutate one post to ``approved`` in place. No commit or enqueue.
 
-    Returns whether this was a retry (a failed post being re-approved).
+    Returns whether this was a retry (a failed post being re-approved). ``auto``
+    marks an approval made on the owner's standing auto-approve consent rather
+    than a click, so the audit trail tells the two apart.
     """
     await _require_owner_admin_or_creator(db, post, actor)
     # "failed" is allowed so the owner can retry after fixing the cause (e.g. a
@@ -161,10 +166,16 @@ async def _apply_approve(db: AsyncSession, post: Post, actor: User) -> bool:
     # can run again and check_completion can re-settle it.
     if is_retry and campaign.status == "completed":
         await campaign_service.transition(db, campaign, "publishing", actor_id=actor.id)
+    if is_retry:
+        action = "post_retried"
+    elif auto:
+        action = "post_auto_approved"
+    else:
+        action = "post_approved"
     await audit_repo.record(
         db,
         actor_id=actor.id,
-        action="post_retried" if is_retry else "post_approved",
+        action=action,
         campaign_id=post.campaign_id,
         post_id=post.id,
     )
@@ -240,6 +251,33 @@ async def approve(
     for post in posts:
         await queue.enqueue_job("publish_post", str(post.id))
     return posts
+
+
+async def auto_approve(
+    db: AsyncSession, campaign_id: uuid.UUID, owner: User
+) -> list[Post]:
+    """Approve an owner's still-scheduled actions on their auto-approve consent.
+
+    Runs when the review window closes. Anything the owner skipped or approved
+    in the meantime is no longer scheduled and is left alone. A post the normal
+    approve gate rejects (for example a token that went stale) stays scheduled
+    for the owner to settle by hand. Does not enqueue publishing; the caller
+    does, after this commits.
+    """
+    if not auto_approves(owner):
+        return []
+    posts = await post_repo.list_for_campaign_user(
+        db, campaign_id, owner.id, statuses=("scheduled",)
+    )
+    approved: list[Post] = []
+    for post in posts:
+        try:
+            await _apply_approve(db, post, owner, auto=True)
+        except ApprovalError:
+            continue
+        approved.append(post)
+    await db.commit()
+    return approved
 
 
 async def acknowledge(

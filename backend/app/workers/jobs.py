@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core import crypto
+from app.core.approval_mode import auto_approves
 from app.core.engagement import is_assisted
 from app.core.platforms import platform_label
 from app.core.safe_fetch import fetch_image, media_kind
@@ -39,7 +40,7 @@ from app.repositories.post_repo import post_repo
 from app.repositories.social_account_repo import social_account_repo
 from app.repositories.user_repo import user_repo
 from app.schemas.post import Assignment
-from app.services import campaign_service, slack_service
+from app.services import approval_service, campaign_service, slack_service
 from app.services.engagement_service import engagement_ask
 from app.storage import db_asset_store
 
@@ -199,6 +200,14 @@ async def resume_campaign(ctx: dict, campaign_id: str) -> None:
             "notify_participant", campaign_id, str(user_id), _defer_by=delay
         )
 
+    # Auto-approve jobs were dropped by the pause guard too; give everyone who
+    # opted in a fresh review window over the actions still awaiting them.
+    async with async_session_factory() as db:
+        scheduled_owners = {p.user_id for p in posts if p.status == "scheduled"}
+        for owner in await user_repo.list_by_ids(db, list(scheduled_owners)):
+            if auto_approves(owner):
+                await _schedule_auto_approve(redis, campaign_id, str(owner.id))
+
     # Nudge everyone still awaiting approval or an assisted action.
     await redis.enqueue_job(
         "send_reminders", campaign_id, _defer_by=settings.REMINDER_DELAY_SECONDS
@@ -295,13 +304,61 @@ async def notify_participant(ctx: dict, campaign_id: str, user_id: str) -> None:
             post.status = "scheduled"
         await db.commit()
 
+        # On the person's own opt-in, their actions go ahead once the review
+        # window closes unless they skip them first; the card says so.
+        auto_approve_at = None
+        if auto_approves(user):
+            await _schedule_auto_approve(ctx["redis"], campaign_id, user_id)
+            auto_approve_at = datetime.now(UTC) + timedelta(
+                seconds=settings.AUTO_APPROVE_DELAY_SECONDS
+            )
+
         client = build_slack_client()
         if client is None:
             return
         try:
-            await slack_service.notify_participant(db, client, campaign, user, posts)
+            await slack_service.notify_participant(
+                db, client, campaign, user, posts, auto_approve_at=auto_approve_at
+            )
         finally:
             await client.aclose()
+
+
+async def _schedule_auto_approve(redis: Any, campaign_id: str, user_id: str) -> None:
+    """Queue the end-of-review-window auto-approve for one person.
+
+    A fixed job id dedupes it: one pending auto-approve per person per campaign
+    covers every action they have scheduled when it fires.
+    """
+    await redis.enqueue_job(
+        "auto_approve_posts",
+        campaign_id,
+        user_id,
+        _job_id=f"auto:{campaign_id}:{user_id}",
+        _defer_by=settings.AUTO_APPROVE_DELAY_SECONDS,
+    )
+
+
+async def auto_approve_posts(ctx: dict, campaign_id: str, user_id: str) -> None:
+    """Approve a person's still-scheduled actions once their review window closes.
+
+    Only on their standing opt-in, re-checked now (they may have opted out, or the
+    deployment gone back to manual-only, during the window). Anything they skipped
+    or approved meanwhile is no longer scheduled and is untouched. A paused or
+    reset campaign drops the job; resume re-schedules it with a fresh window.
+    """
+    cid = uuid.UUID(campaign_id)
+    uid = uuid.UUID(user_id)
+    async with async_session_factory() as db:
+        campaign = await campaign_repo.get(db, cid)
+        if campaign is None or campaign.status != "publishing":
+            return
+        user = await user_repo.get(db, uid)
+        if user is None:
+            return
+        approved = await approval_service.auto_approve(db, cid, user)
+    for post in approved:
+        await ctx["redis"].enqueue_job("publish_post", str(post.id))
 
 
 async def notify_engagements(ctx: dict, campaign_id: str, user_id: str) -> None:
@@ -551,20 +608,51 @@ def _forbidden_message(action: str, exc: ProviderAPIError) -> str:
     """Human-readable reason for a 403 so the failure is actionable in the UI.
 
     On LinkedIn, comments and likes go through the socialActions API, which
-    needs the w_member_social_feed scope. That scope is part of the Community
-    Management API and is not self-serve; a standard Share-on-LinkedIn app
-    (w_member_social) can publish and reshare but cannot comment or like.
+    needs the w_member_social_feed scope. The connect flow requests it, so a 403
+    here almost always means the account was connected before the scope was
+    added and its token lacks it; reconnecting grants it.
     """
     if isinstance(exc, LinkedInAPIError) and action in ("comment", "like"):
         return (
-            "Failed: LinkedIn denied this action (403). Comments and likes use the "
-            "socialActions API, which requires the w_member_social_feed scope. That "
-            "scope is granted only through the Community Management API (not "
-            "self-serve). This app currently holds w_member_social, which covers "
-            "posts and reshares but not comments or likes. Request Community "
-            "Management API access to enable them."
+            "Failed: LinkedIn denied this action (403). Comments and likes need "
+            "the w_member_social_feed scope, which this account's token does not "
+            "hold, usually because it was connected before the scope was added. "
+            "Reconnect LinkedIn in Connections to grant it, then retry."
         )
     return f"Failed: the platform denied this action (403). {exc}"[:1000]
+
+
+def _quota_keys(platform: str, account_id: uuid.UUID) -> tuple[str, str]:
+    """Redis keys marking a spent daily quota: app-wide, then per account."""
+    return f"quota:{platform}:app", f"quota:{platform}:acct:{account_id}"
+
+
+async def _quota_defer(redis: Any, platform: str, account_id: uuid.UUID) -> int | None:
+    """Seconds until a spent daily quota resets for this account, else None.
+
+    Checked before any provider call so work queued behind an exhausted quota
+    waits for the reset without spending a call (and a 429) per job. Each key
+    holds the reset time as epoch seconds and expires at that moment.
+    """
+    now = datetime.now(UTC).timestamp()
+    waits = []
+    for key in _quota_keys(platform, account_id):
+        value = await redis.get(key)
+        if value is not None and float(value) > now:
+            waits.append(int(float(value) - now) + 1)
+    return max(waits) if waits else None
+
+
+async def _park_on_quota(
+    redis: Any, exc: ProviderRateLimitError, platform: str, account_id: uuid.UUID
+) -> None:
+    """Record a spent daily quota so other jobs and reconcile wait it out."""
+    if exc.quota_scope is None or not exc.retry_after:
+        return
+    app_key, acct_key = _quota_keys(platform, account_id)
+    key = app_key if exc.quota_scope == "app" else acct_key
+    resume_at = datetime.now(UTC).timestamp() + exc.retry_after
+    await redis.set(key, str(resume_at), ex=exc.retry_after)
 
 
 def _nonretryable(exc: Exception) -> bool:
@@ -597,8 +685,8 @@ def _publish_failure_message(action: str, exc: Exception, *, rolled_back: bool) 
             return (
                 "Failed: the post was rolled back because the link could not be "
                 "placed in the first comment. Comments require the "
-                "w_member_social_feed scope (Community Management API), which this "
-                "app does not have. Use body link placement or request the scope."
+                "w_member_social_feed scope, which this account's token does not "
+                "hold. Reconnect LinkedIn to grant it, or use body link placement."
             )
         if rolled_back:
             return (
@@ -734,6 +822,16 @@ async def publish_post(ctx: dict, post_id: str) -> None:
         ):
             return
 
+        # A spent daily quota blocks every call (body or first comment), so wait
+        # for the reset without spending a call that would only 429 again.
+        platform, account_id = post.platform, post.social_account_id
+        quota_wait = await _quota_defer(ctx["redis"], platform, account_id)
+        if quota_wait is not None:
+            await ctx["redis"].enqueue_job(
+                "publish_post", post_id, _defer_by=quota_wait
+            )
+            return
+
         # Authenticity guardrails: only gate the outbound action itself (when the
         # body is not yet live), never the first-comment resume.
         if post.external_id is None:
@@ -825,6 +923,13 @@ async def publish_post(ctx: dict, post_id: str) -> None:
             )
         except ProviderRateLimitError as exc:
             await db.rollback()
+            log.warning(
+                "publish_post.rate_limited",
+                post_id=post_id,
+                quota_scope=exc.quota_scope,
+                retry_after=exc.retry_after,
+            )
+            await _park_on_quota(ctx["redis"], exc, platform, account_id)
             await ctx["redis"].enqueue_job(
                 "publish_post", post_id, _defer_by=exc.retry_after or 60
             )
@@ -1148,11 +1253,41 @@ async def _reconcile_one(
         )
         stagger_max = _campaign_stagger_max(campaign)
 
+        # Scheduled actions untouched well past their review window belong to
+        # someone whose auto-approve job was lost, if they opted in.
+        auto_overdue_before = stalled_before - timedelta(
+            seconds=settings.AUTO_APPROVE_DELAY_SECONDS
+        )
+        overdue_owner_ids = list(
+            {
+                p.user_id
+                for p in posts
+                if p.status == "scheduled"
+                and ensure_utc(p.updated_at) < auto_overdue_before
+            }
+        )
+        auto_overdue = [
+            u
+            for u in await user_repo.list_by_ids(db, overdue_owner_ids)
+            if auto_approves(u)
+        ]
+
+    # 1b) Lost auto-approve jobs: re-queue under the same fixed job id, which
+    #     dedupes against one still queued.
+    for owner in auto_overdue:
+        await _schedule_auto_approve(redis, str(campaign_id), str(owner.id))
+
     # 1) Stalled approved posts: the publish_post job was lost. Re-enqueue with a
     #    fixed job id (dedupes ticks); the publish lease makes a re-drive safe even
     #    if a deferred job somehow survived.
+    #    A post parked on a spent daily quota is not lost, just waiting for the
+    #    reset; re-driving it would only spend a call on another 429.
     for post in posts:
         if post.status == "approved" and ensure_utc(post.updated_at) < stalled_before:
+            if post.social_account_id is not None and await _quota_defer(
+                redis, post.platform, post.social_account_id
+            ):
+                continue
             await redis.enqueue_job(
                 "publish_post", str(post.id), _job_id=f"publish:{post.id}"
             )

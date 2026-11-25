@@ -322,6 +322,9 @@ class _FakeRedis:
     async def enqueue_job(self, name, *args, **kwargs):
         self.jobs.append((name, args, kwargs))
 
+    async def get(self, key):
+        return None
+
 
 @pytest_asyncio.fixture
 async def env(engine, monkeypatch):

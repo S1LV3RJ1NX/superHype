@@ -64,7 +64,7 @@ app/
 - Link placement is set by `link_placement`: `first_comment` (default) publishes the text and adds the link as the first comment for reach; `body` puts the URL in the commentary for the auto preview card. Keep both URNs when using the first comment.
 - Images upload via `POST /rest/images?action=initializeUpload` (owner is the post's author), then PUT the bytes, then reference `content.media.id`. The image owner must match the post author, so in the publish job upload the campaign image under each participant's own token, store `image_asset_urn`, and skip re-upload on retry. Carousels are 2 to 20 images.
 - 401 is non-retryable: mark the account `stale` and enqueue `request_reconnect`. 429 is retryable-with-delay. Other 5xx use bounded exponential backoff.
-- Scopes are `w_member_social` and `r_basicprofile` only. Do not add scopes; it forces every member to re-consent.
+- Scopes are `w_member_social`, `w_member_social_feed` and `r_basicprofile` only (no `openid`/`profile`: the Community Management app cannot hold OpenID Connect). Do not add scopes; it forces every member to re-consent.
 
 ## Don't
 - Do not call external APIs from inside a view; go through a controller and service, and push slow work to a job.

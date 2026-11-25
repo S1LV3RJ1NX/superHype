@@ -13,6 +13,7 @@ from app.core.redis import get_arq_redis_settings
 from app.db.session import engine
 from app.logger import get_logger
 from app.workers.jobs import (
+    auto_approve_posts,
     flush_campaign_jobs,
     generate_drafts,
     handle_slack_interaction,
@@ -60,6 +61,10 @@ class WorkerSettings:
             keep_result=settings.ENGAGEMENT_BUNDLE_DELAY_SECONDS,
         ),
         publish_post,
+        # No result retention, so the fixed auto:{campaign}:{user} id only
+        # dedupes while a job is queued; a resume or a later notify can then
+        # schedule a fresh review window.
+        func(auto_approve_posts, name="auto_approve_posts", keep_result=0),
         # Result kept for the whole reminder window: the reconcile cron re-issues
         # reminders with the fixed id remind:{campaign_id}, and the retained
         # result is what throttles that to at most one nudge per window instead

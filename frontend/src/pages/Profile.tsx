@@ -3,6 +3,7 @@ import { Check, Loader2, Shield, ShieldAlert, User } from "lucide-react";
 
 import { AppShell } from "@/components/AppShell";
 import { useAuth } from "@/auth/AuthContext";
+import { AutoApproveConsent } from "@/components/AutoApproveConsent";
 import { apiFetch, ApiError } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
@@ -149,6 +150,19 @@ export function Profile() {
             </span>
           )}
         </div>
+
+        {user?.auto_approve_available && (
+          <>
+            <h2 className="mt-10 font-serif text-lg text-ink">Approvals</h2>
+            <p className="mt-1 text-sm text-muted-ink">
+              Approve each action yourself, or let them go ahead automatically
+              unless you skip them in the portal or Slack first.
+            </p>
+            <div className="mt-3">
+              <AutoApproveConsent />
+            </div>
+          </>
+        )}
       </div>
     </AppShell>
   );

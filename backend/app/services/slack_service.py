@@ -10,6 +10,7 @@ or not Slack is configured.
 """
 
 import uuid
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -272,6 +273,7 @@ def _bundle_blocks(
     posts: list[Post],
     target_posts: dict[uuid.UUID, Post] | None = None,
     author_names: dict[uuid.UUID, str] | None = None,
+    auto_approve_at: datetime | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     """Build the Block Kit payload (and text fallback) for the bundled ask.
 
@@ -280,12 +282,28 @@ def _bundle_blocks(
     lists each action as an opt-in checkbox (all ticked by default): Approve lets
     the ticked actions through and skips the rest, so a person can drop, say, the
     reshare while still approving the like and comment in one go.
+
+    With ``auto_approve_at`` (the person opted in to auto-approve) the card says
+    the actions go ahead on their own at that time unless skipped first.
     """
     portal_url = f"{settings.FRONTEND_URL}/app/campaigns/{campaign.id}"
     label = platform_label(campaign.platform)
     options = _action_options(posts, campaign.platform)
     ask_lines = _ask_lines(campaign, posts, target_posts or {}, author_names or {})
     text = f"You have {len(posts)} {label} action(s) for {campaign.title}"
+    intro = (
+        f"*{campaign.title}*\nTick the actions you want to go ahead "
+        "with, then Approve. Unticked actions are skipped. Open the "
+        "portal to review each item."
+    )
+    if auto_approve_at is not None:
+        ts = int(auto_approve_at.timestamp())
+        fallback = auto_approve_at.strftime("%H:%M UTC")
+        intro += (
+            "\n:hourglass_flowing_sand: You turned on auto-approve, so these go "
+            f"ahead on their own at <!date^{ts}^{{time}}|{fallback}> unless you "
+            "skip them first."
+        )
     blocks: list[dict[str, Any]] = [
         {
             "type": "header",
@@ -293,14 +311,7 @@ def _bundle_blocks(
         },
         {
             "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": (
-                    f"*{campaign.title}*\nTick the actions you want to go ahead "
-                    "with, then Approve. Unticked actions are skipped. Open the "
-                    "portal to review each item."
-                ),
-            },
+            "text": {"type": "mrkdwn", "text": intro},
         },
         {
             "type": "section",
@@ -355,6 +366,8 @@ async def notify_participant(
     campaign: Campaign,
     user: User,
     posts: list[Post],
+    *,
+    auto_approve_at: datetime | None = None,
 ) -> None:
     """DM one participant the bundled card for all their actions in a campaign."""
     if not posts:
@@ -377,7 +390,9 @@ async def notify_participant(
     author_names = {
         u.id: u.name for u in await user_repo.list_by_ids(db, author_ids) if u.name
     }
-    blocks, text = _bundle_blocks(campaign, posts, target_posts, author_names)
+    blocks, text = _bundle_blocks(
+        campaign, posts, target_posts, author_names, auto_approve_at
+    )
     try:
         await client.post_message(channel, text=text, blocks=blocks)
     except SlackError as exc:

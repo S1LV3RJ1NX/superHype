@@ -234,6 +234,10 @@ async def complete_linkedin(
     # Fire any approve cards we held while this connection was stale.
     await _refire_held_notifications(db, user, "linkedin")
 
+    # updated_at is set by the database on a reconnect (onupdate), so it is
+    # expired after the flush; reload it here rather than lazy-load it in sync
+    # pydantic validation, which async SQLAlchemy cannot do.
+    await db.refresh(account)
     result = ConnectionOut.model_validate(account)
     if resumed_post is not None:
         await queue.enqueue_job("publish_post", str(resumed_post.id))
@@ -303,6 +307,7 @@ async def complete_x(
     # Fire any approve cards we held while this connection was stale.
     await _refire_held_notifications(db, user, "x")
 
+    await db.refresh(account)
     result = ConnectionOut.model_validate(account)
     if resumed_post is not None:
         await queue.enqueue_job("publish_post", str(resumed_post.id))

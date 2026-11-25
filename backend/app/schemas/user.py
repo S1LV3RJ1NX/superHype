@@ -21,6 +21,15 @@ class UserOut(BaseModel):
     team_name: str | None = None
     linkedin_status: str | None = None
     x_status: str | None = None
+    auto_approve_consented_at: datetime | None = None
+    # Whether the deployment offers auto-approve at all (MANUAL_APPROVAL_ONLY
+    # off), so the UI shows the consent toggle only when it would take effect.
+    auto_approve_available: bool = False
+    auto_approve_delay_seconds: int = 0
+
+
+class AutoApproveUpdate(BaseModel):
+    enabled: bool
 
 
 class RoleUpdate(BaseModel):

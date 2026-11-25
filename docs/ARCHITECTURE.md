@@ -356,7 +356,7 @@ sequenceDiagram
     FE->>API: POST code + state
     API->>Redis: validate + delete state
     API->>LI: exchange code for tokens
-    API->>LI: fetch identity (/v2/userinfo)
+    API->>LI: fetch identity (/v2/me)
     API->>API: Fernet-encrypt tokens, upsert account, audit
     API-->>FE: connection (active)
 ```
@@ -366,8 +366,15 @@ sequenceDiagram
 - Tokens are Fernet-encrypted via
   `[backend/app/core/crypto.py](backend/app/core/crypto.py)` before they touch the
   database. Plaintext tokens are never stored or logged.
-- Scopes are `w_member_social openid profile` only. Identity comes from OIDC
-  `/v2/userinfo` (the `sub` claim becomes `urn:li:person:{sub}`).
+- Scopes are `w_member_social w_member_social_feed r_basicprofile` only. The
+  app holds the Community Management API, which must be the only product on the
+  app, so OpenID Connect is unavailable. Identity comes from `/v2/me` (the `id`
+  becomes `urn:li:person:{id}`, the same id OIDC returned as `sub`).
+- A daily quota 429 (`APPLICATION DAY` or `MEMBER DAY` limit) parks work until
+  the midnight UTC reset: the worker sets a Redis gate (`quota:linkedin:app` or
+  `quota:linkedin:acct:{id}`) that publish jobs and the reconcile sweep check
+  before calling LinkedIn, so queued work resumes on the new quota without
+  spending calls on repeat 429s.
 - Disconnect best-effort revokes the token, deletes the row, and audits it.
 
 ### X connect, reconnect, disconnect
@@ -747,6 +754,16 @@ in bundles, one click per stage:
   done, all from one message.
 - A deferred reminder (`send_reminders`) re-DMs anyone still not approved or not
   done, and a stale token triggers a reconnect DM (`request_reconnect`).
+
+Approval mode is set by `MANUAL_APPROVAL_ONLY`. On (the default) every action
+waits for its owner's approval. Off, a person can opt in to auto-approve
+(`PUT /v1/users/me/auto-approve`, stored as `users.auto_approve_consented_at` and
+audited). For them, `notify_participant` also queues `auto_approve_posts` with the
+fixed id `auto:{campaign}:{user}`, deferred `AUTO_APPROVE_DELAY_SECONDS`, and the
+card says when the actions go ahead. When it fires it re-checks the flag and the
+consent, then approves whatever is still `scheduled` through the normal approve
+gate (audited as `post_auto_approved`), so anything skipped in the window is left
+alone. Resume and the reconcile sweep re-queue a dropped or lost auto-approve.
 
 This is the near-term answer to "one approval for everything a person has to do",
 and it generalizes: the bundles become a full "approve all my actions" the day the

@@ -104,6 +104,38 @@ async def test_callback_stores_encrypted_token(client, as_role, mock_redis, db):
 
 
 @pytest.mark.asyncio
+async def test_callback_reconnect_existing_account_returns_200(
+    client, as_role, mock_redis
+):
+    # A reconnect updates the existing row, so its DB-set updated_at is expired
+    # when the response is built; it must not be lazy-loaded (MissingGreenlet).
+    user_id = uuid.uuid4()
+    with (
+        patch(
+            "app.controllers.connection_controller.linkedin_oauth_service.exchange_code",
+            new_callable=AsyncMock,
+            return_value=_MOCK_TOKENS,
+        ),
+        patch(
+            "app.controllers.connection_controller.linkedin_oauth_service.fetch_identity",
+            new_callable=AsyncMock,
+            return_value=("urn:li:person:re123", "Re User"),
+        ),
+    ):
+        async with as_role("viewer", user_id=user_id, linkedin=False):
+            for state in ("re-state-1", "re-state-2"):
+                await mock_redis.set(
+                    f"super-hype:li:state:{state}", str(user_id), ex=600
+                )
+                resp = await client.post(
+                    "/v1/connections/linkedin/callback",
+                    json={"code": "code", "state": state},
+                )
+                assert resp.status_code == 200
+                assert resp.json()["status"] == "active"
+
+
+@pytest.mark.asyncio
 async def test_disconnect_deletes_row_and_audits(client, as_role, mock_redis, db):
     user_id = uuid.uuid4()
     state = "test-state-disc"

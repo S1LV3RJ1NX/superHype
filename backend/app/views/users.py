@@ -10,7 +10,7 @@ from app.core.deps import get_current_user, require_onboarded, require_role
 from app.db.session import get_db
 from app.models.user import User
 from app.schemas.common import Page, PageParams
-from app.schemas.user import RoleUpdate, TeamAssign, UserOut
+from app.schemas.user import AutoApproveUpdate, RoleUpdate, TeamAssign, UserOut
 
 router = APIRouter(prefix="/v1/users", tags=["users"])
 
@@ -33,6 +33,18 @@ async def set_my_team(
 ) -> UserOut:
     """Self-service team selection (onboarding and profile)."""
     return await user_controller.set_my_team(db, user=user, team_id=body.team_id)
+
+
+@router.put("/me/auto-approve", response_model=UserOut)
+async def set_my_auto_approve(
+    body: AutoApproveUpdate,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> UserOut:
+    """Opt in to or out of auto-approve for your own actions (onboarding, profile)."""
+    return await user_controller.set_my_auto_approve(
+        db, user=user, enabled=body.enabled
+    )
 
 
 @router.get("/roster", response_model=Page[UserOut])

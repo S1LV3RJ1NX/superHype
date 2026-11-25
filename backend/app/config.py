@@ -68,6 +68,15 @@ class Settings(BaseSettings):
     # through the API; no code change is needed.
     COMMUNITY_MANAGEMENT_ENABLED: bool = False
 
+    # Approval mode. On (the default) every action waits for its owner to approve
+    # it, one by one; this is what LinkedIn's Standard tier reviewers should see.
+    # Off unlocks the opt-in auto-approve consent: a person who opts in has their
+    # actions approved automatically AUTO_APPROVE_DELAY_SECONDS after they are
+    # notified, unless they skip them in the portal or Slack first. Nobody is
+    # auto-approved without their own explicit opt-in either way.
+    MANUAL_APPROVAL_ONLY: bool = True
+    AUTO_APPROVE_DELAY_SECONDS: int = 30 * 60
+
     # X (Twitter). Optional: when the client id is unset the X connector is
     # hidden and X campaigns cannot publish. OAuth 2.0 PKCE (confidential web
     # app from console.x.com); scopes include offline.access so the worker can

@@ -20,6 +20,9 @@ export interface AppUser {
   team_name: string | null;
   linkedin_status: string | null;
   x_status: string | null;
+  auto_approve_consented_at: string | null;
+  auto_approve_available: boolean;
+  auto_approve_delay_seconds: number;
 }
 
 interface AuthContextValue {

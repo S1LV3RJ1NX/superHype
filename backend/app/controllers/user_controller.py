@@ -1,10 +1,13 @@
 """User controller: listing, role management, and self-service team selection."""
 
 import uuid
+from datetime import UTC, datetime
 
 from fastapi import HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
+from app.core.approval_mode import auto_approve_available
 from app.models.user import User
 from app.repositories import audit_repo
 from app.repositories.social_account_repo import social_account_repo
@@ -16,6 +19,8 @@ from app.schemas.user import UserOut
 
 async def _hydrate_one(db: AsyncSession, user: User) -> UserOut:
     out = UserOut.model_validate(user)
+    out.auto_approve_available = auto_approve_available()
+    out.auto_approve_delay_seconds = settings.AUTO_APPROVE_DELAY_SECONDS
     status_map = await social_account_repo.map_status_for_users(db, [user.id])
     out.linkedin_status = status_map.get(user.id)
     x_map = await social_account_repo.map_status_for_users(db, [user.id], platform="x")
@@ -75,6 +80,40 @@ async def set_my_team(db: AsyncSession, *, user: User, team_id: uuid.UUID) -> Us
         )
         # No role change on team selection: everyone joins as a viewer and an
         # admin grants editor manually via PATCH /v1/users/{id}.
+        await db.commit()
+    return await _hydrate_one(db, target)
+
+
+async def set_my_auto_approve(
+    db: AsyncSession, *, user: User, enabled: bool
+) -> UserOut:
+    """Opt in to or out of auto-approve. Only the person themselves can do this.
+
+    Opting in is refused while the deployment is manual-approval-only, so a
+    consent can never be recorded for a mode the person was not shown. Opting
+    out always works.
+    """
+    target = await user_repo.get(db, user.id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if enabled and not auto_approve_available():
+        raise HTTPException(
+            status_code=409,
+            detail="Auto-approve is not available. Every action needs your approval.",
+        )
+
+    currently = target.auto_approve_consented_at is not None
+    if enabled != currently:
+        await user_repo.update(
+            db,
+            target,
+            auto_approve_consented_at=datetime.now(UTC) if enabled else None,
+        )
+        await audit_repo.record(
+            db,
+            actor_id=target.id,
+            action="auto_approve_opt_in" if enabled else "auto_approve_opt_out",
+        )
         await db.commit()
     return await _hydrate_one(db, target)
 

@@ -30,9 +30,17 @@ pytestmark = pytest.mark.asyncio
 class _FakeRedis:
     def __init__(self) -> None:
         self.jobs: list[tuple] = []
+        self.kv: dict = {}
 
     async def enqueue_job(self, name, *args, **kwargs):
         self.jobs.append((name, args, kwargs))
+
+    async def get(self, key):
+        return self.kv.get(key)
+
+    async def set(self, key, value, nx=False, ex=None):
+        self.kv[key] = value
+        return True
 
 
 class _StubProvider:
@@ -355,6 +363,36 @@ async def test_reconcile_fresh_approved_left_alone(db, env):
     await db.commit()
     # Recently touched (mid-backoff or just enqueued): not stalled, leave it.
     await _set_updated_at(env["maker"], p.id, datetime.now(UTC) - timedelta(seconds=60))
+
+    await jobs_mod.reconcile_campaigns(env["ctx"])
+
+    assert not [j for j in env["redis"].jobs if j[0] == "publish_post"]
+
+
+async def test_reconcile_skips_post_parked_on_spent_quota(db, env):
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="like",
+        status="approved",
+        idempotency_key="k",
+    )
+    db.add(p)
+    await db.commit()
+    await _set_updated_at(
+        env["maker"],
+        p.id,
+        datetime.now(UTC) - timedelta(seconds=settings.RECONCILE_STALLED_SECONDS + 100),
+    )
+    # Parked until the daily reset: waiting, not lost, so leave it alone.
+    resume_at = datetime.now(UTC).timestamp() + 3600
+    env["redis"].kv[f"quota:linkedin:acct:{acct.id}"] = str(resume_at)
 
     await jobs_mod.reconcile_campaigns(env["ctx"])
 

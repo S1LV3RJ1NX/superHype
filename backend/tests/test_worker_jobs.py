@@ -40,6 +40,9 @@ class _FakeRedis:
         self.kv[key] = value
         return True
 
+    async def get(self, key):
+        return self.kv.get(key)
+
     async def delete(self, key):
         self.kv.pop(key, None)
 
@@ -792,6 +795,82 @@ async def test_publish_rate_limit_reenqueues_with_retry_after(db, env, cm_enable
         assert rp.status == "approved"  # not failed; will retry
 
 
+async def test_daily_quota_parks_account_until_reset_without_extra_calls(
+    db, env, cm_enabled
+):
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    posts = [
+        Post(
+            campaign_id=c.id,
+            user_id=user.id,
+            social_account_id=acct.id,
+            action="like",
+            status="approved",
+            target_external_id=f"urn:li:activity:{i}",
+            idempotency_key=f"k{i}",
+        )
+        for i in range(2)
+    ]
+    db.add_all(posts)
+    await db.commit()
+
+    calls = 0
+
+    async def _spent(*a, **k):
+        nonlocal calls
+        calls += 1
+        raise LinkedInRateLimitError(
+            "MEMBER DAY limit reached", retry_after=5000, quota_scope="member"
+        )
+
+    env["provider"].like = _spent
+
+    await jobs_mod.publish_post(env["ctx"], str(posts[0].id))
+    assert calls == 1
+    assert f"quota:linkedin:acct:{acct.id}" in env["redis"].kv
+
+    # The second post sees the gate and waits for the reset without calling out.
+    await jobs_mod.publish_post(env["ctx"], str(posts[1].id))
+    assert calls == 1
+    deferred = [j for j in env["redis"].jobs if j[0] == "publish_post"]
+    assert len(deferred) == 2
+    assert all(4990 <= j[2]["_defer_by"] <= 5001 for j in deferred)
+    async with env["maker"]() as s:
+        for p in posts:
+            assert (await s.get(Post, p.id)).status == "approved"
+            assert (await s.get(Post, p.id)).retries == 0
+
+
+async def test_app_quota_gate_blocks_other_accounts(db, env, cm_enabled):
+    user = await _user(db)
+    acct = await _account(db, user)
+    c = Campaign(title="C", type="amplify", status="publishing")
+    db.add(c)
+    await db.flush()
+    p = Post(
+        campaign_id=c.id,
+        user_id=user.id,
+        social_account_id=acct.id,
+        action="like",
+        status="approved",
+        target_external_id="urn:li:activity:1",
+        idempotency_key="k",
+    )
+    db.add(p)
+    await db.commit()
+    resume_at = datetime.now(UTC).timestamp() + 3000
+    env["redis"].kv["quota:linkedin:app"] = str(resume_at)
+
+    await jobs_mod.publish_post(env["ctx"], str(p.id))
+    assert env["provider"].calls == []
+    deferred = [j for j in env["redis"].jobs if j[0] == "publish_post"]
+    assert 2990 <= deferred[0][2]["_defer_by"] <= 3001
+
+
 async def test_publish_generic_error_backoff_then_fail(db, env, cm_enabled):
     user = await _user(db)
     acct = await _account(db, user)
@@ -835,7 +914,7 @@ async def test_publish_generic_error_backoff_then_fail(db, env, cm_enabled):
 
 async def test_publish_comment_403_fails_fast_with_scope_message(db, env, cm_enabled):
     # Comments need w_member_social_feed; a 403 must fail immediately (no retry)
-    # with an actionable message about the Community Management API.
+    # with an actionable message telling the owner to reconnect for the scope.
     user = await _user(db)
     acct = await _account(db, user)
     c = Campaign(title="C", type="amplify", status="publishing")
@@ -868,7 +947,7 @@ async def test_publish_comment_403_fails_fast_with_scope_message(db, env, cm_ena
         assert rp.status == "failed"
         assert rp.retries == 0
         assert "w_member_social_feed" in (rp.error or "")
-        assert "Community Management" in (rp.error or "")
+        assert "Reconnect LinkedIn" in (rp.error or "")
 
 
 async def test_publish_reshare_422_activity_parent_fails_fast(db, env):

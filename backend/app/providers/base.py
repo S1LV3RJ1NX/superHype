@@ -29,9 +29,15 @@ class ProviderAuthError(ProviderAPIError):
 
 
 class ProviderRateLimitError(ProviderAPIError):
-    """429: throttled. Retryable after retry_after seconds."""
+    """429: throttled. Retryable after retry_after seconds.
+
+    ``quota_scope`` is set when a daily quota is spent rather than a short burst
+    throttle: "app" (every account on this app is blocked until the reset) or
+    "member" (only this account is). The worker parks matching work until then.
+    """
 
     retry_after: int | None = None
+    quota_scope: str | None = None
 
 
 @runtime_checkable

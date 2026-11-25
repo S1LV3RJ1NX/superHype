@@ -3,6 +3,10 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Check, Link2, Loader2, Rocket } from "lucide-react";
 
 import { useAuth } from "@/auth/AuthContext";
+import {
+  AutoApproveConsent,
+  saveAutoApprove,
+} from "@/components/AutoApproveConsent";
 import { LinkedInLogo, XLogo } from "@/components/PlatformLogos";
 import { Wordmark } from "@/components/Wordmark";
 import { apiFetch, ApiError } from "@/lib/api";
@@ -35,6 +39,10 @@ export function Onboarding() {
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Opt-in: unticked unless the person already consented earlier.
+  const [autoApprove, setAutoApprove] = useState(
+    !!user?.auto_approve_consented_at,
+  );
 
   const linkedinConnected = !!user?.linkedin_status;
   const xConnected = !!user?.x_status;
@@ -105,7 +113,21 @@ export function Onboarding() {
     }
   };
 
-  const finish = () => {
+  const finish = async () => {
+    if (autoApprove) {
+      setSaving(true);
+      setError(null);
+      try {
+        await saveAutoApprove(true);
+        await refresh();
+      } catch (err) {
+        setError(
+          err instanceof ApiError ? err.message : "Could not save auto-approve",
+        );
+        setSaving(false);
+        return;
+      }
+    }
     navigate("/app", { replace: true });
   };
 
@@ -251,9 +273,17 @@ export function Onboarding() {
               </span>{" "}
               crew in this community. As a TrueHyper you help your teammates' best
               work travel further: liking, commenting, and resharing so great
-              ideas reach more people. Nothing ever goes out under your name until
-              you approve it.
+              ideas reach more people.{" "}
+              {user?.auto_approve_available
+                ? "Nothing goes out under your name without your consent: approve each action yourself, or opt in below to have them approved for you."
+                : "Nothing ever goes out under your name until you approve it."}
             </p>
+            <div className="mt-4">
+              <AutoApproveConsent
+                checked={autoApprove}
+                onChange={setAutoApprove}
+              />
+            </div>
             <p className="mt-3 text-sm font-medium text-ink">
               Ready to hype your team?
             </p>
@@ -268,8 +298,10 @@ export function Onboarding() {
               </button>
               <button
                 onClick={finish}
-                className="inline-flex items-center gap-2 rounded-md bg-clay px-5 py-2.5 text-sm font-medium text-paper hover:bg-clay-press"
+                disabled={saving}
+                className="inline-flex items-center gap-2 rounded-md bg-clay px-5 py-2.5 text-sm font-medium text-paper hover:bg-clay-press disabled:opacity-50"
               >
+                {saving && <Loader2 className="h-4 w-4 animate-spin" />}
                 I am in. Let's hype.
               </button>
             </div>

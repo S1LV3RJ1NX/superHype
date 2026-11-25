@@ -1,5 +1,7 @@
 """Tests for the LinkedIn provider with a mocked httpx transport (no real calls)."""
 
+from datetime import UTC, datetime, timedelta
+
 import httpx
 import pytest
 
@@ -9,6 +11,7 @@ from app.providers.linkedin import (
     LinkedInAuthError,
     LinkedInProvider,
     LinkedInRateLimitError,
+    _seconds_until_daily_reset,
 )
 
 pytestmark = pytest.mark.asyncio
@@ -161,6 +164,51 @@ async def test_429_raises_rate_limit_with_retry_after():
     with pytest.raises(LinkedInRateLimitError) as exc:
         await _provider(handler).publish(_account(), "hi")
     assert exc.value.retry_after == 30
+
+
+@pytest.mark.parametrize(
+    ("body", "scope"),
+    [
+        (
+            "Resource level throttle APPLICATION DAY limit for calls to this resource is reached.",
+            "app",
+        ),
+        (
+            "Resource level throttle MEMBER DAY limit for calls to this resource is reached.",
+            "member",
+        ),
+        ("DAY limit for calls to this resource is reached.", "member"),
+    ],
+)
+async def test_429_daily_quota_waits_for_midnight_utc_reset(body, scope):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"status": 429, "message": body})
+
+    with pytest.raises(LinkedInRateLimitError) as exc:
+        await _provider(handler).like(_account(), "urn:li:activity:1")
+    assert exc.value.quota_scope == scope
+    now = datetime.now(UTC)
+    midnight = (now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    to_reset = (midnight - now).total_seconds()
+    assert to_reset + 50 <= exc.value.retry_after <= to_reset + 610
+
+
+async def test_429_burst_throttle_has_no_quota_scope():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="Too many requests")
+
+    with pytest.raises(LinkedInRateLimitError) as exc:
+        await _provider(handler).like(_account(), "urn:li:activity:1")
+    assert exc.value.quota_scope is None
+    assert exc.value.retry_after is None
+
+
+async def test_seconds_until_daily_reset_targets_next_midnight_utc():
+    now = datetime(2026, 11, 25, 23, 0, tzinfo=UTC)
+    wait = _seconds_until_daily_reset(now)
+    assert 3600 + 60 <= wait <= 3600 + 600
 
 
 async def test_refresh_invalid_grant_raises_auth_error():

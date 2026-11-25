@@ -1,8 +1,9 @@
 """User: a company employee who authenticates with Google and holds a role."""
 
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Boolean, ForeignKey, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin, UUIDPrimaryKeyMixin
@@ -26,4 +27,10 @@ class User(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     # but the rule keeps the FK safe regardless).
     team_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("teams.id", ondelete="SET NULL"), index=True
+    )
+    # When the user opted in to auto-approve (their own explicit consent); null
+    # means every action waits for their approval. Only honored while
+    # MANUAL_APPROVAL_ONLY is off.
+    auto_approve_consented_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
     )

@@ -5,7 +5,9 @@ logged. Errors are typed so the worker can decide retry behavior: auth (stale,
 non-retryable), rate limit (retryable with delay), or a generic API error.
 """
 
+import random
 import re
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import quote
 
@@ -32,6 +34,13 @@ _TIMEOUT = httpx.Timeout(30.0)
 # names the live URN; we extract it so the worker can adopt it as published.
 _DUPLICATE_URN_RE = re.compile(r"urn:li:(?:share|ugcPost|activity):\d+")
 
+# LinkedIn quotas are per 24h and reset at midnight UTC. A spent quota comes back
+# as 429 with no Retry-After and a body like "Resource level throttle
+# APPLICATION DAY limit for calls to this resource is reached." (or MEMBER DAY).
+_DAILY_LIMIT_RE = re.compile(r"(APPLICATION|MEMBER|)\s*DAY limit\b", re.IGNORECASE)
+_RESET_JITTER_MIN_SECONDS = 60
+_RESET_JITTER_MAX_SECONDS = 600
+
 
 class LinkedInAPIError(ProviderAPIError):
     """A LinkedIn API call failed for a non-auth, non-rate-limit reason."""
@@ -51,9 +60,31 @@ class LinkedInAuthError(LinkedInAPIError, ProviderAuthError):
 class LinkedInRateLimitError(LinkedInAPIError, ProviderRateLimitError):
     """429: throttled. Retryable after retry_after seconds."""
 
-    def __init__(self, message: str, retry_after: int | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        retry_after: int | None = None,
+        quota_scope: str | None = None,
+    ) -> None:
         self.retry_after = retry_after
+        self.quota_scope = quota_scope
         super().__init__(429, message)
+
+
+def _seconds_until_daily_reset(now: datetime | None = None) -> int:
+    """Seconds until LinkedIn's daily quotas reset (midnight UTC), plus jitter.
+
+    The jitter spreads every job parked on an exhausted quota across the first
+    few minutes of the new day instead of waking them all at the same instant,
+    and keeps a slightly fast worker clock from retrying before the reset.
+    """
+    now = now or datetime.now(UTC)
+    midnight = (now + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return int((midnight - now).total_seconds()) + random.randint(
+        _RESET_JITTER_MIN_SECONDS, _RESET_JITTER_MAX_SECONDS
+    )
 
 
 def _raise_for_status(resp: httpx.Response) -> None:
@@ -63,10 +94,18 @@ def _raise_for_status(resp: httpx.Response) -> None:
     if resp.status_code == 401:
         raise LinkedInAuthError(401, body)
     if resp.status_code == 429:
-        retry_after = resp.headers.get("retry-after")
-        raise LinkedInRateLimitError(
-            body, int(retry_after) if retry_after and retry_after.isdigit() else None
-        )
+        header = resp.headers.get("retry-after")
+        retry_after = int(header) if header and header.isdigit() else None
+        quota_scope = None
+        daily = _DAILY_LIMIT_RE.search(body)
+        if daily:
+            # A per-app or per-member DAY quota is spent; nothing succeeds until
+            # it resets, so wait for the new quota rather than polling into it.
+            # An unlabeled DAY limit is treated as per-member: the narrower gate
+            # self-corrects, since other accounts' calls will report the app one.
+            quota_scope = "app" if daily.group(1).upper() == "APPLICATION" else "member"
+            retry_after = max(retry_after or 0, _seconds_until_daily_reset())
+        raise LinkedInRateLimitError(body, retry_after, quota_scope)
     raise LinkedInAPIError(resp.status_code, body)
 
 
