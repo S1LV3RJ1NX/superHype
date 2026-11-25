@@ -39,10 +39,9 @@ export function Onboarding() {
   const [saving, setSaving] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Opt-in: unticked unless the person already consented earlier.
-  const [autoApprove, setAutoApprove] = useState(
-    !!user?.auto_approve_consented_at,
-  );
+  // Ticked by default; the person can untick it here or turn it off later from
+  // their profile. Consent is only recorded when they finish with it ticked.
+  const [autoApprove, setAutoApprove] = useState(true);
 
   const linkedinConnected = !!user?.linkedin_status;
   const xConnected = !!user?.x_status;
@@ -114,7 +113,7 @@ export function Onboarding() {
   };
 
   const finish = async () => {
-    if (autoApprove) {
+    if (autoApprove && user?.auto_approve_available) {
       setSaving(true);
       setError(null);
       try {
@@ -275,7 +274,7 @@ export function Onboarding() {
               work travel further: liking, commenting, and resharing so great
               ideas reach more people.{" "}
               {user?.auto_approve_available
-                ? "Nothing goes out under your name without your consent: approve each action yourself, or opt in below to have them approved for you."
+                ? "With auto-approve on, your actions go ahead on their own unless you skip them first. Untick it below, or turn it off any time from your profile, to approve each one yourself."
                 : "Nothing ever goes out under your name until you approve it."}
             </p>
             <div className="mt-4">

@@ -70,10 +70,11 @@ class Settings(BaseSettings):
 
     # Approval mode. On (the default) every action waits for its owner to approve
     # it, one by one; this is what LinkedIn's Standard tier reviewers should see.
-    # Off unlocks the opt-in auto-approve consent: a person who opts in has their
-    # actions approved automatically AUTO_APPROVE_DELAY_SECONDS after they are
-    # notified, unless they skip them in the portal or Slack first. Nobody is
-    # auto-approved without their own explicit opt-in either way.
+    # Off unlocks the auto-approve consent (ticked by default in onboarding, can
+    # be turned off from the profile): a person who keeps it on has their actions
+    # approved automatically AUTO_APPROVE_DELAY_SECONDS after they are notified,
+    # unless they skip them in the portal or Slack first. Consent is recorded
+    # only when the person finishes onboarding with it ticked or turns it on.
     MANUAL_APPROVAL_ONLY: bool = True
     AUTO_APPROVE_DELAY_SECONDS: int = 30 * 60
 
